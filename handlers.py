@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import html
+import re
 from datetime import datetime, timezone
 from typing import Any
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
@@ -107,6 +109,11 @@ async def load_state(
             return await provider.provision(user), True
         except Exception:
             return fallback_state(user, config), False
+
+
+def strip_telegram_html(value: str) -> str:
+    value = re.sub(r"<[^>]+>", "", value)
+    return html.unescape(value)
 
 
 def profile_text(
@@ -263,9 +270,28 @@ def build_router(
             try:
                 await message.edit_text(text, reply_markup=markup)
                 return
+            except TelegramBadRequest:
+                try:
+                    await message.edit_text(
+                        strip_telegram_html(text),
+                        reply_markup=markup,
+                        parse_mode=None,
+                    )
+                    return
+                except TelegramBadRequest as exc:
+                    if "message is not modified" in str(exc).lower():
+                        return
             except Exception:
                 pass
-        await message.answer(text, reply_markup=markup)
+
+        try:
+            await message.answer(text, reply_markup=markup)
+        except TelegramBadRequest:
+            await message.answer(
+                strip_telegram_html(text),
+                reply_markup=markup,
+                parse_mode=None,
+            )
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
