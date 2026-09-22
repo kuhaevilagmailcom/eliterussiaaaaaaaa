@@ -45,14 +45,30 @@ class Config:
     xui_verify_ssl: bool
 
     trial_minutes: int
-    trial_traffic_gb: int
     trial_max_devices: int
 
     plan_30_price: int
     plan_90_price: int
     plan_365_price: int
 
+    plan_30_rub: int
+    plan_90_rub: int
+    plan_365_rub: int
+
     emoji_packs: tuple[str, ...]
+
+    rollypay_api_base: str
+    rollypay_terminal_id: str
+    rollypay_api_key: str
+    rollypay_signing_secret: str
+    rollypay_test_mode: bool
+
+    @property
+    def rollypay_enabled(self) -> bool:
+        return bool(
+            self.rollypay_api_key
+            and self.rollypay_api_key.upper() not in {"CHANGE_ME", "YOUR_TOKEN"}
+        )
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -91,11 +107,13 @@ class Config:
             ).strip(),
             xui_verify_ssl=_bool(os.getenv("XUI_VERIFY_SSL", "true")),
             trial_minutes=max(1, int(os.getenv("TRIAL_MINUTES", "60"))),
-            trial_traffic_gb=max(1, int(os.getenv("TRIAL_TRAFFIC_GB", "10"))),
             trial_max_devices=max(1, int(os.getenv("TRIAL_MAX_DEVICES", "1"))),
             plan_30_price=max(1, int(os.getenv("PLAN_30_PRICE", "150"))),
             plan_90_price=max(1, int(os.getenv("PLAN_90_PRICE", "350"))),
             plan_365_price=max(1, int(os.getenv("PLAN_365_PRICE", "990"))),
+            plan_30_rub=max(1, int(os.getenv("PLAN_30_RUB", "150"))),
+            plan_90_rub=max(1, int(os.getenv("PLAN_90_RUB", "350"))),
+            plan_365_rub=max(1, int(os.getenv("PLAN_365_RUB", "990"))),
             emoji_packs=tuple(
                 x.strip()
                 for x in os.getenv(
@@ -103,5 +121,19 @@ class Config:
                     "CryptoGIFTPODARKI,TgAndroidIcons,progressBarEmoji",
                 ).split(",")
                 if x.strip()
+            ),
+            rollypay_api_base=os.getenv(
+                "ROLLYPAY_API_BASE",
+                "https://api.rollypay.io",
+            ).rstrip("/"),
+            rollypay_terminal_id=os.getenv("ROLLYPAY_TERMINAL_ID", "").strip(),
+            rollypay_api_key=os.getenv("ROLLYPAY_API_KEY", "").strip(),
+            rollypay_signing_secret=os.getenv(
+                "ROLLYPAY_SIGNING_SECRET",
+                "",
+            ).strip(),
+            rollypay_test_mode=_bool(
+                os.getenv("ROLLYPAY_TEST_MODE", "false"),
+                default=False,
             ),
         )
