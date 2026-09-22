@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import html
 import logging
 import re
@@ -14,7 +15,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery,
-    FSInputFile,
+    BufferedInputFile,
     InlineKeyboardButton,
     KeyboardButton,
     LabeledPrice,
@@ -37,12 +38,35 @@ PACK_PROGRESS = "progressBarEmoji"
 
 logger = logging.getLogger(__name__)
 
-MAIN_MENU_BANNER_PATH = Path(__file__).with_name("assets") / "main_menu_banner.jpg"
+MAIN_MENU_BANNER_DIR = Path(__file__).with_name("assets") / "banner_parts"
+_main_menu_banner_bytes: bytes | None = None
 
 
-def main_menu_banner() -> FSInputFile:
-    return FSInputFile(
-        MAIN_MENU_BANNER_PATH,
+def main_menu_banner() -> BufferedInputFile:
+    global _main_menu_banner_bytes
+
+    if _main_menu_banner_bytes is None:
+        encoded = "".join(
+            (MAIN_MENU_BANNER_DIR / f"{index:02d}.txt")
+            .read_text(encoding="utf-8")
+            .strip()
+            for index in range(1, 9)
+        )
+        _main_menu_banner_bytes = base64.b64decode(encoded, validate=True)
+
+        if not (
+            _main_menu_banner_bytes.startswith(b"\xff\xd8")
+            and _main_menu_banner_bytes.endswith(b"\xff\xd9")
+        ):
+            raise ValueError("Invalid main menu JPEG")
+
+        logger.info(
+            "Main menu banner loaded: %s bytes",
+            len(_main_menu_banner_bytes),
+        )
+
+    return BufferedInputFile(
+        _main_menu_banner_bytes,
         filename="mgn_vpn_main_menu.jpg",
     )
 
@@ -434,6 +458,11 @@ def build_router(
                     photo=main_menu_banner(),
                     caption=text,
                     reply_markup=main_keyboard(emoji),
+                )
+                logger.info(
+                    "Main menu banner sent to chat %s as message %s",
+                    message.chat.id,
+                    sent.message_id,
                 )
             except TelegramBadRequest as exc:
                 logger.exception("Main menu banner send failed: %s", exc)
