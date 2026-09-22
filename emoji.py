@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from aiogram import Bot
 
 
@@ -22,7 +24,10 @@ class EmojiBank:
         self.ids = loaded
 
     def icon(self, index: int, fallback: str) -> str:
-        if not self.ids:
+        enabled = os.getenv("CUSTOM_EMOJI", "false").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        if not enabled or not self.ids:
             return fallback
         custom_id = self.ids[index % len(self.ids)]
         return f'<tg-emoji emoji-id="{custom_id}">{fallback}</tg-emoji>'
