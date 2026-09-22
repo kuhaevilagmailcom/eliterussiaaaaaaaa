@@ -269,7 +269,16 @@ def build_router(
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
-        await send_profile_message(message, message.from_user)
+        try:
+            await send_profile_message(message, message.from_user)
+        except Exception:
+            await message.answer(
+                "✅ MGN VPN запущен. Профиль временно не загрузился, но бот принимает сообщения."
+            )
+
+    @router.message(Command("ping"))
+    async def ping(message: Message) -> None:
+        await message.answer("✅ MGN VPN работает")
 
     @router.message(Command("profile"))
     async def profile(message: Message) -> None:
