@@ -537,14 +537,14 @@ def build_router(
             return
 
         kb = InlineKeyboardBuilder()
-        kb.row(InlineKeyboardButton(text="Оплатить по СБП", url=pay_url))
+        kb.row(red_inline_button("🏦 Оплатить по СБП", url=pay_url))
         kb.row(
-            InlineKeyboardButton(
-                text="Проверить оплату",
+            red_inline_button(
+                "✅ Проверить оплату",
                 callback_data=f"checksbp:{payment_id}",
             )
         )
-        kb.row(InlineKeyboardButton(text="Назад", callback_data=f"plan:{code}"))
+        kb.row(red_inline_button("⬅️ Назад", callback_data=f"plan:{code}"))
 
         e = emoji.icon(4, pack=PACK_CRYPTO)
         await send_screen(
@@ -698,14 +698,14 @@ def build_router(
             kb = InlineKeyboardBuilder()
             if not user.get("trial_used"):
                 kb.row(
-                    InlineKeyboardButton(
-                        text="Получить пробный VPN",
+                    red_inline_button(
+                        "🎁 Получить пробный VPN",
                         callback_data="trial",
                     )
                 )
             kb.row(
-                InlineKeyboardButton(
-                    text="Купить VPN",
+                red_inline_button(
+                    "💳 Купить VPN",
                     callback_data="plans",
                 )
             )
@@ -732,8 +732,8 @@ def build_router(
 
         kb = InlineKeyboardBuilder()
         kb.row(
-            InlineKeyboardButton(
-                text="Открыть подключение",
+            red_inline_button(
+                "🔗 Открыть подключение",
                 url=state.subscription_url,
             )
         )
@@ -818,8 +818,8 @@ def build_router(
                 device_id = str(item.get("id") or item.get("device_id") or "")
                 if device_id and len(device_id.encode("utf-8")) <= 36:
                     kb.row(
-                        InlineKeyboardButton(
-                            text=f"Отключить устройство {i}",
+                        red_inline_button(
+                            f"❌ Отключить устройство {i}",
                             callback_data=f"deldev:{device_id}",
                         )
                     )
@@ -869,7 +869,7 @@ def build_router(
         )
 
         kb = InlineKeyboardBuilder()
-        kb.row(InlineKeyboardButton(text="Поделиться", url=share_url))
+        kb.row(red_inline_button("👥 Поделиться", url=share_url))
 
         e = emoji.icon(8, pack=PACK_UI)
         await send_screen(
