@@ -426,9 +426,11 @@ def build_router(
                 amount_rub=amount,
             )
         except (RollyPayError, KeyError):
-            await callback.answer(
-                "Не удалось создать платёж. Попробуйте позже.",
-                show_alert=True,
+            await send_screen(
+                callback.message,
+                callback.from_user,
+                "<b>Не удалось создать платёж.</b>\nПопробуйте ещё раз немного позже.",
+                bottom_menu=True,
             )
             return
 
