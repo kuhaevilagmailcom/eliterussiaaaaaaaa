@@ -298,17 +298,39 @@ def build_router(
         bottom_menu: bool = False,
     ) -> Message:
         user = await ensure_actor(actor)
-        await safe_delete(
-            message.chat.id,
-            user.get("last_menu_message_id"),
-            message.bot,
-        )
+        last_id = user.get("last_menu_message_id")
 
         if message.from_user and not message.from_user.is_bot:
             await safe_delete(message.chat.id, message.message_id, message.bot)
 
-        markup = main_keyboard() if bottom_menu else reply_markup
+        edit_markup = None if bottom_menu else reply_markup
 
+        if last_id:
+            try:
+                edited = await message.bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=int(last_id),
+                    text=text,
+                    reply_markup=edit_markup,
+                )
+                return edited
+            except TelegramBadRequest as exc:
+                if "message is not modified" in str(exc).lower():
+                    return message
+                try:
+                    edited = await message.bot.edit_message_text(
+                        chat_id=message.chat.id,
+                        message_id=int(last_id),
+                        text=strip_custom_emoji(text),
+                        reply_markup=edit_markup,
+                    )
+                    return edited
+                except Exception:
+                    await safe_delete(message.chat.id, int(last_id), message.bot)
+            except Exception:
+                await safe_delete(message.chat.id, int(last_id), message.bot)
+
+        markup = main_keyboard(emoji) if bottom_menu else reply_markup
         try:
             sent = await message.bot.send_message(
                 message.chat.id,
@@ -316,14 +338,54 @@ def build_router(
                 reply_markup=markup,
             )
         except TelegramBadRequest:
+            fallback_markup = (
+                main_keyboard(emoji, custom_icons=False)
+                if bottom_menu
+                else reply_markup
+            )
             sent = await message.bot.send_message(
                 message.chat.id,
                 strip_custom_emoji(text),
-                reply_markup=markup,
+                reply_markup=fallback_markup,
             )
 
         await db.set_last_menu_message(actor.id, sent.message_id)
         return sent
+
+    async def show_home(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        state, ok = await load_state(user, provider, config)
+        count = await db.referral_count(actor.id)
+        active = is_active(user)
+        status = "Активна" if active else "Не активна"
+        max_devices = int(user.get("max_devices") or 1)
+        e_home = emoji.icon(0, pack=PACK_UI)
+        e_sub = emoji.icon(1, pack=PACK_CRYPTO)
+        e_device = emoji.icon(2, pack=PACK_UI)
+        e_users = emoji.icon(3, pack=PACK_UI)
+
+        lines = [
+            f"{e_home} <b>MGN VPN</b>",
+            "",
+            f"{e_sub} Подписка: <b>{status}</b>",
+        ]
+        if active:
+            lines.append(f"Действует до: <b>{format_until(user, config)}</b>")
+        lines += [
+            f"{e_device} Устройства: <b>до {max_devices}</b>",
+            f"{e_users} Приглашено друзей: <b>{count}</b>",
+            "",
+            "<i>Выберите раздел кнопками снизу.</i>",
+        ]
+        if not ok and active:
+            lines += ["", "<i>VPN-сервер временно не ответил.</i>"]
+
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            bottom_menu=True,
+        )
 
     async def show_profile(message: Message, actor) -> None:
         user = await ensure_actor(actor)
@@ -359,7 +421,11 @@ def build_router(
                     message.from_user.id,
                     int(raw),
                 )
-        await show_profile(message, message.from_user)
+        await show_home(message, message.from_user)
+
+    @router.message(F.text.in_({"🏠 Главное меню", "Главное меню"}))
+    async def home(message: Message) -> None:
+        await show_home(message, message.from_user)
 
     @router.message(Command("ping"))
     async def ping(message: Message) -> None:
@@ -371,11 +437,11 @@ def build_router(
         )
 
     @router.message(Command("profile"))
-    @router.message(F.text == "Профиль")
+    @router.message(F.text.in_({"👤 Профиль", "Профиль"}))
     async def profile(message: Message) -> None:
         await show_profile(message, message.from_user)
 
-    @router.message(F.text == "Купить VPN")
+    @router.message(F.text.in_({"💳 Купить VPN", "Купить VPN"}))
     async def plans_message(message: Message) -> None:
         await ensure_actor(message.from_user)
         e = emoji.icon(0, pack=PACK_CRYPTO)
@@ -625,7 +691,7 @@ def build_router(
 
         await show_profile(message, message.from_user)
 
-    @router.message(F.text == "Подключиться")
+    @router.message(F.text.in_({"🔗 Подключиться", "Подключиться"}))
     async def connect(message: Message) -> None:
         user = await ensure_actor(message.from_user)
         if not is_active(user):
@@ -717,7 +783,7 @@ def build_router(
         await callback.answer("Пробный VPN активирован")
         await show_profile(callback.message, callback.from_user)
 
-    @router.message(F.text == "Устройства")
+    @router.message(F.text.in_({"📱 Устройства", "Устройства"}))
     async def devices(message: Message) -> None:
         user = await ensure_actor(message.from_user)
         if not is_active(user):
@@ -789,7 +855,7 @@ def build_router(
 
         await show_profile(callback.message, callback.from_user)
 
-    @router.message(F.text == "Пригласить друга")
+    @router.message(F.text.in_({"👥 Пригласить друга", "Пригласить друга"}))
     async def invite(message: Message) -> None:
         await ensure_actor(message.from_user)
         bot_info = await message.bot.get_me()
@@ -815,7 +881,7 @@ def build_router(
             reply_markup=kb.as_markup(),
         )
 
-    @router.message(F.text == "Помощь")
+    @router.message(F.text.in_({"🆘 Помощь", "Помощь"}))
     async def help_screen(message: Message) -> None:
         e = emoji.icon(9, pack=PACK_UI)
         await send_screen(
