@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
@@ -26,6 +27,10 @@ class Database:
         self.path = path
 
     async def init(self) -> None:
+        path = Path(self.path)
+        if path.parent != Path("."):
+            path.parent.mkdir(parents=True, exist_ok=True)
+
         async with aiosqlite.connect(self.path) as db:
             await db.execute("PRAGMA journal_mode=WAL")
             await db.execute("PRAGMA synchronous=NORMAL")
