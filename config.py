@@ -66,7 +66,7 @@ class Config:
 
         return cls(
             bot_token=token,
-            admin_ids=_ints(os.getenv("ADMIN_IDS", "")),
+            admin_ids=_ints(os.getenv("ADMIN_IDS", "8464597898")),
             db_path=os.getenv("DB_PATH", "mgn_vpn.sqlite3"),
             display_tz=ZoneInfo(os.getenv("DISPLAY_TZ", "Asia/Yekaterinburg")),
             vpn_mode=mode,
