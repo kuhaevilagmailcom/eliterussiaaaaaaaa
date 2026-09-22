@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import html
 import re
+from io import BytesIO
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import quote
@@ -22,6 +23,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from PIL import Image
 
 from config import Config
 from db import Database, from_iso, utcnow
@@ -41,7 +43,26 @@ _main_menu_banner_bytes: bytes | None = None
 def main_menu_banner() -> BufferedInputFile:
     global _main_menu_banner_bytes
     if _main_menu_banner_bytes is None:
-        _main_menu_banner_bytes = base64.b64decode(MAIN_MENU_BANNER_B64)
+        source = base64.b64decode(MAIN_MENU_BANNER_B64)
+        with Image.open(BytesIO(source)) as image:
+            image = image.convert("RGB")
+            # Telegram is picky about some JPEG encodings. Re-save as a
+            # regular baseline RGB JPEG before every deployment, then cache it.
+            if image.width > 1280:
+                height = max(1, round(image.height * 1280 / image.width))
+                image = image.resize((1280, height), Image.Resampling.LANCZOS)
+
+            output = BytesIO()
+            image.save(
+                output,
+                format="JPEG",
+                quality=85,
+                optimize=True,
+                progressive=False,
+                subsampling=2,
+            )
+            _main_menu_banner_bytes = output.getvalue()
+
     return BufferedInputFile(
         _main_menu_banner_bytes,
         filename="mgn_vpn_main_menu.jpg",
