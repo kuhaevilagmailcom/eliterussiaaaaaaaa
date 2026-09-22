@@ -127,10 +127,7 @@ def main_keyboard(
     custom_icons: bool = True,
 ) -> ReplyKeyboardMarkup:
     def button(text: str, index: int, pack: str = PACK_UI) -> KeyboardButton:
-        kwargs: dict[str, Any] = {
-            "text": text,
-            "style": "danger",
-        }
+        kwargs: dict[str, Any] = {"text": text, "style": "danger"}
         if custom_icons:
             custom_id = emoji.raw_id(index, pack=pack)
             if custom_id:
@@ -139,19 +136,19 @@ def main_keyboard(
 
     return ReplyKeyboardMarkup(
         keyboard=[
-            [button("🏠 Главное меню", 0)],
             [
-                button("👤 Профиль", 1),
+                button("🏠 Главное", 0),
+                button("💎 Купить VPN", 1, PACK_CRYPTO),
+            ],
+            [
                 button("🔗 Подключиться", 2),
+                button("👤 Профиль", 3),
             ],
             [
-                button("💳 Купить VPN", 3, PACK_CRYPTO),
                 button("📱 Устройства", 4),
+                button("👥 Друзья", 5),
             ],
-            [
-                button("👥 Пригласить друга", 5),
-                button("🆘 Помощь", 6),
-            ],
+            [button("🆘 Помощь", 6)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -238,43 +235,39 @@ def profile_text(
     )
     user_id = int(user["telegram_id"])
     active = is_active(user)
-    plan = html.escape(user.get("plan_name") or "—")
-    devices_count = len(state.devices)
     max_devices = int(user.get("max_devices") or 1)
+    devices_count = len(state.devices)
 
     e_profile = emoji.icon(0, pack=PACK_UI)
     e_sub = emoji.icon(1, pack=PACK_CRYPTO)
-    e_device = emoji.icon(7, pack=PACK_UI)
+    e_device = emoji.icon(2, pack=PACK_UI)
 
     lines = [
         f"{e_profile} <b>Профиль</b>",
-        f"{username}",
-        f"<code>ID {user_id}</code>",
+        f"{username}  ·  <code>{user_id}</code>",
         "",
-        f"{e_sub} <b>Подписка</b>",
-        f"Статус — <b>{'активна' if active else 'не активна'}</b>",
+        f"{e_sub} <b>{'Подписка активна' if active else 'Подписка не активна'}</b>",
     ]
 
     if active:
         lines += [
-            f"Тариф — <b>{plan}</b>",
-            f"До — <b>{format_until(user, config)}</b>",
-            f"Осталось — <b>{remaining_text(user)}</b>",
+            f"{html.escape(user.get('plan_name') or 'VPN')}  ·  до <b>{format_until(user, config)}</b>",
+            f"Осталось <b>{remaining_text(user)}</b>",
         ]
     else:
-        trial = "доступен" if not user.get("trial_used") else "использован"
-        lines += [f"Пробный доступ — <b>{trial}</b>"]
+        trial = "Можно активировать пробный доступ" if not user.get("trial_used") else "Пробный доступ уже использован"
+        lines += [trial]
 
     lines += [
         "",
-        f"{e_device} <b>Устройства</b>",
-        f"<b>{devices_count}</b> из <b>{max_devices}</b>",
-        "",
-        f"Сервер — <b>{html.escape(state.server)}</b>",
+        f"{e_device} Устройства  <b>{devices_count}/{max_devices}</b>",
     ]
 
+    if active:
+        lines += [f"Сервер  <b>{html.escape(state.server)}</b>"]
+
     if not provider_ok and active:
-        lines += ["", "<i>Сервер временно недоступен.</i>"]
+        lines += ["", "<i>Сервер временно не отвечает.</i>"]
 
     return "\n".join(lines)
 
@@ -287,8 +280,8 @@ def connection_text(
     e_link = emoji.icon(10, pack=PACK_UI)
     return (
         f"{e_link} <b>Подключение</b>\n\n"
-        f"Доступно устройств — <b>до {int(user.get('max_devices') or 1)}</b>\n\n"
-        "Нажмите кнопку ниже, чтобы открыть персональную ссылку."
+        "Ваша персональная ссылка готова.\n"
+        f"Можно использовать на <b>{int(user.get('max_devices') or 1)}</b> устройствах."
     )
 
 
@@ -399,44 +392,38 @@ def build_router(
         state, ok = await load_state(user, provider, config)
         count = await db.referral_count(actor.id)
         active = is_active(user)
-        max_devices = int(user.get("max_devices") or 1)
         username = (
             f'@{html.escape(user["username"])}'
             if user.get("username")
             else html.escape(user.get("first_name") or "Пользователь")
         )
 
-        e_home = emoji.icon(0, pack=PACK_UI)
+        e_logo = emoji.icon(0, pack=PACK_CRYPTO)
         e_sub = emoji.icon(1, pack=PACK_CRYPTO)
         e_users = emoji.icon(3, pack=PACK_UI)
 
         lines = [
-            f"{e_home} <b>MGN VPN</b>",
-            f"Привет, <b>{username}</b>",
+            f"{e_logo} <b>MGN VPN</b>",
+            f"{username}",
             "",
-            f"{e_sub} <b>Подписка</b>",
-            f"Статус — <b>{'активна' if active else 'не активна'}</b>",
+            f"{e_sub} <b>{'VPN подключён' if active else 'VPN не подключён'}</b>",
         ]
 
         if active:
             lines += [
-                f"Тариф — <b>{html.escape(user.get('plan_name') or 'VPN')}</b>",
-                f"До — <b>{format_until(user, config)}</b>",
-                f"Устройства — <b>до {max_devices}</b>",
+                f"{html.escape(user.get('plan_name') or 'VPN')}  ·  до <b>{format_until(user, config)}</b>",
+                f"Устройства  <b>{len(state.devices)}/{int(user.get('max_devices') or 1)}</b>",
             ]
         else:
-            trial = "доступен" if not user.get("trial_used") else "использован"
-            lines += [f"Пробный доступ — <b>{trial}</b>"]
+            lines += [
+                "Активируйте пробный доступ или выберите подписку.",
+            ]
 
-        lines += [
-            "",
-            f"{e_users} Приглашено друзей — <b>{count}</b>",
-            "",
-            "<i>Выберите нужный раздел ниже.</i>",
-        ]
+        if count:
+            lines += ["", f"{e_users} Приглашено друзей  <b>{count}</b>"]
 
         if not ok and active:
-            lines += ["", "<i>VPN-сервер временно недоступен.</i>"]
+            lines += ["", "<i>Сервер временно не отвечает.</i>"]
 
         await send_screen(
             message,
@@ -481,7 +468,7 @@ def build_router(
                 )
         await show_home(message, message.from_user)
 
-    @router.message(F.text.in_({"🏠 Главное меню", "Главное меню"}))
+    @router.message(F.text.in_({"🏠 Главное", "Главное", "🏠 Главное меню", "Главное меню"}))
     async def home(message: Message) -> None:
         await show_home(message, message.from_user)
 
@@ -505,16 +492,16 @@ def build_router(
     async def profile(message: Message) -> None:
         await show_profile(message, message.from_user)
 
-    @router.message(F.text.in_({"💳 Купить VPN", "Купить VPN"}))
+    @router.message(F.text.in_({"💎 Купить VPN", "💳 Купить VPN", "Купить VPN"}))
     async def plans_message(message: Message) -> None:
         await ensure_actor(message.from_user)
         e = emoji.icon(0, pack=PACK_CRYPTO)
         await send_screen(
             message,
             message.from_user,
-            f"{e} <b>Выберите тариф</b>\n\n"
-            "Все тарифы — до <b>5 устройств</b>.\n"
-            "Оплата: <b>СБП</b> или <b>Telegram Stars</b>.",
+            f"{e} <b>Выберите подписку</b>\n\n"
+            "До <b>5 устройств</b> на каждом тарифе.\n"
+            "Оплата через СБП или Telegram Stars.",
             reply_markup=plans_keyboard(config),
         )
 
@@ -527,9 +514,9 @@ def build_router(
         await send_screen(
             callback.message,
             callback.from_user,
-            f"{e} <b>Выберите тариф</b>\n\n"
-            "Все тарифы — до <b>5 устройств</b>.\n"
-            "Оплата: <b>СБП</b> или <b>Telegram Stars</b>.",
+            f"{e} <b>Выберите подписку</b>\n\n"
+            "До <b>5 устройств</b> на каждом тарифе.\n"
+            "Оплата через СБП или Telegram Stars.",
             reply_markup=plans_keyboard(config),
         )
 
@@ -548,10 +535,9 @@ def build_router(
             callback.message,
             callback.from_user,
             f"{e} <b>{plan['name']}</b>\n\n"
-            f"До <b>{plan['devices']}</b> устройств\n"
-            f"<b>{plan_price_rub(config, code)} ₽</b> по СБП\n"
-            f"<b>{plan_price_stars(config, code)} ⭐</b> в Telegram Stars\n\n"
-            "Выберите способ оплаты.",
+            f"До {plan['devices']} устройств\n"
+            f"<b>{plan_price_rub(config, code)} ₽</b>  ·  СБП\n"
+            f"<b>{plan_price_stars(config, code)} ⭐</b>  ·  Telegram Stars",
             reply_markup=payment_methods_keyboard(config, code),
         )
 
@@ -926,7 +912,7 @@ def build_router(
 
         await show_profile(callback.message, callback.from_user)
 
-    @router.message(F.text.in_({"👥 Пригласить друга", "Пригласить друга"}))
+    @router.message(F.text.in_({"👥 Друзья", "👥 Пригласить друга", "Пригласить друга", "Друзья"}))
     async def invite(message: Message) -> None:
         await ensure_actor(message.from_user)
         bot_info = await message.bot.get_me()
@@ -947,10 +933,9 @@ def build_router(
         await send_screen(
             message,
             message.from_user,
-            f"{e} <b>Пригласить друга</b>\n\n"
-            f"<code>{html.escape(link)}</code>\n\n"
-            f"Приглашено — <b>{count}</b>\n\n"
-            "<i>Отправьте ссылку другу.</i>",
+            f"{e} <b>Друзья</b>\n\n"
+            f"Ваша ссылка:\n<code>{html.escape(link)}</code>\n\n"
+            f"Приглашено  <b>{count}</b>",
             reply_markup=kb.as_markup(),
         )
 
@@ -961,11 +946,9 @@ def build_router(
             message,
             message.from_user,
             f"{e} <b>Помощь</b>\n\n"
-            "<b>1.</b> Выберите тариф.\n"
-            "<b>2.</b> Оплатите подписку.\n"
-            "<b>3.</b> Нажмите «Подключиться».\n"
-            "<b>4.</b> Откройте персональную ссылку.\n\n"
-            "Устройства можно отключать в разделе <b>«Устройства»</b>.",
+            "Выберите подписку → оплатите → нажмите <b>«Подключиться»</b>.\n\n"
+            "После этого откройте персональную ссылку на нужном устройстве.\n"
+            "Подключённые устройства можно удалить в разделе <b>«Устройства»</b>.",
             reply_markup=section_nav_keyboard(),
         )
 
