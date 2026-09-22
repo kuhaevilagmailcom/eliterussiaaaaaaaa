@@ -109,6 +109,7 @@ def profile_text(
     state: VpnState,
     emoji: EmojiBank,
     provider_ok: bool,
+    config: Config,
 ) -> str:
     username = (
         f'@{html.escape(user["username"])}'
@@ -141,7 +142,7 @@ def profile_text(
         "",
         f"{e_info} <b>Информация о подписке</b>",
         f"{e_type} Тип: <b>{plan}</b>",
-        f"{e_until} Действует до: <b>{format_until(user, _CONFIG_REF)}</b>",
+        f"{e_until} Действует до: <b>{format_until(user, config)}</b>",
         f"{e_left} Осталось: <b>{remaining_text(user)}</b>",
         f"{e_traffic} Трафик: <b>{state.traffic_used_gb:.1f} / {traffic_limit:g} ГБ</b>",
         f"{e_server} Серверы: <b>{html.escape(state.server)}</b>",
@@ -171,8 +172,6 @@ def profile_text(
 
     return "\n".join(lines)
 
-
-_CONFIG_REF: Config
 
 
 def profile_keyboard(
@@ -235,22 +234,24 @@ def build_router(
     emoji: EmojiBank,
     provider: VpnProvider,
 ) -> Router:
-    global _CONFIG_REF
-    _CONFIG_REF = config
-
     router = Router()
 
-    async def ensure(message: Message) -> dict[str, Any]:
+    async def ensure_actor(actor) -> dict[str, Any]:
         return await db.ensure_user(
-            message.from_user.id,
-            message.from_user.username,
-            message.from_user.first_name,
+            actor.id,
+            actor.username,
+            actor.first_name,
         )
 
-    async def send_profile_message(message: Message, *, edit: bool = False) -> None:
-        user = await ensure(message)
+    async def send_profile_message(
+        message: Message,
+        actor,
+        *,
+        edit: bool = False,
+    ) -> None:
+        user = await ensure_actor(actor)
         state, ok = await load_state(user, provider, config)
-        text = profile_text(user, state, emoji, ok)
+        text = profile_text(user, state, emoji, ok, config)
         markup = profile_keyboard(user, state)
 
         if edit:
@@ -263,17 +264,17 @@ def build_router(
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
-        await send_profile_message(message)
+        await send_profile_message(message, message.from_user)
 
     @router.message(Command("profile"))
     async def profile(message: Message) -> None:
-        await send_profile_message(message)
+        await send_profile_message(message, message.from_user)
 
     @router.callback_query(F.data == "refresh")
     async def refresh(callback: CallbackQuery) -> None:
         await callback.answer()
         if callback.message:
-            await send_profile_message(callback.message, edit=True)
+            await send_profile_message(callback.message, callback.from_user, edit=True)
 
     @router.callback_query(F.data == "trial")
     async def trial(callback: CallbackQuery) -> None:
@@ -375,7 +376,7 @@ def build_router(
             await message.answer("Платеж получен, но тариф не распознан. Напишите администратору.")
             return
 
-        await ensure(message)
+        await ensure_actor(message.from_user)
         fresh = await db.record_payment(
             telegram_id=message.from_user.id,
             charge_id=payment.telegram_payment_charge_id,
@@ -396,7 +397,7 @@ def build_router(
                 pass
 
         await message.answer("✅ Оплата получена. Подписка активирована.")
-        await send_profile_message(message)
+        await send_profile_message(message, message.from_user)
 
     @router.callback_query(F.data == "devices")
     async def devices(callback: CallbackQuery) -> None:
@@ -455,8 +456,7 @@ def build_router(
             await callback.answer("Устройство отключено.")
         except Exception:
             await callback.answer("Не удалось отключить устройство.", show_alert=True)
-        callback.data = "devices"
-        await devices(callback)
+        await send_profile_message(callback.message, callback.from_user, edit=True)
 
     @router.message(Command("stats"))
     async def stats(message: Message) -> None:
