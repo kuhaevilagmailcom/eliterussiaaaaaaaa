@@ -29,6 +29,17 @@ class EmojiBank:
 
             self.pack_ids[name] = loaded
 
+    def raw_id(
+        self,
+        index: int,
+        *,
+        pack: str | None = None,
+    ) -> str | None:
+        pool = self.pack_ids.get(pack, []) if pack else self.ids
+        if not pool:
+            return None
+        return pool[index % len(pool)]
+
     def icon(
         self,
         index: int,
@@ -36,11 +47,9 @@ class EmojiBank:
         *,
         pack: str | None = None,
     ) -> str:
-        pool = self.pack_ids.get(pack, []) if pack else self.ids
-        if not pool:
+        custom_id = self.raw_id(index, pack=pack)
+        if not custom_id:
             return fallback
-
-        custom_id = pool[index % len(pool)]
 
         # Telegram requires valid entity text inside <tg-emoji>.
         # A normal Unicode emoji is used only as the hidden fallback;
