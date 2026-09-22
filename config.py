@@ -46,6 +46,8 @@ class Config:
 
     trial_minutes: int
     trial_max_devices: int
+    trial_channel_username: str
+    trial_channel_url: str
 
     plan_30_price: int
     plan_90_price: int
@@ -108,6 +110,14 @@ class Config:
             xui_verify_ssl=_bool(os.getenv("XUI_VERIFY_SSL", "true")),
             trial_minutes=max(1, int(os.getenv("TRIAL_MINUTES", "60"))),
             trial_max_devices=max(1, int(os.getenv("TRIAL_MAX_DEVICES", "1"))),
+            trial_channel_username=os.getenv(
+                "TRIAL_CHANNEL_USERNAME",
+                "@mgnvpnn",
+            ).strip(),
+            trial_channel_url=os.getenv(
+                "TRIAL_CHANNEL_URL",
+                "https://t.me/mgnvpnn",
+            ).strip(),
             plan_30_price=max(1, int(os.getenv("PLAN_30_PRICE", "150"))),
             plan_90_price=max(1, int(os.getenv("PLAN_90_PRICE", "350"))),
             plan_365_price=max(1, int(os.getenv("PLAN_365_PRICE", "990"))),
