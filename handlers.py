@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import html
 import re
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
@@ -11,6 +13,7 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     KeyboardButton,
@@ -31,6 +34,20 @@ from vpn import VpnProvider, VpnState
 PACK_CRYPTO = "CryptoGIFTPODARKI"
 PACK_UI = "TgAndroidIcons"
 PACK_PROGRESS = "progressBarEmoji"
+
+MAIN_MENU_BANNER_B64 = Path(__file__).with_name("assets") / "main_menu_banner.b64"
+_main_menu_banner_bytes: bytes | None = None
+
+
+def main_menu_banner() -> BufferedInputFile:
+    global _main_menu_banner_bytes
+    if _main_menu_banner_bytes is None:
+        encoded = MAIN_MENU_BANNER_B64.read_text(encoding="utf-8").strip()
+        _main_menu_banner_bytes = base64.b64decode(encoded)
+    return BufferedInputFile(
+        _main_menu_banner_bytes,
+        filename="mgn_vpn_main_menu.jpg",
+    )
 
 PLANS: dict[str, dict[str, Any]] = {
     "30": {"days": 30, "name": "30 дней", "devices": 5},
@@ -351,67 +368,98 @@ def build_router(
         if message.from_user and not message.from_user.is_bot:
             await safe_delete(message.chat.id, message.message_id, message.bot)
 
-        # ReplyKeyboardMarkup cannot be added by editing an old message.
-        # When we need the persistent bottom menu, replace the old screen
-        # with a freshly sent message carrying the keyboard.
-        if bottom_menu:
-            if last_id:
-                await safe_delete(message.chat.id, int(last_id), message.bot)
-
-            try:
-                sent = await message.bot.send_message(
-                    message.chat.id,
-                    text,
-                    reply_markup=main_keyboard(emoji),
-                )
-            except TelegramBadRequest:
-                sent = await message.bot.send_message(
-                    message.chat.id,
-                    strip_custom_emoji(text),
-                    reply_markup=main_keyboard(emoji, custom_icons=False),
-                )
-
-            await db.set_last_menu_message(actor.id, sent.message_id)
-            return sent
-
-        # For ordinary sections, keep one bot message and edit it in place.
+        # Main UI is one persistent photo message. Normal user screens edit
+        # its caption instead of sending the banner again and again.
         if last_id:
             try:
-                edited = await message.bot.edit_message_text(
+                edited = await message.bot.edit_message_caption(
                     chat_id=message.chat.id,
                     message_id=int(last_id),
-                    text=text,
-                    reply_markup=reply_markup,
+                    caption=text,
+                    reply_markup=None if bottom_menu else reply_markup,
                 )
                 return edited
             except TelegramBadRequest as exc:
                 if "message is not modified" in str(exc).lower():
                     return message
+
+                # Telegram can reject a custom-emoji entity. Retry with plain
+                # fallback emoji while keeping the same photo/message.
+                try:
+                    edited = await message.bot.edit_message_caption(
+                        chat_id=message.chat.id,
+                        message_id=int(last_id),
+                        caption=strip_custom_emoji(text),
+                        reply_markup=None if bottom_menu else reply_markup,
+                    )
+                    return edited
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # If the stored menu is from an older bot version and is a text
+            # message, ordinary screens can still edit it in place.
+            if not bottom_menu:
                 try:
                     edited = await message.bot.edit_message_text(
                         chat_id=message.chat.id,
                         message_id=int(last_id),
-                        text=strip_custom_emoji(text),
+                        text=text,
                         reply_markup=reply_markup,
                     )
                     return edited
+                except TelegramBadRequest as exc:
+                    if "message is not modified" in str(exc).lower():
+                        return message
+                    try:
+                        edited = await message.bot.edit_message_text(
+                            chat_id=message.chat.id,
+                            message_id=int(last_id),
+                            text=strip_custom_emoji(text),
+                            reply_markup=reply_markup,
+                        )
+                        return edited
+                    except Exception:
+                        pass
                 except Exception:
-                    await safe_delete(message.chat.id, int(last_id), message.bot)
-            except Exception:
-                await safe_delete(message.chat.id, int(last_id), message.bot)
+                    pass
 
-        try:
-            sent = await message.bot.send_message(
-                message.chat.id,
-                text,
-                reply_markup=reply_markup,
-            )
-        except TelegramBadRequest:
-            sent = await message.bot.send_message(
-                message.chat.id,
-                strip_custom_emoji(text),
-                reply_markup=reply_markup,
-            )
+            # Old/uneditable menu: remove it before creating exactly one
+            # replacement, so duplicate banners never accumulate.
+            await safe_delete(message.chat.id, int(last_id), message.bot)
+
+        if bottom_menu:
+            try:
+                sent = await message.bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=main_menu_banner(),
+                    caption=text,
+                    reply_markup=main_keyboard(emoji),
+                )
+            except TelegramBadRequest:
+                sent = await message.bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=main_menu_banner(),
+                    caption=strip_custom_emoji(text),
+                    reply_markup=main_keyboard(emoji, custom_icons=False),
+                )
+        else:
+            # Direct access to a section before /start: keep old behavior.
+            # Once the user opens the main menu, this text message is replaced
+            # by the single persistent banner.
+            try:
+                sent = await message.bot.send_message(
+                    message.chat.id,
+                    text,
+                    reply_markup=reply_markup,
+                )
+            except TelegramBadRequest:
+                sent = await message.bot.send_message(
+                    message.chat.id,
+                    strip_custom_emoji(text),
+                    reply_markup=reply_markup,
+                )
 
         await db.set_last_menu_message(actor.id, sent.message_id)
         return sent
