@@ -795,6 +795,19 @@ def build_router(
             bottom_menu=True,
         )
 
+    @router.message(Command("paystatus"))
+    async def paystatus(message: Message) -> None:
+        if message.from_user.id not in config.admin_ids:
+            return
+        status = "настроена" if config.rollypay_enabled else "не настроена"
+        mode = "тест" if config.rollypay_test_mode else "боевой"
+        await send_screen(
+            message,
+            message.from_user,
+            f"<b>СБП / RollyPay</b>\nСтатус: <b>{status}</b>\nРежим: <b>{mode}</b>",
+            bottom_menu=True,
+        )
+
     @router.message(Command("stats"))
     async def stats(message: Message) -> None:
         if message.from_user.id not in config.admin_ids:
