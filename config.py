@@ -6,7 +6,10 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
+from secure_env import load_secure_env
+
 load_dotenv()
+load_secure_env()
 
 
 def _ints(value: str) -> tuple[int, ...]:
