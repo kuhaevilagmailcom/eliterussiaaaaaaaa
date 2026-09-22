@@ -56,9 +56,14 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        token = os.getenv("BOT_TOKEN", "").strip()
+        token = (
+            os.getenv("BOT_TOKEN", "").strip()
+            or os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+            or os.getenv("API_TOKEN", "").strip()
+            or os.getenv("TOKEN", "").strip()
+        )
         if not token:
-            raise RuntimeError("BOT_TOKEN is empty. Fill .env first.")
+            raise RuntimeError("Telegram bot token is empty.")
 
         mode = os.getenv("VPN_MODE", "demo").strip().lower()
         if mode not in {"demo", "webhook", "3xui"}:
