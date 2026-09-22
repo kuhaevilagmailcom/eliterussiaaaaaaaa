@@ -121,19 +121,56 @@ def strip_custom_emoji(value: str) -> str:
     )
 
 
-def main_keyboard() -> ReplyKeyboardMarkup:
+def main_keyboard(
+    emoji: EmojiBank,
+    *,
+    custom_icons: bool = True,
+) -> ReplyKeyboardMarkup:
+    def button(text: str, index: int, pack: str = PACK_UI) -> KeyboardButton:
+        kwargs: dict[str, Any] = {
+            "text": text,
+            "style": "danger",
+        }
+        if custom_icons:
+            custom_id = emoji.raw_id(index, pack=pack)
+            if custom_id:
+                kwargs["icon_custom_emoji_id"] = custom_id
+        return KeyboardButton(**kwargs)
+
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Профиль"), KeyboardButton(text="Подключиться")],
-            [KeyboardButton(text="Купить VPN"), KeyboardButton(text="Устройства")],
+            [button("🏠 Главное меню", 0)],
             [
-                KeyboardButton(text="Пригласить друга"),
-                KeyboardButton(text="Помощь"),
+                button("👤 Профиль", 1),
+                button("🔗 Подключиться", 2),
+            ],
+            [
+                button("💳 Купить VPN", 3, PACK_CRYPTO),
+                button("📱 Устройства", 4),
+            ],
+            [
+                button("👥 Пригласить друга", 5),
+                button("🆘 Помощь", 6),
             ],
         ],
         resize_keyboard=True,
         is_persistent=True,
+        one_time_keyboard=False,
         input_field_placeholder="MGN VPN",
+    )
+
+
+def red_inline_button(
+    text: str,
+    *,
+    callback_data: str | None = None,
+    url: str | None = None,
+) -> InlineKeyboardButton:
+    return InlineKeyboardButton(
+        text=text,
+        callback_data=callback_data,
+        url=url,
+        style="danger",
     )
 
 
@@ -141,11 +178,10 @@ def plans_keyboard(config: Config) -> Any:
     kb = InlineKeyboardBuilder()
     for code, plan in PLANS.items():
         kb.row(
-            InlineKeyboardButton(
-                text=(
-                    f'{plan["name"]} · до {plan["devices"]} устройств · '
-                    f'{plan_price_rub(config, code)} ₽'
-                ),
+            red_inline_button(
+                "💳 "
+                + f'{plan["name"]} · до {plan["devices"]} устройств · '
+                + f'{plan_price_rub(config, code)} ₽',
                 callback_data=f"plan:{code}",
             )
         )
@@ -155,18 +191,18 @@ def plans_keyboard(config: Config) -> Any:
 def payment_methods_keyboard(config: Config, code: str) -> Any:
     kb = InlineKeyboardBuilder()
     kb.row(
-        InlineKeyboardButton(
-            text=f"СБП · {plan_price_rub(config, code)} ₽",
+        red_inline_button(
+            f"🏦 СБП · {plan_price_rub(config, code)} ₽",
             callback_data=f"sbp:{code}",
         )
     )
     kb.row(
-        InlineKeyboardButton(
-            text=f"Telegram Stars · {plan_price_stars(config, code)}",
+        red_inline_button(
+            f"⭐ Telegram Stars · {plan_price_stars(config, code)}",
             callback_data=f"stars:{code}",
         )
     )
-    kb.row(InlineKeyboardButton(text="Назад", callback_data="plans"))
+    kb.row(red_inline_button("⬅️ Назад", callback_data="plans"))
     return kb.as_markup()
 
 
