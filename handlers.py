@@ -127,7 +127,7 @@ def main_keyboard(
     custom_icons: bool = True,
 ) -> ReplyKeyboardMarkup:
     def button(text: str, index: int, pack: str = PACK_UI) -> KeyboardButton:
-        kwargs: dict[str, Any] = {"text": text, "style": "danger"}
+        kwargs: dict[str, Any] = {"text": text, "style": "primary"}
         if custom_icons:
             custom_id = emoji.raw_id(index, pack=pack)
             if custom_id:
@@ -136,19 +136,19 @@ def main_keyboard(
 
     return ReplyKeyboardMarkup(
         keyboard=[
+            [button("🔗 Подключить VPN", 2)],
             [
-                button("🏠 Главное", 0),
-                button("💎 Купить VPN", 1, PACK_CRYPTO),
-            ],
-            [
-                button("🔗 Подключиться", 2),
                 button("👤 Профиль", 3),
+                button("ℹ️ Информация", 6),
             ],
             [
+                button("💎 Купить VPN", 1, PACK_CRYPTO),
                 button("📱 Устройства", 4),
-                button("👥 Друзья", 5),
             ],
-            [button("🆘 Помощь", 6)],
+            [
+                button("👥 Друзья", 5),
+                button("🆘 Поддержка", 7),
+            ],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -157,7 +157,7 @@ def main_keyboard(
     )
 
 
-def red_inline_button(
+def blue_inline_button(
     text: str,
     *,
     callback_data: str | None = None,
@@ -167,7 +167,7 @@ def red_inline_button(
         text=text,
         callback_data=callback_data,
         url=url,
-        style="danger",
+        style="primary",
     )
 
 
@@ -177,8 +177,8 @@ def add_nav_buttons(
     back_data: str = "home",
 ) -> None:
     kb.row(
-        red_inline_button("⬅️ Назад", callback_data=back_data),
-        red_inline_button("🏠 Главное меню", callback_data="home"),
+        blue_inline_button("⬅️ Назад", callback_data=back_data),
+        blue_inline_button("🏠 Главное меню", callback_data="home"),
     )
 
 
@@ -192,7 +192,7 @@ def plans_keyboard(config: Config) -> Any:
     kb = InlineKeyboardBuilder()
     for code, plan in PLANS.items():
         kb.row(
-            red_inline_button(
+            blue_inline_button(
                 "💳 "
                 + f'{plan["name"]} · до {plan["devices"]} устройств · '
                 + f'{plan_price_rub(config, code)} ₽',
@@ -206,13 +206,13 @@ def plans_keyboard(config: Config) -> Any:
 def payment_methods_keyboard(config: Config, code: str) -> Any:
     kb = InlineKeyboardBuilder()
     kb.row(
-        red_inline_button(
+        blue_inline_button(
             f"🏦 СБП · {plan_price_rub(config, code)} ₽",
             callback_data=f"sbp:{code}",
         )
     )
     kb.row(
-        red_inline_button(
+        blue_inline_button(
             f"⭐ Telegram Stars · {plan_price_stars(config, code)}",
             callback_data=f"stars:{code}",
         )
@@ -228,43 +228,43 @@ def profile_text(
     provider_ok: bool,
     config: Config,
 ) -> str:
-    username = (
-        f'@{html.escape(user["username"])}'
-        if user.get("username")
-        else html.escape(user.get("first_name") or "Пользователь")
-    )
     user_id = int(user["telegram_id"])
     active = is_active(user)
     max_devices = int(user.get("max_devices") or 1)
     devices_count = len(state.devices)
+    plan = html.escape(user.get("plan_name") or "—")
 
     e_profile = emoji.icon(0, pack=PACK_UI)
     e_sub = emoji.icon(1, pack=PACK_CRYPTO)
-    e_device = emoji.icon(2, pack=PACK_UI)
 
     lines = [
-        f"{e_profile} <b>Профиль</b>",
-        f"{username}  ·  <code>{user_id}</code>",
+        f"{e_profile} <b>Ваш ID:</b> <code>{user_id}</code>",
         "",
-        f"{e_sub} <b>{'Подписка активна' if active else 'Подписка не активна'}</b>",
+        f"{e_sub} <b>Информация о подписке:</b>",
+        f"├ Статус: <b>{'Активна' if active else 'Не активна'}</b>",
     ]
 
     if active:
         lines += [
-            f"{html.escape(user.get('plan_name') or 'VPN')}  ·  до <b>{format_until(user, config)}</b>",
-            f"Осталось <b>{remaining_text(user)}</b>",
+            f"├ Тариф: <b>{plan}</b>",
+            f"├ Действует до: <b>{format_until(user, config)}</b>",
+            f"├ Осталось: <b>{remaining_text(user)}</b>",
+            f"└ Устройства: <b>{devices_count}/{max_devices}</b>",
         ]
     else:
-        trial = "Можно активировать пробный доступ" if not user.get("trial_used") else "Пробный доступ уже использован"
-        lines += [trial]
+        if user.get("trial_used"):
+            trial = "использован"
+        else:
+            trial = "доступен после подписки на канал"
+        lines += [
+            f"├ Пробный доступ: <b>{trial}</b>",
+            f"└ Устройства: <b>до {max_devices}</b>",
+        ]
 
     lines += [
         "",
-        f"{e_device} Устройства  <b>{devices_count}/{max_devices}</b>",
+        "Получить доступ можно кнопкой <b>«🔗 Подключить VPN»</b> ниже.",
     ]
-
-    if active:
-        lines += [f"Сервер  <b>{html.escape(state.server)}</b>"]
 
     if not provider_ok and active:
         lines += ["", "<i>Сервер временно не отвечает.</i>"]
@@ -307,6 +307,35 @@ def build_router(
             await bot.delete_message(chat_id, message_id)
         except Exception:
             pass
+
+    async def is_trial_channel_member(bot, user_id: int) -> bool:
+        try:
+            member = await bot.get_chat_member(
+                chat_id=config.trial_channel_username,
+                user_id=user_id,
+            )
+        except Exception:
+            return False
+
+        status = getattr(member.status, "value", str(member.status))
+        return status in {"member", "administrator", "creator"}
+
+    def trial_channel_keyboard() -> Any:
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "📢 Подписаться на канал",
+                url=config.trial_channel_url,
+            )
+        )
+        kb.row(
+            blue_inline_button(
+                "✅ Проверить подписку",
+                callback_data="trialcheck",
+            )
+        )
+        add_nav_buttons(kb, back_data="home")
+        return kb.as_markup()
 
     async def send_screen(
         message: Message,
@@ -390,40 +419,43 @@ def build_router(
     async def show_home(message: Message, actor) -> None:
         user = await ensure_actor(actor)
         state, ok = await load_state(user, provider, config)
-        count = await db.referral_count(actor.id)
         active = is_active(user)
-        username = (
-            f'@{html.escape(user["username"])}'
-            if user.get("username")
-            else html.escape(user.get("first_name") or "Пользователь")
-        )
 
         e_logo = emoji.icon(0, pack=PACK_CRYPTO)
         e_sub = emoji.icon(1, pack=PACK_CRYPTO)
-        e_users = emoji.icon(3, pack=PACK_UI)
 
         lines = [
             f"{e_logo} <b>MGN VPN</b>",
-            f"{username}",
+            "Простой доступ к VPN прямо в Telegram.",
             "",
-            f"{e_sub} <b>{'VPN подключён' if active else 'VPN не подключён'}</b>",
+            f"{e_sub} <b>Подписка:</b>",
+            f"├ Статус: <b>{'Активна' if active else 'Не активна'}</b>",
         ]
 
         if active:
             lines += [
-                f"{html.escape(user.get('plan_name') or 'VPN')}  ·  до <b>{format_until(user, config)}</b>",
-                f"Устройства  <b>{len(state.devices)}/{int(user.get('max_devices') or 1)}</b>",
+                f"├ Тариф: <b>{html.escape(user.get('plan_name') or 'VPN')}</b>",
+                f"├ До: <b>{format_until(user, config)}</b>",
+                f"└ Устройства: <b>{len(state.devices)}/{int(user.get('max_devices') or 1)}</b>",
+            ]
+        elif not user.get("trial_used"):
+            channel = html.escape(config.trial_channel_username)
+            lines += [
+                "└ Пробный доступ: <b>доступен</b>",
+                "",
+                "🎁 <b>Пробная подписка</b>",
+                f"Чтобы активировать её, подпишитесь на канал <b>{channel}</b>.",
+                "После подписки нажмите <b>«🔗 Подключить VPN»</b>.",
             ]
         else:
             lines += [
-                "Активируйте пробный доступ или выберите подписку.",
+                "└ Пробный доступ: <b>уже использован</b>",
+                "",
+                "Выберите платную подписку кнопкой <b>«💎 Купить VPN»</b>.",
             ]
 
-        if count:
-            lines += ["", f"{e_users} Приглашено друзей  <b>{count}</b>"]
-
         if not ok and active:
-            lines += ["", "<i>Сервер временно не отвечает.</i>"]
+            lines += ["", "<i>VPN-сервер временно не отвечает.</i>"]
 
         await send_screen(
             message,
@@ -589,9 +621,9 @@ def build_router(
             return
 
         kb = InlineKeyboardBuilder()
-        kb.row(red_inline_button("🏦 Оплатить по СБП", url=pay_url))
+        kb.row(blue_inline_button("🏦 Оплатить по СБП", url=pay_url))
         kb.row(
-            red_inline_button(
+            blue_inline_button(
                 "✅ Проверить оплату",
                 callback_data=f"checksbp:{payment_id}",
             )
@@ -742,31 +774,39 @@ def build_router(
 
         await show_profile(message, message.from_user)
 
-    @router.message(F.text.in_({"🔗 Подключиться", "Подключиться"}))
+    @router.message(F.text.in_({"🔗 Подключить VPN", "🔗 Подключиться", "Подключить VPN", "Подключиться"}))
     async def connect(message: Message) -> None:
         user = await ensure_actor(message.from_user)
         if not is_active(user):
             kb = InlineKeyboardBuilder()
             if not user.get("trial_used"):
                 kb.row(
-                    red_inline_button(
-                        "🎁 Получить пробный VPN",
+                    blue_inline_button(
+                        "🎁 Активировать пробный VPN",
                         callback_data="trial",
                     )
                 )
             kb.row(
-                red_inline_button(
-                    "💳 Купить VPN",
+                blue_inline_button(
+                    "💎 Купить подписку",
                     callback_data="plans",
                 )
             )
             add_nav_buttons(kb, back_data="home")
-            e = emoji.icon(5, pack=PACK_UI)
+
+            trial_note = ""
+            if not user.get("trial_used"):
+                trial_note = (
+                    "\n\nДля пробного доступа сначала подпишитесь на "
+                    f"<b>{html.escape(config.trial_channel_username)}</b>."
+                )
+
             await send_screen(
                 message,
                 message.from_user,
-                f"{e} <b>Подписка не активна</b>\n\n"
-                "Активируйте пробный доступ или выберите тариф.",
+                "🔗 <b>Подключение VPN</b>\n\n"
+                "У вас пока нет активной подписки."
+                + trial_note,
                 reply_markup=kb.as_markup(),
             )
             return
@@ -776,15 +816,15 @@ def build_router(
             await send_screen(
                 message,
                 message.from_user,
-                "<b>Ссылка подключения пока недоступна.</b>\n"
-                "Попробуйте ещё раз немного позже.",
+                "🔗 <b>Подключение VPN</b>\n\n"
+                "Ссылка подключения пока недоступна. Попробуйте немного позже.",
                 reply_markup=section_nav_keyboard(),
             )
             return
 
         kb = InlineKeyboardBuilder()
         kb.row(
-            red_inline_button(
+            blue_inline_button(
                 "🔗 Открыть подключение",
                 url=state.subscription_url,
             )
@@ -797,10 +837,11 @@ def build_router(
             reply_markup=kb.as_markup(),
         )
 
-    @router.callback_query(F.data == "trial")
+    @router.callback_query(F.data.in_({"trial", "trialcheck"}))
     async def trial(callback: CallbackQuery) -> None:
         if not callback.message:
             return
+
         user = await ensure_actor(callback.from_user)
         if user.get("trial_used"):
             await callback.answer(
@@ -812,6 +853,25 @@ def build_router(
             await callback.answer(
                 "У вас уже есть активная подписка.",
                 show_alert=True,
+            )
+            return
+
+        subscribed = await is_trial_channel_member(
+            callback.message.bot,
+            callback.from_user.id,
+        )
+        if not subscribed:
+            await callback.answer(
+                "Сначала подпишитесь на канал.",
+                show_alert=True,
+            )
+            await send_screen(
+                callback.message,
+                callback.from_user,
+                "🎁 <b>Пробная подписка</b>\n\n"
+                f"Для активации подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>.\n"
+                "После подписки нажмите <b>«✅ Проверить подписку»</b>.",
+                reply_markup=trial_channel_keyboard(),
             )
             return
 
@@ -872,7 +932,7 @@ def build_router(
                 device_id = str(item.get("id") or item.get("device_id") or "")
                 if device_id and len(device_id.encode("utf-8")) <= 36:
                     kb.row(
-                        red_inline_button(
+                        blue_inline_button(
                             f"❌ Отключить устройство {i}",
                             callback_data=f"deldev:{device_id}",
                         )
@@ -926,7 +986,7 @@ def build_router(
         )
 
         kb = InlineKeyboardBuilder()
-        kb.row(red_inline_button("👥 Поделиться", url=share_url))
+        kb.row(blue_inline_button("👥 Поделиться", url=share_url))
         add_nav_buttons(kb, back_data="home")
 
         e = emoji.icon(8, pack=PACK_UI)
@@ -939,16 +999,40 @@ def build_router(
             reply_markup=kb.as_markup(),
         )
 
-    @router.message(F.text.in_({"🆘 Помощь", "Помощь"}))
+    @router.message(F.text.in_({"ℹ️ Информация", "Информация"}))
+    async def information_screen(message: Message) -> None:
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "📢 Канал MGN VPN",
+                url=config.trial_channel_url,
+            )
+        )
+        add_nav_buttons(kb, back_data="home")
+
+        e = emoji.icon(9, pack=PACK_UI)
+        await send_screen(
+            message,
+            message.from_user,
+            f"{e} <b>Информация</b>\n\n"
+            "🔐 Доступ выдаётся по персональной ссылке.\n"
+            "📱 Платная подписка — до <b>5 устройств</b>.\n"
+            "🎁 Пробный доступ можно активировать один раз после подписки на наш Telegram-канал.\n"
+            "⚙️ Управление подпиской и устройствами находится прямо в боте.",
+            reply_markup=kb.as_markup(),
+        )
+
+    @router.message(F.text.in_({"🆘 Поддержка", "🆘 Помощь", "Поддержка", "Помощь"}))
     async def help_screen(message: Message) -> None:
         e = emoji.icon(9, pack=PACK_UI)
         await send_screen(
             message,
             message.from_user,
-            f"{e} <b>Помощь</b>\n\n"
-            "Выберите подписку → оплатите → нажмите <b>«Подключиться»</b>.\n\n"
-            "После этого откройте персональную ссылку на нужном устройстве.\n"
-            "Подключённые устройства можно удалить в разделе <b>«Устройства»</b>.",
+            f"{e} <b>Поддержка</b>\n\n"
+            "1. Активируйте пробный доступ или купите подписку.\n"
+            "2. Нажмите <b>«🔗 Подключить VPN»</b>.\n"
+            "3. Откройте персональную ссылку на нужном устройстве.\n\n"
+            "Подключённые устройства можно отключить в разделе <b>«📱 Устройства»</b>.",
             reply_markup=section_nav_keyboard(),
         )
 
@@ -958,15 +1042,15 @@ def build_router(
     def admin_main_keyboard() -> Any:
         kb = InlineKeyboardBuilder()
         kb.row(
-            red_inline_button("📊 Статистика", callback_data="admin:stats"),
-            red_inline_button("👥 Пользователи", callback_data="admin:users"),
+            blue_inline_button("📊 Статистика", callback_data="admin:stats"),
+            blue_inline_button("👥 Пользователи", callback_data="admin:users"),
         )
         kb.row(
-            red_inline_button("💳 Платежи", callback_data="admin:payments"),
-            red_inline_button("⚙️ Система", callback_data="admin:system"),
+            blue_inline_button("💳 Платежи", callback_data="admin:payments"),
+            blue_inline_button("⚙️ Система", callback_data="admin:system"),
         )
         kb.row(
-            red_inline_button("🏠 Главное меню", callback_data="home"),
+            blue_inline_button("🏠 Главное меню", callback_data="home"),
         )
         return kb.as_markup()
 
@@ -994,8 +1078,8 @@ def build_router(
     async def show_admin_stats(message: Message, actor) -> None:
         stats = await db.admin_overview()
         kb = InlineKeyboardBuilder()
-        kb.row(red_inline_button("🔄 Обновить", callback_data="admin:stats"))
-        kb.row(red_inline_button("⬅️ Админка", callback_data="admin:home"))
+        kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:stats"))
+        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
 
         text = (
             "📊 <b>Статистика</b>\n\n"
@@ -1033,14 +1117,14 @@ def build_router(
                 mark = "✅" if active else "▫️"
                 lines.append(f"{mark} {html.escape(str(username))} · <code>{uid}</code>")
                 kb.row(
-                    red_inline_button(
+                    blue_inline_button(
                         f"👤 {str(username)[:28]}",
                         callback_data=f"admin:user:{uid}",
                     )
                 )
 
-        kb.row(red_inline_button("🔄 Обновить", callback_data="admin:users"))
-        kb.row(red_inline_button("⬅️ Админка", callback_data="admin:home"))
+        kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:users"))
+        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
         await send_screen(
             message,
             actor,
@@ -1070,15 +1154,15 @@ def build_router(
 
         kb = InlineKeyboardBuilder()
         kb.row(
-            red_inline_button("+7 дней", callback_data=f"admin:grant:{telegram_id}:7"),
-            red_inline_button("+30 дней", callback_data=f"admin:grant:{telegram_id}:30"),
+            blue_inline_button("+7 дней", callback_data=f"admin:grant:{telegram_id}:7"),
+            blue_inline_button("+30 дней", callback_data=f"admin:grant:{telegram_id}:30"),
         )
         kb.row(
-            red_inline_button("+90 дней", callback_data=f"admin:grant:{telegram_id}:90"),
-            red_inline_button("+365 дней", callback_data=f"admin:grant:{telegram_id}:365"),
+            blue_inline_button("+90 дней", callback_data=f"admin:grant:{telegram_id}:90"),
+            blue_inline_button("+365 дней", callback_data=f"admin:grant:{telegram_id}:365"),
         )
-        kb.row(red_inline_button("⬅️ Пользователи", callback_data="admin:users"))
-        kb.row(red_inline_button("🏠 Админка", callback_data="admin:home"))
+        kb.row(blue_inline_button("⬅️ Пользователи", callback_data="admin:users"))
+        kb.row(blue_inline_button("🏠 Админка", callback_data="admin:home"))
 
         text = (
             f"👤 <b>{username}</b>\n"
@@ -1119,8 +1203,8 @@ def build_router(
                     "",
                 ]
 
-        kb.row(red_inline_button("🔄 Обновить", callback_data="admin:payments"))
-        kb.row(red_inline_button("⬅️ Админка", callback_data="admin:home"))
+        kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:payments"))
+        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
         await send_screen(
             message,
             actor,
@@ -1134,8 +1218,8 @@ def build_router(
         vpn_ready = "✅" if config.vpn_mode != "demo" else "⚠️"
 
         kb = InlineKeyboardBuilder()
-        kb.row(red_inline_button("🔄 Обновить", callback_data="admin:system"))
-        kb.row(red_inline_button("⬅️ Админка", callback_data="admin:home"))
+        kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:system"))
+        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
 
         text = (
             "⚙️ <b>Система</b>\n\n"
