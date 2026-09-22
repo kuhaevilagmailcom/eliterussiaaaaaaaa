@@ -312,6 +312,106 @@ class Database:
             await db.commit()
             return cursor.rowcount == 1
 
+    async def admin_overview(self) -> dict[str, int]:
+        now = to_iso(utcnow())
+        day_ago = to_iso(utcnow() - timedelta(days=1))
+        week_ago = to_iso(utcnow() - timedelta(days=7))
+
+        async with aiosqlite.connect(self.path) as db:
+            total = (await (await db.execute(
+                "SELECT COUNT(*) FROM users"
+            )).fetchone())[0]
+            active = (await (await db.execute(
+                """
+                SELECT COUNT(*) FROM users
+                WHERE subscription_until IS NOT NULL
+                  AND subscription_until > ?
+                """,
+                (now,),
+            )).fetchone())[0]
+            new_24h = (await (await db.execute(
+                "SELECT COUNT(*) FROM users WHERE created_at >= ?",
+                (day_ago,),
+            )).fetchone())[0]
+            new_7d = (await (await db.execute(
+                "SELECT COUNT(*) FROM users WHERE created_at >= ?",
+                (week_ago,),
+            )).fetchone())[0]
+            trials = (await (await db.execute(
+                "SELECT COUNT(*) FROM users WHERE trial_used=1"
+            )).fetchone())[0]
+            sbp_paid = (await (await db.execute(
+                "SELECT COUNT(*) FROM sbp_payments WHERE status='paid'"
+            )).fetchone())[0]
+            sbp_revenue = (await (await db.execute(
+                "SELECT COALESCE(SUM(amount_rub), 0) FROM sbp_payments WHERE status='paid'"
+            )).fetchone())[0]
+            stars_revenue = (await (await db.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM payments"
+            )).fetchone())[0]
+
+        return {
+            "total": int(total),
+            "active": int(active),
+            "new_24h": int(new_24h),
+            "new_7d": int(new_7d),
+            "trials": int(trials),
+            "sbp_paid": int(sbp_paid),
+            "sbp_revenue": int(sbp_revenue),
+            "stars_revenue": int(stars_revenue),
+        }
+
+    async def recent_users(self, limit: int = 10) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 20))
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT telegram_id, username, first_name, created_at,
+                           subscription_until, plan_name, trial_used
+                    FROM users
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def recent_sbp_payments(self, limit: int = 10) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 20))
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT payment_id, telegram_id, plan_code, amount_rub,
+                           status, created_at, paid_at
+                    FROM sbp_payments
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def revoke_subscription(self, telegram_id: int) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE users
+                SET subscription_until=NULL,
+                    plan_name='',
+                    max_devices=1
+                WHERE telegram_id=?
+                """,
+                (telegram_id,),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
     async def stats(self) -> tuple[int, int]:
         now = to_iso(utcnow())
         async with aiosqlite.connect(self.path) as db:
