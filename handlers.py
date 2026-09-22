@@ -68,6 +68,8 @@ def remaining_text(user: dict[str, Any]) -> str:
     if not until:
         return "0 мин."
     seconds = max(0, int((until - utcnow()).total_seconds()))
+    if seconds == 0:
+        return "0 мин."
     if seconds < 3600:
         return f"{max(1, seconds // 60)} мин."
     hours = seconds // 3600
@@ -101,7 +103,10 @@ async def load_state(
     try:
         return await provider.get_state(user), True
     except Exception:
-        return fallback_state(user, config), False
+        try:
+            return await provider.provision(user), True
+        except Exception:
+            return fallback_state(user, config), False
 
 
 def profile_text(
@@ -312,7 +317,7 @@ def build_router(
                 "Подписка создана, но VPN-панель пока недоступна. Нажмите «Обновить» позже.",
                 show_alert=True,
             )
-        await send_profile_message(callback.message, edit=True)
+        await send_profile_message(callback.message, callback.from_user, edit=True)
 
     @router.callback_query(F.data == "plans")
     async def plans(callback: CallbackQuery) -> None:
