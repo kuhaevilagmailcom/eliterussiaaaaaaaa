@@ -793,8 +793,9 @@ def build_router(
             await send_screen(
                 message,
                 message.from_user,
-                f"{e} <b>Подписка не активна</b>\n\n"
-                "Получите пробный доступ или выберите подписку.",
+                f"{e} <b>Подписка не активна</b>\n"
+                "<code>ДОСТУП К VPN</code>\n\n"
+                "Активируйте пробный доступ или выберите подходящий тариф.",
                 reply_markup=kb.as_markup(),
             )
             return
@@ -871,7 +872,9 @@ def build_router(
             await send_screen(
                 message,
                 message.from_user,
-                "<b>Нет активной подписки.</b>",
+                "<b>Устройства</b>\n"
+                "<code>УПРАВЛЕНИЕ ПОДКЛЮЧЕНИЯМИ</code>\n\n"
+                "Список устройств станет доступен после активации подписки.",
                 reply_markup=section_nav_keyboard(),
             )
             return
@@ -880,8 +883,9 @@ def build_router(
         e = emoji.icon(7, pack=PACK_UI)
         lines = [
             f"{e} <b>Устройства</b>",
+            "<code>УПРАВЛЕНИЕ ПОДКЛЮЧЕНИЯМИ</code>",
             "",
-            f"Подключено: <b>{len(state.devices)} / {int(user.get('max_devices') or 1)}</b>",
+            f"Подключено: <b>{len(state.devices)} из {int(user.get('max_devices') or 1)}</b>",
         ]
         kb = InlineKeyboardBuilder()
 
@@ -905,7 +909,10 @@ def build_router(
                         )
                     )
         else:
-            lines += ["", "Подключённых устройств пока нет."]
+            lines += [
+                "",
+                "<i>Подключённых устройств пока нет. Они появятся здесь после первого подключения.</i>",
+            ]
 
         if not ok:
             lines += ["", "<i>Сервер устройств временно не ответил.</i>"]
