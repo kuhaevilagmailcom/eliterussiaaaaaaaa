@@ -55,9 +55,6 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_users_subscription_until
                 ON users(subscription_until);
 
-                CREATE INDEX IF NOT EXISTS idx_users_referrer_id
-                ON users(referrer_id);
-
                 CREATE TABLE IF NOT EXISTS payments (
                     telegram_payment_charge_id TEXT PRIMARY KEY,
                     telegram_id INTEGER NOT NULL,
@@ -94,6 +91,11 @@ class Database:
                 await db.execute(
                     "ALTER TABLE users ADD COLUMN last_menu_message_id INTEGER"
                 )
+
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_referrer_id "
+                "ON users(referrer_id)"
+            )
             await db.commit()
 
     async def ensure_user(
