@@ -174,6 +174,23 @@ def red_inline_button(
     )
 
 
+def add_nav_buttons(
+    kb: InlineKeyboardBuilder,
+    *,
+    back_data: str = "home",
+) -> None:
+    kb.row(
+        red_inline_button("⬅️ Назад", callback_data=back_data),
+        red_inline_button("🏠 Главное меню", callback_data="home"),
+    )
+
+
+def section_nav_keyboard(*, back_data: str = "home") -> Any:
+    kb = InlineKeyboardBuilder()
+    add_nav_buttons(kb, back_data=back_data)
+    return kb.as_markup()
+
+
 def plans_keyboard(config: Config) -> Any:
     kb = InlineKeyboardBuilder()
     for code, plan in PLANS.items():
@@ -185,6 +202,7 @@ def plans_keyboard(config: Config) -> Any:
                 callback_data=f"plan:{code}",
             )
         )
+    add_nav_buttons(kb, back_data="home")
     return kb.as_markup()
 
 
@@ -202,7 +220,7 @@ def payment_methods_keyboard(config: Config, code: str) -> Any:
             callback_data=f"stars:{code}",
         )
     )
-    kb.row(red_inline_button("⬅️ Назад", callback_data="plans"))
+    add_nav_buttons(kb, back_data="plans")
     return kb.as_markup()
 
 
@@ -410,7 +428,7 @@ def build_router(
             message,
             actor,
             profile_text(user, state, emoji, ok, config),
-            bottom_menu=True,
+            reply_markup=section_nav_keyboard(),
         )
 
     async def activate_paid_plan(telegram_id: int, code: str) -> dict[str, Any]:
@@ -442,6 +460,12 @@ def build_router(
     @router.message(F.text.in_({"🏠 Главное меню", "Главное меню"}))
     async def home(message: Message) -> None:
         await show_home(message, message.from_user)
+
+    @router.callback_query(F.data == "home")
+    async def home_callback(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if callback.message:
+            await show_home(callback.message, callback.from_user)
 
     @router.message(Command("ping"))
     async def ping(message: Message) -> None:
@@ -560,7 +584,7 @@ def build_router(
                 callback_data=f"checksbp:{payment_id}",
             )
         )
-        kb.row(red_inline_button("⬅️ Назад", callback_data=f"plan:{code}"))
+        add_nav_buttons(kb, back_data=f"plan:{code}")
 
         e = emoji.icon(4, pack=PACK_CRYPTO)
         await send_screen(
@@ -725,6 +749,7 @@ def build_router(
                     callback_data="plans",
                 )
             )
+            add_nav_buttons(kb, back_data="home")
             e = emoji.icon(5, pack=PACK_UI)
             await send_screen(
                 message,
@@ -742,7 +767,7 @@ def build_router(
                 message.from_user,
                 "<b>Ссылка подключения пока недоступна.</b>\n"
                 "Попробуйте ещё раз немного позже.",
-                bottom_menu=True,
+                reply_markup=section_nav_keyboard(),
             )
             return
 
@@ -753,6 +778,7 @@ def build_router(
                 url=state.subscription_url,
             )
         )
+        add_nav_buttons(kb, back_data="home")
         await send_screen(
             message,
             message.from_user,
@@ -807,7 +833,7 @@ def build_router(
                 message,
                 message.from_user,
                 "<b>Нет активной подписки.</b>",
-                bottom_menu=True,
+                reply_markup=section_nav_keyboard(),
             )
             return
 
@@ -845,12 +871,12 @@ def build_router(
         if not ok:
             lines += ["", "<i>Сервер устройств временно не ответил.</i>"]
 
+        add_nav_buttons(kb, back_data="home")
         await send_screen(
             message,
             message.from_user,
             "\n".join(lines),
-            reply_markup=kb.as_markup() if state.devices else None,
-            bottom_menu=not state.devices,
+            reply_markup=kb.as_markup(),
         )
 
     @router.callback_query(F.data.startswith("deldev:"))
@@ -886,6 +912,7 @@ def build_router(
 
         kb = InlineKeyboardBuilder()
         kb.row(red_inline_button("👥 Поделиться", url=share_url))
+        add_nav_buttons(kb, back_data="home")
 
         e = emoji.icon(8, pack=PACK_UI)
         await send_screen(
@@ -910,7 +937,7 @@ def build_router(
             "4. Откройте персональную ссылку на нужном устройстве.\n\n"
             "Если устройство больше не используется, его можно отключить "
             "в разделе «Устройства».",
-            bottom_menu=True,
+            reply_markup=section_nav_keyboard(),
         )
 
     @router.message(Command("paystatus"))
