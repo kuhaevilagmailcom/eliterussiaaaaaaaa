@@ -303,15 +303,37 @@ def build_router(
         if message.from_user and not message.from_user.is_bot:
             await safe_delete(message.chat.id, message.message_id, message.bot)
 
-        edit_markup = None if bottom_menu else reply_markup
+        # ReplyKeyboardMarkup cannot be added by editing an old message.
+        # When we need the persistent bottom menu, replace the old screen
+        # with a freshly sent message carrying the keyboard.
+        if bottom_menu:
+            if last_id:
+                await safe_delete(message.chat.id, int(last_id), message.bot)
 
+            try:
+                sent = await message.bot.send_message(
+                    message.chat.id,
+                    text,
+                    reply_markup=main_keyboard(emoji),
+                )
+            except TelegramBadRequest:
+                sent = await message.bot.send_message(
+                    message.chat.id,
+                    strip_custom_emoji(text),
+                    reply_markup=main_keyboard(emoji, custom_icons=False),
+                )
+
+            await db.set_last_menu_message(actor.id, sent.message_id)
+            return sent
+
+        # For ordinary sections, keep one bot message and edit it in place.
         if last_id:
             try:
                 edited = await message.bot.edit_message_text(
                     chat_id=message.chat.id,
                     message_id=int(last_id),
                     text=text,
-                    reply_markup=edit_markup,
+                    reply_markup=reply_markup,
                 )
                 return edited
             except TelegramBadRequest as exc:
@@ -322,7 +344,7 @@ def build_router(
                         chat_id=message.chat.id,
                         message_id=int(last_id),
                         text=strip_custom_emoji(text),
-                        reply_markup=edit_markup,
+                        reply_markup=reply_markup,
                     )
                     return edited
                 except Exception:
@@ -330,23 +352,17 @@ def build_router(
             except Exception:
                 await safe_delete(message.chat.id, int(last_id), message.bot)
 
-        markup = main_keyboard(emoji) if bottom_menu else reply_markup
         try:
             sent = await message.bot.send_message(
                 message.chat.id,
                 text,
-                reply_markup=markup,
+                reply_markup=reply_markup,
             )
         except TelegramBadRequest:
-            fallback_markup = (
-                main_keyboard(emoji, custom_icons=False)
-                if bottom_menu
-                else reply_markup
-            )
             sent = await message.bot.send_message(
                 message.chat.id,
                 strip_custom_emoji(text),
-                reply_markup=fallback_markup,
+                reply_markup=reply_markup,
             )
 
         await db.set_last_menu_message(actor.id, sent.message_id)
