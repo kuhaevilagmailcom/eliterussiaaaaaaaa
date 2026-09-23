@@ -60,6 +60,7 @@ class Database:
                     payment_id TEXT PRIMARY KEY,
                     order_id TEXT NOT NULL UNIQUE,
                     telegram_id INTEGER NOT NULL,
+                    target_telegram_id INTEGER,
                     plan_code TEXT NOT NULL,
                     amount_rub INTEGER NOT NULL,
                     status TEXT NOT NULL DEFAULT 'created',
@@ -69,6 +70,18 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_sbp_payments_user
                 ON sbp_payments(telegram_id, created_at);
+
+                CREATE TABLE IF NOT EXISTS star_payments (
+                    telegram_payment_charge_id TEXT PRIMARY KEY,
+                    buyer_telegram_id INTEGER NOT NULL,
+                    target_telegram_id INTEGER NOT NULL,
+                    plan_code TEXT NOT NULL,
+                    stars INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_star_payments_buyer
+                ON star_payments(buyer_telegram_id, created_at);
 
                 CREATE TABLE IF NOT EXISTS diamond_ledger (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,6 +140,17 @@ class Database:
                     "ALTER TABLE users ADD COLUMN bonus_devices INTEGER NOT NULL DEFAULT 0"
                 )
 
+            sbp_columns = {
+                row[1]
+                for row in await (
+                    await db.execute("PRAGMA table_info(sbp_payments)")
+                ).fetchall()
+            }
+            if "target_telegram_id" not in sbp_columns:
+                await db.execute(
+                    "ALTER TABLE sbp_payments ADD COLUMN target_telegram_id INTEGER"
+                )
+
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_users_referrer_id "
                 "ON users(referrer_id)"
@@ -168,6 +192,29 @@ class Database:
         if row is None:
             raise KeyError(f"User {telegram_id} not found")
         return dict(row)
+
+
+    async def get_user_by_username(
+        self,
+        username: str,
+    ) -> dict[str, Any] | None:
+        username = username.strip().lstrip("@")
+        if not username:
+            return None
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (
+                await db.execute(
+                    """
+                    SELECT * FROM users
+                    WHERE username IS NOT NULL
+                      AND LOWER(username)=LOWER(?)
+                    LIMIT 1
+                    """,
+                    (username,),
+                )
+            ).fetchone()
+        return dict(row) if row else None
 
     async def set_referrer_once(
         self,
@@ -710,19 +757,21 @@ class Database:
         telegram_id: int,
         plan_code: str,
         amount_rub: int,
+        target_telegram_id: int | None = None,
     ) -> None:
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO sbp_payments (
-                    payment_id, order_id, telegram_id, plan_code,
-                    amount_rub, status, created_at, paid_at
-                ) VALUES (?, ?, ?, ?, ?, 'created', ?, NULL)
+                    payment_id, order_id, telegram_id, target_telegram_id,
+                    plan_code, amount_rub, status, created_at, paid_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'created', ?, NULL)
                 """,
                 (
                     payment_id,
                     order_id,
                     telegram_id,
+                    target_telegram_id or telegram_id,
                     plan_code,
                     amount_rub,
                     to_iso(utcnow()),
@@ -762,6 +811,38 @@ class Database:
             await db.commit()
             return cursor.rowcount == 1
 
+    async def record_star_payment(
+        self,
+        telegram_payment_charge_id: str,
+        buyer_telegram_id: int,
+        target_telegram_id: int,
+        plan_code: str,
+        stars: int,
+    ) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                INSERT OR IGNORE INTO star_payments (
+                    telegram_payment_charge_id,
+                    buyer_telegram_id,
+                    target_telegram_id,
+                    plan_code,
+                    stars,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    telegram_payment_charge_id,
+                    buyer_telegram_id,
+                    target_telegram_id,
+                    plan_code,
+                    int(stars),
+                    to_iso(utcnow()),
+                ),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
     async def admin_overview(self) -> dict[str, int]:
         now = to_iso(utcnow())
         day_ago = to_iso(utcnow() - timedelta(days=1))
@@ -796,6 +877,12 @@ class Database:
             sbp_revenue = (await (await db.execute(
                 "SELECT COALESCE(SUM(amount_rub), 0) FROM sbp_payments WHERE status='paid'"
             )).fetchone())[0]
+            star_paid = (await (await db.execute(
+                "SELECT COUNT(*) FROM star_payments"
+            )).fetchone())[0]
+            star_revenue = (await (await db.execute(
+                "SELECT COALESCE(SUM(stars), 0) FROM star_payments"
+            )).fetchone())[0]
 
         return {
             "total": int(total),
@@ -805,6 +892,8 @@ class Database:
             "trials": int(trials),
             "sbp_paid": int(sbp_paid),
             "sbp_revenue": int(sbp_revenue),
+            "star_paid": int(star_paid),
+            "star_revenue": int(star_revenue),
         }
 
     async def recent_users(self, limit: int = 10) -> list[dict[str, Any]]:
