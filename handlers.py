@@ -2380,74 +2380,162 @@ def build_router(
             reply_markup=section_nav_keyboard(),
         )
 
-    def is_admin(user_id: int) -> bool:
-        return user_id in config.admin_ids
+    def admin_role_label(role: str | None) -> str:
+        return {
+            "owner": "Владелец",
+            "full": "Полная",
+            "limited": "Ограниченная",
+        }.get(role or "", "Нет")
 
-    def admin_main_keyboard() -> Any:
+    def format_joined(value: str | None) -> str:
+        dt = from_iso(value)
+        if not dt:
+            return "—"
+        return dt.astimezone(config.display_tz).strftime("%d.%m.%Y %H:%M")
+
+    def admin_main_keyboard(role: str) -> Any:
         kb = InlineKeyboardBuilder()
         kb.row(
-            blue_inline_button("📊 Статистика", callback_data="admin:stats"),
+            blue_inline_button("📊 Сводка", callback_data="admin:stats"),
             blue_inline_button("👥 Пользователи", callback_data="admin:users"),
         )
         kb.row(
             blue_inline_button("💳 Платежи", callback_data="admin:payments"),
-            blue_inline_button("💎 Бонусы", callback_data="admin:bonuses"),
         )
-        kb.row(
-            blue_inline_button("⚙️ Система", callback_data="admin:system"),
-        )
+        if role in {"owner", "full"}:
+            kb.row(
+                blue_inline_button("💎 Бонусы", callback_data="admin:bonuses"),
+                blue_inline_button("⚙️ Система", callback_data="admin:system"),
+            )
+        if role == "owner":
+            kb.row(
+                blue_inline_button("🛡 Администраторы", callback_data="admin:admins"),
+            )
         kb.row(
             blue_inline_button("🏠 Главное меню", callback_data="home"),
         )
         return kb.as_markup()
 
     async def show_admin(message: Message, actor) -> None:
-        stats = await db.admin_overview()
-        pay_status = "работает" if config.rollypay_enabled else "не настроена"
-        vpn_status = config.vpn_mode.upper()
+        role = await get_admin_role(actor.id)
+        if not role:
+            return
 
-        text = (
-            "🛡 <b>Админ-панель MGN VPN</b>\n\n"
-            f"👥 Пользователи: <b>{stats['total']}</b>\n"
-            f"✅ Активные подписки: <b>{stats['active']}</b>\n"
-            f"🆕 За 24 часа: <b>+{stats['new_24h']}</b>\n\n"
-            f"💳 СБП: <b>{pay_status}</b>\n"
-            f"⭐ Telegram Stars: <b>включены</b>\n"
-            f"🌐 VPN: <b>{vpn_status}</b>\n\n"
-            "<i>Выберите раздел.</i>"
+        stats = await db.admin_overview()
+        recent = await db.recent_users(5)
+        pay_status = "работает" if config.rollypay_enabled else "не настроена"
+        vpn_status = (
+            "готов"
+            if getattr(provider, "service_ready", True)
+            else "ожидает серверы"
         )
+
+        lines = [
+            "🛡 <b>Админ-панель MGN VPN</b>",
+            f"Доступ: <b>{admin_role_label(role)}</b>",
+            "",
+            "📊 <b>Сводка</b>",
+            f"├ Всего пользователей: <b>{stats['total']}</b>",
+            f"├ Активных подписок: <b>{stats['active']}</b>",
+            f"├ Платных активных: <b>{stats['active_paid']}</b>",
+            f"├ Новых за 24 часа: <b>+{stats['new_24h']}</b>",
+            f"├ Новых за 7 дней: <b>+{stats['new_7d']}</b>",
+            f"└ Новых за 30 дней: <b>+{stats['new_30d']}</b>",
+            "",
+            "💰 <b>Оплаты</b>",
+            f"├ СБП: <b>{pay_status}</b> · {stats['sbp_revenue']} ₽",
+            f"└ Stars: <b>{stats['star_revenue']} ⭐</b>",
+            "",
+            f"🌐 VPN: <b>{vpn_status}</b>",
+            "",
+            "🆕 <b>Последние пользователи</b>",
+        ]
+
+        if recent:
+            for item in recent:
+                uid = int(item["telegram_id"])
+                name = (
+                    f'@{item["username"]}'
+                    if item.get("username")
+                    else item.get("first_name") or str(uid)
+                )
+                lines.append(
+                    f"• {html.escape(str(name))} · "
+                    f"<code>{uid}</code> · {format_joined(item.get('created_at'))}"
+                )
+        else:
+            lines.append("Пока никого.")
+
         await send_screen(
             message,
             actor,
-            text,
-            reply_markup=admin_main_keyboard(),
+            "\n".join(lines),
+            reply_markup=admin_main_keyboard(role),
         )
 
     async def show_admin_stats(message: Message, actor) -> None:
+        role = await get_admin_role(actor.id)
+        if not role:
+            return
         stats = await db.admin_overview()
+        recent = await db.recent_users(10)
+
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:stats"))
         kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
 
-        text = (
-            "📊 <b>Статистика</b>\n\n"
-            f"Всего пользователей — <b>{stats['total']}</b>\n"
-            f"Активных подписок — <b>{stats['active']}</b>\n"
-            f"Новых за 24 часа — <b>{stats['new_24h']}</b>\n"
-            f"Новых за 7 дней — <b>{stats['new_7d']}</b>\n"
-            f"Пробник использовали — <b>{stats['trials']}</b>\n\n"
-            "💰 <b>Оплаты</b>\n"
-            f"Успешных СБП — <b>{stats['sbp_paid']}</b>\n"
-            f"СБП оборот — <b>{stats['sbp_revenue']} ₽</b>\n"
-            f"Оплат Stars — <b>{stats['star_paid']}</b>\n"
-            f"Stars получено — <b>{stats['star_revenue']} ⭐</b>"
+        lines = [
+            "📊 <b>Полная сводка</b>",
+            "",
+            "👥 <b>Пользователи</b>",
+            f"├ Всего — <b>{stats['total']}</b>",
+            f"├ Активные — <b>{stats['active']}</b>",
+            f"├ Платные активные — <b>{stats['active_paid']}</b>",
+            f"├ За 24 часа — <b>+{stats['new_24h']}</b>",
+            f"├ За 7 дней — <b>+{stats['new_7d']}</b>",
+            f"├ За 30 дней — <b>+{stats['new_30d']}</b>",
+            f"└ Использовали пробник — <b>{stats['trials']}</b>",
+            "",
+            "💰 <b>Оплаты</b>",
+            f"├ СБП оплат — <b>{stats['sbp_paid']}</b>",
+            f"├ СБП оборот — <b>{stats['sbp_revenue']} ₽</b>",
+            f"├ Stars оплат — <b>{stats['star_paid']}</b>",
+            f"└ Stars получено — <b>{stats['star_revenue']} ⭐</b>",
+            "",
+            "🕒 <b>Последние регистрации</b>",
+        ]
+
+        for item in recent:
+            uid = int(item["telegram_id"])
+            name = (
+                f'@{item["username"]}'
+                if item.get("username")
+                else item.get("first_name") or str(uid)
+            )
+            lines.append(
+                f"• {format_joined(item.get('created_at'))} — "
+                f"{html.escape(str(name))} · <code>{uid}</code>"
+            )
+
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
         )
-        await send_screen(message, actor, text, reply_markup=kb.as_markup())
 
     async def show_admin_users(message: Message, actor) -> None:
-        users = await db.recent_users(10)
+        role = await get_admin_role(actor.id)
+        if not role:
+            return
+        users = await db.recent_users(20)
         kb = InlineKeyboardBuilder()
-        lines = ["👥 <b>Последние пользователи</b>", ""]
+        lines = [
+            "👥 <b>Пользователи</b>",
+            "",
+            "Последние 20 регистраций:",
+            "",
+        ]
 
         if not users:
             lines.append("Пользователей пока нет.")
@@ -2464,7 +2552,11 @@ def build_router(
                     and from_iso(item.get("subscription_until")) > utcnow()
                 )
                 mark = "✅" if active else "▫️"
-                lines.append(f"{mark} {html.escape(str(username))} · <code>{uid}</code>")
+                lines.append(
+                    f"{mark} {html.escape(str(username))} · "
+                    f"<code>{uid}</code>\n"
+                    f"   └ пришёл {format_joined(item.get('created_at'))}"
+                )
                 kb.row(
                     blue_inline_button(
                         f"👤 {str(username)[:28]}",
@@ -2482,6 +2574,10 @@ def build_router(
         )
 
     async def show_admin_user(message: Message, actor, telegram_id: int) -> None:
+        actor_role = await get_admin_role(actor.id)
+        if not actor_role:
+            return
+
         try:
             user = await db.get_user(telegram_id)
         except KeyError:
@@ -2489,10 +2585,11 @@ def build_router(
                 message,
                 actor,
                 "👤 <b>Пользователь не найден</b>",
-                reply_markup=admin_main_keyboard(),
+                reply_markup=admin_main_keyboard(actor_role),
             )
             return
 
+        target_role = await get_admin_role(telegram_id)
         username = (
             f'@{html.escape(user["username"])}'
             if user.get("username")
@@ -2502,36 +2599,70 @@ def build_router(
         referrals = await db.referral_count(telegram_id)
 
         kb = InlineKeyboardBuilder()
-        kb.row(
-            blue_inline_button("+7 дней", callback_data=f"admin:grant:{telegram_id}:7"),
-            blue_inline_button("+30 дней", callback_data=f"admin:grant:{telegram_id}:30"),
-        )
-        kb.row(
-            blue_inline_button("+90 дней", callback_data=f"admin:grant:{telegram_id}:90"),
-            blue_inline_button("+365 дней", callback_data=f"admin:grant:{telegram_id}:365"),
-        )
+
+        if actor_role in {"owner", "full"}:
+            kb.row(
+                blue_inline_button("+7 дней", callback_data=f"admin:grant:{telegram_id}:7"),
+                blue_inline_button("+30 дней", callback_data=f"admin:grant:{telegram_id}:30"),
+            )
+            kb.row(
+                blue_inline_button("+90 дней", callback_data=f"admin:grant:{telegram_id}:90"),
+                blue_inline_button("+365 дней", callback_data=f"admin:grant:{telegram_id}:365"),
+            )
+
+        if actor_role == "owner" and telegram_id not in config.admin_ids:
+            kb.row(
+                blue_inline_button(
+                    "🛡 Полная админка",
+                    callback_data=f"admin:role:{telegram_id}:full",
+                ),
+                blue_inline_button(
+                    "👁 Ограниченная",
+                    callback_data=f"admin:role:{telegram_id}:limited",
+                ),
+            )
+            if target_role:
+                kb.row(
+                    blue_inline_button(
+                        "❌ Забрать админку",
+                        callback_data=f"admin:role:{telegram_id}:remove",
+                    )
+                )
+
         kb.row(blue_inline_button("⬅️ Пользователи", callback_data="admin:users"))
         kb.row(blue_inline_button("🏠 Админка", callback_data="admin:home"))
 
-        text = (
-            f"👤 <b>{username}</b>\n"
-            f"<code>{telegram_id}</code>\n\n"
-            f"Подписка — <b>{'активна' if active else 'не активна'}</b>\n"
-            f"Тариф — <b>{html.escape(user.get('plan_name') or '—')}</b>\n"
-            f"До — <b>{format_until(user, config) if active else '—'}</b>\n"
-            f"Устройств — <b>до {int(user.get('max_devices') or 1)}</b>\n"
-            f"💎 Алмазы — <b>{int(user.get('diamonds') or 0)}</b>\n"
-            f"Пробник — <b>{'использован' if user.get('trial_used') else 'доступен'}</b>\n"
-            f"Приглашено — <b>{referrals}</b>"
+        lines = [
+            f"👤 <b>{username}</b>",
+            f"<code>{telegram_id}</code>",
+            "",
+            f"Пришёл — <b>{format_joined(user.get('created_at'))}</b>",
+            f"Админ-доступ — <b>{admin_role_label(target_role)}</b>",
+            f"Подписка — <b>{'активна' if active else 'не активна'}</b>",
+            f"Тариф — <b>{html.escape(user.get('plan_name') or '—')}</b>",
+            f"До — <b>{format_until(user, config) if active else '—'}</b>",
+            f"Устройств — <b>до {int(user.get('max_devices') or 1)}</b>",
+            f"💎 Алмазы — <b>{int(user.get('diamonds') or 0)}</b>",
+            f"Пробник — <b>{'использован' if user.get('trial_used') else 'доступен'}</b>",
+            f"Приглашено — <b>{referrals}</b>",
+        ]
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
         )
-        await send_screen(message, actor, text, reply_markup=kb.as_markup())
 
     async def show_admin_payments(message: Message, actor) -> None:
+        if not await has_admin_access(actor.id):
+            return
         payments = await db.recent_sbp_payments(10)
+        overview = await db.admin_overview()
         kb = InlineKeyboardBuilder()
         lines = [
             "💳 <b>Последние платежи</b>",
-            f"⭐ Всего оплат Stars: <b>{(await db.admin_overview())['star_paid']}</b>",
+            f"⭐ Всего оплат Stars: <b>{overview['star_paid']}</b>",
+            f"⭐ Получено Stars: <b>{overview['star_revenue']} ⭐</b>",
             "",
             "🏦 <b>СБП</b>",
             "",
@@ -2554,7 +2685,8 @@ def build_router(
                 label = status_names.get(status, f"▫️ {status}")
                 lines += [
                     f"{label} · <b>{int(item['amount_rub'])} ₽</b>",
-                    f"<code>{int(item['telegram_id'])}</code> · тариф {html.escape(str(item['plan_code']))}",
+                    f"<code>{int(item['telegram_id'])}</code> · "
+                    f"тариф {html.escape(str(item['plan_code']))}",
                     "",
                 ]
 
@@ -2568,6 +2700,8 @@ def build_router(
         )
 
     async def show_admin_bonuses(message: Message, actor) -> None:
+        if not await has_full_admin_access(actor.id):
+            return
         stock = await db.promo_stock_overview()
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:bonuses"))
@@ -2604,6 +2738,8 @@ def build_router(
         )
 
     async def show_admin_system(message: Message, actor) -> None:
+        if not await has_full_admin_access(actor.id):
+            return
         rolly = "✅ настроена" if config.rollypay_enabled else "❌ не настроена"
         rolly_mode = "тест" if config.rollypay_test_mode else "боевой"
         vpn_ready = "✅" if getattr(provider, "service_ready", True) else "⚠️"
@@ -2624,6 +2760,72 @@ def build_router(
             "<i>Секретные ключи здесь не отображаются.</i>"
         )
         await send_screen(message, actor, text, reply_markup=kb.as_markup())
+
+    async def show_admin_admins(message: Message, actor) -> None:
+        if not is_owner(actor.id):
+            return
+
+        dynamic_admins = await db.list_admin_roles()
+        kb = InlineKeyboardBuilder()
+        lines = [
+            "🛡 <b>Администраторы</b>",
+            "",
+            "👑 <b>Владельцы</b>",
+        ]
+
+        for owner_id in config.admin_ids:
+            try:
+                user = await db.get_user(owner_id)
+                name = (
+                    f'@{user["username"]}'
+                    if user.get("username")
+                    else user.get("first_name") or str(owner_id)
+                )
+            except KeyError:
+                name = str(owner_id)
+            lines.append(f"• {html.escape(str(name))} · <code>{owner_id}</code>")
+
+        lines += ["", "🛡 <b>Выданные админки</b>"]
+        if not dynamic_admins:
+            lines.append("Пока нет.")
+        else:
+            for item in dynamic_admins:
+                uid = int(item["telegram_id"])
+                name = (
+                    f'@{item["username"]}'
+                    if item.get("username")
+                    else item.get("first_name") or str(uid)
+                )
+                role = str(item["role"])
+                icon = "🛡" if role == "full" else "👁"
+                lines.append(
+                    f"{icon} {html.escape(str(name))} · <code>{uid}</code> — "
+                    f"<b>{admin_role_label(role)}</b>"
+                )
+                kb.row(
+                    blue_inline_button(
+                        f"👤 {str(name)[:28]}",
+                        callback_data=f"admin:user:{uid}",
+                    )
+                )
+
+        lines += [
+            "",
+            "<i>Выдать доступ можно из карточки пользователя: "
+            "Пользователи → выбрать человека.</i>",
+            "",
+            "Полная — управление подписками, бонусами и системой.",
+            "Ограниченная — просмотр сводки, пользователей и платежей.",
+        ]
+
+        kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:admins"))
+        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
+        )
 
     @router.message(Command("admin"))
     async def admin_panel(message: Message) -> None:
