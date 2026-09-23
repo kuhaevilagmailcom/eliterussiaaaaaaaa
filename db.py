@@ -47,21 +47,12 @@ class Database:
                     traffic_limit_gb INTEGER NOT NULL DEFAULT 0,
                     max_devices INTEGER NOT NULL DEFAULT 1,
                     sub_token TEXT NOT NULL UNIQUE,
-                    total_paid_stars INTEGER NOT NULL DEFAULT 0,
                     referrer_id INTEGER,
                     last_menu_message_id INTEGER
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_users_subscription_until
                 ON users(subscription_until);
-
-                CREATE TABLE IF NOT EXISTS payments (
-                    telegram_payment_charge_id TEXT PRIMARY KEY,
-                    telegram_id INTEGER NOT NULL,
-                    payload TEXT NOT NULL,
-                    amount INTEGER NOT NULL,
-                    created_at TEXT NOT NULL
-                );
 
                 CREATE TABLE IF NOT EXISTS sbp_payments (
                     payment_id TEXT PRIMARY KEY,
@@ -225,33 +216,6 @@ class Database:
             await db.commit()
         return await self.get_user(telegram_id)
 
-    async def record_payment(
-        self,
-        telegram_id: int,
-        charge_id: str,
-        payload: str,
-        amount: int,
-    ) -> bool:
-        async with aiosqlite.connect(self.path) as db:
-            cursor = await db.execute(
-                """
-                INSERT OR IGNORE INTO payments (
-                    telegram_payment_charge_id, telegram_id, payload, amount, created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (charge_id, telegram_id, payload, amount, to_iso(utcnow())),
-            )
-            if cursor.rowcount == 1:
-                await db.execute(
-                    """
-                    UPDATE users
-                    SET total_paid_stars=total_paid_stars+?
-                    WHERE telegram_id=?
-                    """,
-                    (amount, telegram_id),
-                )
-            await db.commit()
-            return cursor.rowcount == 1
 
     async def create_sbp_payment(
         self,
@@ -346,9 +310,6 @@ class Database:
             sbp_revenue = (await (await db.execute(
                 "SELECT COALESCE(SUM(amount_rub), 0) FROM sbp_payments WHERE status='paid'"
             )).fetchone())[0]
-            stars_revenue = (await (await db.execute(
-                "SELECT COALESCE(SUM(amount), 0) FROM payments"
-            )).fetchone())[0]
 
         return {
             "total": int(total),
@@ -358,7 +319,6 @@ class Database:
             "trials": int(trials),
             "sbp_paid": int(sbp_paid),
             "sbp_revenue": int(sbp_revenue),
-            "stars_revenue": int(stars_revenue),
         }
 
     async def recent_users(self, limit: int = 10) -> list[dict[str, Any]]:
