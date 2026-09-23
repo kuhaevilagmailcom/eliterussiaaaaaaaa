@@ -193,10 +193,18 @@ async def load_state(
     if not getattr(provider, "service_ready", True):
         return fallback_state(user, config), False
     try:
-        return await provider.get_state(user), True
+        state = await asyncio.wait_for(
+            provider.get_state(user),
+            timeout=4.0,
+        )
+        return state, True
     except Exception:
         try:
-            return await provider.provision(user), True
+            state = await asyncio.wait_for(
+                provider.provision(user),
+                timeout=6.0,
+            )
+            return state, True
         except Exception:
             return fallback_state(user, config), False
 
@@ -819,7 +827,6 @@ def build_router(
         force_new: bool = False,
     ) -> None:
         user = await ensure_actor(actor)
-        state, ok = await load_state(user, provider, config)
         active = is_active(user)
 
         e_logo = emoji.icon(0, pack=PACK_CRYPTO)
@@ -837,7 +844,7 @@ def build_router(
             lines += [
                 f"├ Тариф: <b>{html.escape(user.get('plan_name') or 'VPN')}</b>",
                 f"├ До: <b>{format_until(user, config)}</b>",
-                f"└ Устройства: <b>{len(state.devices)}/{int(user.get('max_devices') or 1)}</b>",
+                f"└ Устройства: <b>до {int(user.get('max_devices') or 1)}</b>",
             ]
         elif not user.get("trial_used"):
             channel = html.escape(config.trial_channel_username)
@@ -855,11 +862,8 @@ def build_router(
                 "Выберите платную подписку кнопкой <b>«💎 Купить VPN»</b>.",
             ]
 
-        if not ok and active:
-            if getattr(provider, "service_ready", True):
-                lines += ["", "<i>VPN-сервер временно не отвечает.</i>"]
-            else:
-                lines += ["", "<i>VPN-серверы ещё не подключены.</i>"]
+        if active and not getattr(provider, "service_ready", True):
+            lines += ["", "<i>VPN-серверы ещё не подключены.</i>"]
 
         await send_screen(
             message,
