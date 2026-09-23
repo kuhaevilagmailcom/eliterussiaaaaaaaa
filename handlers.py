@@ -2829,13 +2829,13 @@ def build_router(
 
     @router.message(Command("admin"))
     async def admin_panel(message: Message) -> None:
-        if not is_admin(message.from_user.id):
+        if not await has_admin_access(message.from_user.id):
             return
         await show_admin(message, message.from_user)
 
     @router.callback_query(F.data == "admin:home")
     async def admin_home(callback: CallbackQuery) -> None:
-        if not is_admin(callback.from_user.id):
+        if not await has_admin_access(callback.from_user.id):
             await callback.answer("Нет доступа", show_alert=True)
             return
         await callback.answer()
@@ -2844,7 +2844,7 @@ def build_router(
 
     @router.callback_query(F.data == "admin:stats")
     async def admin_stats_callback(callback: CallbackQuery) -> None:
-        if not is_admin(callback.from_user.id):
+        if not await has_admin_access(callback.from_user.id):
             await callback.answer("Нет доступа", show_alert=True)
             return
         await callback.answer()
@@ -2853,7 +2853,7 @@ def build_router(
 
     @router.callback_query(F.data == "admin:users")
     async def admin_users_callback(callback: CallbackQuery) -> None:
-        if not is_admin(callback.from_user.id):
+        if not await has_admin_access(callback.from_user.id):
             await callback.answer("Нет доступа", show_alert=True)
             return
         await callback.answer()
@@ -2862,7 +2862,7 @@ def build_router(
 
     @router.callback_query(F.data == "admin:payments")
     async def admin_payments_callback(callback: CallbackQuery) -> None:
-        if not is_admin(callback.from_user.id):
+        if not await has_admin_access(callback.from_user.id):
             await callback.answer("Нет доступа", show_alert=True)
             return
         await callback.answer()
@@ -2871,8 +2871,11 @@ def build_router(
 
     @router.callback_query(F.data == "admin:bonuses")
     async def admin_bonuses_callback(callback: CallbackQuery) -> None:
-        if not is_admin(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer(
+                "Нужна полная админка.",
+                show_alert=True,
+            )
             return
         await callback.answer()
         if callback.message:
@@ -2880,16 +2883,31 @@ def build_router(
 
     @router.callback_query(F.data == "admin:system")
     async def admin_system_callback(callback: CallbackQuery) -> None:
-        if not is_admin(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer(
+                "Нужна полная админка.",
+                show_alert=True,
+            )
             return
         await callback.answer()
         if callback.message:
             await show_admin_system(callback.message, callback.from_user)
 
+    @router.callback_query(F.data == "admin:admins")
+    async def admin_admins_callback(callback: CallbackQuery) -> None:
+        if not is_owner(callback.from_user.id):
+            await callback.answer(
+                "Управление администраторами доступно только владельцу.",
+                show_alert=True,
+            )
+            return
+        await callback.answer()
+        if callback.message:
+            await show_admin_admins(callback.message, callback.from_user)
+
     @router.callback_query(F.data.startswith("admin:user:"))
     async def admin_user_callback(callback: CallbackQuery) -> None:
-        if not is_admin(callback.from_user.id):
+        if not await has_admin_access(callback.from_user.id):
             await callback.answer("Нет доступа", show_alert=True)
             return
         if not callback.message:
@@ -2901,10 +2919,71 @@ def build_router(
         await callback.answer()
         await show_admin_user(callback.message, callback.from_user, int(raw))
 
+    @router.callback_query(F.data.startswith("admin:role:"))
+    async def admin_role_callback(callback: CallbackQuery) -> None:
+        if not is_owner(callback.from_user.id):
+            await callback.answer(
+                "Выдавать админки может только владелец.",
+                show_alert=True,
+            )
+            return
+        if not callback.message:
+            return
+
+        parts = callback.data.split(":")
+        if len(parts) != 4 or not parts[2].isdigit():
+            await callback.answer("Некорректные данные", show_alert=True)
+            return
+
+        telegram_id = int(parts[2])
+        role = parts[3]
+        if telegram_id in config.admin_ids:
+            await callback.answer(
+                "Доступ владельца нельзя изменить из панели.",
+                show_alert=True,
+            )
+            return
+
+        try:
+            await db.get_user(telegram_id)
+        except KeyError:
+            await callback.answer(
+                "Пользователь ещё не запускал бота.",
+                show_alert=True,
+            )
+            return
+
+        if role == "remove":
+            await db.remove_admin_role(telegram_id)
+            await callback.answer("Админка забрана")
+        elif role in {"full", "limited"}:
+            await db.set_admin_role(
+                telegram_id=telegram_id,
+                role=role,
+                granted_by=callback.from_user.id,
+            )
+            await callback.answer(
+                "Выдана полная админка"
+                if role == "full"
+                else "Выдана ограниченная админка"
+            )
+        else:
+            await callback.answer("Неизвестная роль", show_alert=True)
+            return
+
+        await show_admin_user(
+            callback.message,
+            callback.from_user,
+            telegram_id,
+        )
+
     @router.callback_query(F.data.startswith("admin:grant:"))
     async def admin_grant_callback(callback: CallbackQuery) -> None:
-        if not is_admin(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer(
+                "Нужна полная админка.",
+                show_alert=True,
+            )
             return
         if not callback.message:
             return
@@ -2930,8 +3009,12 @@ def build_router(
         )
         try:
             await provider.provision(user)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Admin grant provisioning deferred for user %s: %s",
+                telegram_id,
+                exc,
+            )
 
         await callback.answer(f"Добавлено {days} дней")
         await show_admin_user(
@@ -2942,7 +3025,7 @@ def build_router(
 
     @router.message(Command("user"))
     async def admin_user_command(message: Message) -> None:
-        if not is_admin(message.from_user.id):
+        if not await has_admin_access(message.from_user.id):
             return
         parts = (message.text or "").split()
         if len(parts) != 2 or not parts[1].isdigit():
@@ -2952,19 +3035,19 @@ def build_router(
 
     @router.message(Command("paystatus"))
     async def paystatus(message: Message) -> None:
-        if not is_admin(message.from_user.id):
+        if not await has_full_admin_access(message.from_user.id):
             return
         await show_admin_system(message, message.from_user)
 
     @router.message(Command("stats"))
     async def stats(message: Message) -> None:
-        if not is_admin(message.from_user.id):
+        if not await has_admin_access(message.from_user.id):
             return
         await show_admin_stats(message, message.from_user)
 
     @router.message(Command("diamonds"))
     async def admin_diamonds(message: Message) -> None:
-        if not is_admin(message.from_user.id):
+        if not await has_full_admin_access(message.from_user.id):
             return
 
         parts = (message.text or "").split()
@@ -3000,17 +3083,18 @@ def build_router(
             await message.answer("Баланс не изменился.")
             return
 
+        role = await get_admin_role(message.from_user.id)
         await send_screen(
             message,
             message.from_user,
             f"💎 Баланс <code>{telegram_id}</code> изменён.\n"
             f"Теперь: <b>{balance} 💎</b>",
-            reply_markup=admin_main_keyboard(),
+            reply_markup=admin_main_keyboard(role or "full"),
         )
 
     @router.message(Command("promoproduct"))
     async def admin_promo_product(message: Message) -> None:
-        if not is_admin(message.from_user.id):
+        if not await has_full_admin_access(message.from_user.id):
             return
 
         parts = (message.text or "").split(maxsplit=3)
@@ -3037,17 +3121,18 @@ def build_router(
             return
 
         await db.create_promo_product(slug, title, price)
+        role = await get_admin_role(message.from_user.id)
         await send_screen(
             message,
             message.from_user,
             f"✅ Товар <b>{html.escape(title)}</b> сохранён за <b>{price} 💎</b>.\n"
             f"Теперь добавляй коды: <code>/promocode {html.escape(slug)} CODE</code>",
-            reply_markup=admin_main_keyboard(),
+            reply_markup=admin_main_keyboard(role or "full"),
         )
 
     @router.message(Command("promocode"))
     async def admin_promo_code(message: Message) -> None:
-        if not is_admin(message.from_user.id):
+        if not await has_full_admin_access(message.from_user.id):
             return
 
         parts = (message.text or "").split(maxsplit=2)
@@ -3068,16 +3153,17 @@ def build_router(
             )
             return
 
+        role = await get_admin_role(message.from_user.id)
         await send_screen(
             message,
             message.from_user,
             f"✅ Код добавлен в товар <code>{html.escape(slug)}</code>.",
-            reply_markup=admin_main_keyboard(),
+            reply_markup=admin_main_keyboard(role or "full"),
         )
 
     @router.message(Command("grant"))
     async def grant(message: Message) -> None:
-        if not is_admin(message.from_user.id):
+        if not await has_full_admin_access(message.from_user.id):
             return
 
         parts = (message.text or "").split()
@@ -3110,14 +3196,19 @@ def build_router(
         )
         try:
             await provider.provision(user)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Admin command provisioning deferred for user %s: %s",
+                telegram_id,
+                exc,
+            )
 
+        role = await get_admin_role(message.from_user.id)
         await send_screen(
             message,
             message.from_user,
             f"✅ Пользователю <code>{telegram_id}</code> добавлено <b>{days}</b> дней.",
-            reply_markup=admin_main_keyboard(),
+            reply_markup=admin_main_keyboard(role or "full"),
         )
 
     return router
