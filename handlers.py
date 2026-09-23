@@ -423,136 +423,194 @@ def build_router(
         user = await ensure_actor(actor)
         last_id = user.get("last_menu_message_id")
 
-        # Never delete the current UI message. The bot keeps one persistent
-        # media message and edits its photo/caption/inline keyboard in place.
-        if last_id:
-            if bottom_menu:
+        async def create_first_menu() -> Message:
+            try:
+                sent = await message.bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=current_main_menu_banner(),
+                    caption=text,
+                    reply_markup=main_keyboard(emoji),
+                )
+            except TelegramBadRequest as exc:
+                logger.warning("Initial main-menu photo failed: %s", exc)
+                sent = await message.bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=current_main_menu_banner(),
+                    caption=strip_custom_emoji(text),
+                    reply_markup=main_keyboard(emoji, custom_icons=False),
+                )
+
+            await db.set_last_menu_message(actor.id, sent.message_id)
+            logger.info(
+                "Persistent menu created for %s as message %s",
+                actor.id,
+                sent.message_id,
+            )
+            return sent
+
+        if not last_id:
+            return await create_first_menu()
+
+        # Keep one persistent message. We never delete it.
+        if bottom_menu:
+            try:
+                edited = await message.bot.edit_message_media(
+                    chat_id=message.chat.id,
+                    message_id=int(last_id),
+                    media=InputMediaPhoto(
+                        media=current_main_menu_banner(),
+                        caption=text,
+                    ),
+                    reply_markup=None,
+                )
+                return edited
+            except TelegramBadRequest as exc:
+                error_text = str(exc).lower()
+                if "message is not modified" in error_text:
+                    return message
+
+                logger.warning(
+                    "Could not edit main-menu media in place: %s",
+                    exc,
+                )
+
+                # Stale id from an already deleted old menu: there is no
+                # visible message to preserve, so create the single menu again.
+                if (
+                    "message to edit not found" in error_text
+                    or "message not found" in error_text
+                ):
+                    await db.set_last_menu_message(actor.id, None)
+                    return await create_first_menu()
+
                 try:
                     edited = await message.bot.edit_message_media(
                         chat_id=message.chat.id,
                         message_id=int(last_id),
                         media=InputMediaPhoto(
                             media=current_main_menu_banner(),
-                            caption=text,
+                            caption=strip_custom_emoji(text),
                         ),
                         reply_markup=None,
                     )
                     return edited
-                except TelegramBadRequest as exc:
-                    if "message is not modified" in str(exc).lower():
-                        return message
+                except TelegramBadRequest as retry_exc:
+                    retry_text = str(retry_exc).lower()
                     logger.warning(
-                        "Could not edit main-menu media in place: %s",
-                        exc,
+                        "Main-menu media retry failed: %s",
+                        retry_exc,
                     )
-                    try:
-                        edited = await message.bot.edit_message_media(
-                            chat_id=message.chat.id,
-                            message_id=int(last_id),
-                            media=InputMediaPhoto(
-                                media=current_main_menu_banner(),
-                                caption=strip_custom_emoji(text),
-                            ),
-                            reply_markup=None,
-                        )
-                        return edited
-                    except Exception as retry_exc:
-                        logger.warning(
-                            "Main-menu media retry failed: %s",
-                            retry_exc,
-                        )
-                except Exception as exc:
+                    if (
+                        "message to edit not found" in retry_text
+                        or "message not found" in retry_text
+                    ):
+                        await db.set_last_menu_message(actor.id, None)
+                        return await create_first_menu()
+                except Exception as retry_exc:
                     logger.warning(
-                        "Could not edit main-menu media in place: %s",
-                        exc,
+                        "Main-menu media retry failed: %s",
+                        retry_exc,
                     )
-            else:
-                try:
-                    edited = await message.bot.edit_message_caption(
-                        chat_id=message.chat.id,
-                        message_id=int(last_id),
-                        caption=text,
-                        reply_markup=reply_markup,
-                    )
-                    return edited
-                except TelegramBadRequest as exc:
-                    if "message is not modified" in str(exc).lower():
-                        return message
-                    try:
-                        edited = await message.bot.edit_message_caption(
-                            chat_id=message.chat.id,
-                            message_id=int(last_id),
-                            caption=strip_custom_emoji(text),
-                            reply_markup=reply_markup,
-                        )
-                        return edited
-                    except Exception as retry_exc:
-                        logger.warning(
-                            "Caption edit retry failed: %s",
-                            retry_exc,
-                        )
-                except Exception as exc:
-                    logger.warning("Caption edit failed: %s", exc)
 
-                # Legacy text-only menu messages are edited as text instead of
-                # being deleted/replaced. This preserves the message id.
+                # Old text-only menu from a previous version cannot be turned
+                # into a photo via Telegram API. Keep that exact message id and
+                # at least update its text instead of silently doing nothing.
                 try:
                     edited = await message.bot.edit_message_text(
                         chat_id=message.chat.id,
                         message_id=int(last_id),
-                        text=text,
-                        reply_markup=reply_markup,
+                        text=strip_custom_emoji(text),
+                        reply_markup=None,
                     )
                     return edited
-                except TelegramBadRequest as exc:
-                    if "message is not modified" in str(exc).lower():
+                except TelegramBadRequest as text_exc:
+                    text_error = str(text_exc).lower()
+                    if "message is not modified" in text_error:
                         return message
-                    try:
-                        edited = await message.bot.edit_message_text(
-                            chat_id=message.chat.id,
-                            message_id=int(last_id),
-                            text=strip_custom_emoji(text),
-                            reply_markup=reply_markup,
-                        )
-                        return edited
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+                    if (
+                        "message to edit not found" in text_error
+                        or "message not found" in text_error
+                    ):
+                        await db.set_last_menu_message(actor.id, None)
+                        return await create_first_menu()
+                    logger.warning("Legacy menu text edit failed: %s", text_exc)
+                except Exception as text_exc:
+                    logger.warning("Legacy menu text edit failed: %s", text_exc)
 
-            # Do not delete an existing message under any circumstances.
-            # If it cannot be edited, keep it untouched and log the problem.
-            logger.error(
-                "Persistent menu message %s could not be edited; not deleting it",
-                last_id,
-            )
-            return message
+                return message
+            except Exception as exc:
+                logger.warning(
+                    "Could not edit main-menu media in place: %s",
+                    exc,
+                )
+                return message
 
-        # Only the very first screen creates a bot message. After that all
-        # screens reuse this exact message id.
+        # Normal sections edit the caption of the same photo message.
         try:
-            sent = await message.bot.send_photo(
+            edited = await message.bot.edit_message_caption(
                 chat_id=message.chat.id,
-                photo=current_main_menu_banner(),
+                message_id=int(last_id),
                 caption=text,
-                reply_markup=main_keyboard(emoji),
+                reply_markup=reply_markup,
             )
+            return edited
         except TelegramBadRequest as exc:
-            logger.warning("Initial main-menu photo failed: %s", exc)
-            sent = await message.bot.send_photo(
-                chat_id=message.chat.id,
-                photo=current_main_menu_banner(),
-                caption=strip_custom_emoji(text),
-                reply_markup=main_keyboard(emoji, custom_icons=False),
-            )
+            error_text = str(exc).lower()
+            if "message is not modified" in error_text:
+                return message
+            if (
+                "message to edit not found" in error_text
+                or "message not found" in error_text
+            ):
+                await db.set_last_menu_message(actor.id, None)
+                sent = await create_first_menu()
+                try:
+                    return await message.bot.edit_message_caption(
+                        chat_id=message.chat.id,
+                        message_id=sent.message_id,
+                        caption=text,
+                        reply_markup=reply_markup,
+                    )
+                except Exception:
+                    return sent
 
-        await db.set_last_menu_message(actor.id, sent.message_id)
-        logger.info(
-            "Persistent menu created for %s as message %s",
-            actor.id,
-            sent.message_id,
-        )
-        return sent
+            try:
+                edited = await message.bot.edit_message_caption(
+                    chat_id=message.chat.id,
+                    message_id=int(last_id),
+                    caption=strip_custom_emoji(text),
+                    reply_markup=reply_markup,
+                )
+                return edited
+            except Exception as retry_exc:
+                logger.warning("Caption edit retry failed: %s", retry_exc)
+        except Exception as exc:
+            logger.warning("Caption edit failed: %s", exc)
+
+        # Legacy text-only menu: edit it in place, do not delete it.
+        try:
+            edited = await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=int(last_id),
+                text=strip_custom_emoji(text),
+                reply_markup=reply_markup,
+            )
+            return edited
+        except TelegramBadRequest as exc:
+            error_text = str(exc).lower()
+            if "message is not modified" in error_text:
+                return message
+            if (
+                "message to edit not found" in error_text
+                or "message not found" in error_text
+            ):
+                await db.set_last_menu_message(actor.id, None)
+                return await create_first_menu()
+            logger.warning("Legacy text menu edit failed: %s", exc)
+        except Exception as exc:
+            logger.warning("Legacy text menu edit failed: %s", exc)
+
+        return message
 
     async def show_home(message: Message, actor) -> None:
         user = await ensure_actor(actor)
