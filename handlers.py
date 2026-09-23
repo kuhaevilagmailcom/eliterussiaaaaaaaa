@@ -534,22 +534,26 @@ def build_router(
             return sent
 
         if force_new:
-            # Explicit /start must always produce a visible response at the
-            # bottom of the chat. Keep at most one tracked bot UI message:
-            # remove the previous one when Telegram allows it, then create a
-            # fresh menu. If it was already deleted, just recreate it.
+            # Explicit /start should bring the menu back to the bottom of the
+            # chat while keeping one tracked bot UI message. Telegram may
+            # refuse deletion of very old messages; in that rare case we keep
+            # and edit the existing menu instead of creating a duplicate.
+            can_create_fresh = not last_id
             if last_id:
                 try:
                     await message.bot.delete_message(
                         chat_id=message.chat.id,
                         message_id=int(last_id),
                     )
+                    can_create_fresh = True
                 except TelegramBadRequest as exc:
                     error_text = str(exc).lower()
                     if (
-                        "message to delete not found" not in error_text
-                        and "message not found" not in error_text
+                        "message to delete not found" in error_text
+                        or "message not found" in error_text
                     ):
+                        can_create_fresh = True
+                    else:
                         logger.warning(
                             "Could not remove previous menu %s for user %s: %s",
                             last_id,
@@ -564,8 +568,12 @@ def build_router(
                         exc,
                     )
 
-            await db.set_last_menu_message(actor.id, None)
-            return await create_first_menu()
+            if can_create_fresh:
+                await db.set_last_menu_message(actor.id, None)
+                return await create_first_menu()
+
+            # Keep exactly one bot UI message if Telegram refuses deletion.
+            force_new = False
 
         if not last_id:
             return await create_first_menu()
