@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import html
 import logging
@@ -494,7 +495,7 @@ def build_router(
         add_nav_buttons(kb, back_data="home")
         return kb.as_markup()
 
-    async def send_screen(
+    async def _send_screen_unlocked(
         message: Message,
         actor,
         text: str,
@@ -740,6 +741,38 @@ def build_router(
             logger.warning("Legacy text menu edit failed: %s", exc)
 
         return message
+
+    ui_locks: dict[int, asyncio.Lock] = {}
+
+    def get_ui_lock(user_id: int) -> asyncio.Lock:
+        lock = ui_locks.get(user_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            ui_locks[user_id] = lock
+        return lock
+
+    async def send_screen(
+        message: Message,
+        actor,
+        text: str,
+        *,
+        reply_markup=main_menu_inline_keyboard(),
+        bottom_menu: bool = False,
+        recover_on_edit_failure: bool = False,
+        force_new: bool = False,
+    ) -> Message:
+        # Serialize all UI mutations per user. This prevents double taps or
+        # repeated /start commands from creating multiple bot menu messages.
+        async with get_ui_lock(int(actor.id)):
+            return await _send_screen_unlocked(
+                message,
+                actor,
+                text,
+                reply_markup=reply_markup,
+                bottom_menu=bottom_menu,
+                recover_on_edit_failure=recover_on_edit_failure,
+                force_new=force_new,
+            )
 
     async def show_home(
         message: Message,
