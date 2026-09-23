@@ -402,7 +402,10 @@ def profile_text(
     ]
 
     if not provider_ok and active:
-        lines += ["", "<i>Сервер временно не отвечает.</i>"]
+        if config.vpn_mode == "demo":
+            lines += ["", "<i>VPN-серверы ещё не подключены. Подписка сохранена.</i>"]
+        else:
+            lines += ["", "<i>VPN-сервер временно не отвечает. Подписка сохранена.</i>"]
 
     return "\n".join(lines)
 
@@ -413,9 +416,11 @@ def connection_text(
     emoji: EmojiBank,
 ) -> str:
     e_link = emoji.icon(10, pack=PACK_UI)
+    server = html.escape(state.server or "MGN VPN")
     return (
         f"{e_link} <b>Подключение</b>\n\n"
         "Ваша персональная ссылка готова.\n"
+        f"Сервер — <b>{server}</b>\n"
         f"Можно использовать на <b>{int(user.get('max_devices') or 1)}</b> устройствах."
     )
 
@@ -827,7 +832,10 @@ def build_router(
             ]
 
         if not ok and active:
-            lines += ["", "<i>VPN-сервер временно не отвечает.</i>"]
+            if getattr(provider, "service_ready", True):
+                lines += ["", "<i>VPN-сервер временно не отвечает.</i>"]
+            else:
+                lines += ["", "<i>VPN-серверы ещё не подключены.</i>"]
 
         await send_screen(
             message,
@@ -1250,7 +1258,10 @@ def build_router(
         else:
             lines += ["", "<i>Подключённых устройств пока нет.</i>"]
         if not ok:
-            lines += ["", "<i>Сервер устройств временно не ответил.</i>"]
+            if getattr(provider, "service_ready", True):
+                lines += ["", "<i>Сервер устройств временно не ответил.</i>"]
+            else:
+                lines += ["", "<i>Устройства появятся после подключения VPN-серверов.</i>"]
         add_nav_buttons(kb, back_data="home")
         await send_screen(
             callback.message,
@@ -2157,7 +2168,10 @@ def build_router(
             ]
 
         if not ok:
-            lines += ["", "<i>Сервер устройств временно не ответил.</i>"]
+            if getattr(provider, "service_ready", True):
+                lines += ["", "<i>Сервер устройств временно не ответил.</i>"]
+            else:
+                lines += ["", "<i>Устройства появятся после подключения VPN-серверов.</i>"]
 
         add_nav_buttons(kb, back_data="home")
         await send_screen(
@@ -2225,7 +2239,10 @@ def build_router(
         else:
             lines += ["", "<i>Подключённых устройств пока нет.</i>"]
         if not ok:
-            lines += ["", "<i>VPN-сервер временно не ответил.</i>"]
+            if getattr(provider, "service_ready", True):
+                lines += ["", "<i>VPN-сервер временно не ответил.</i>"]
+            else:
+                lines += ["", "<i>Устройства появятся после подключения VPN-серверов.</i>"]
         add_nav_buttons(kb, back_data="home")
         await send_screen(
             callback.message,
