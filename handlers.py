@@ -290,8 +290,8 @@ def plans_keyboard(config: Config) -> Any:
         kb.row(
             blue_inline_button(
                 "💳 "
-                + f'{plan["name"]} · до {plan["devices"]} устройств · '
-                + f'{plan_price_rub(config, code)} ₽',
+                + f'{plan["name"]} · {plan_price_rub(config, code)} ₽ · '
+                + f'+{DIAMOND_REWARDS.get(code, 0)} 💎',
                 callback_data=f"plan:{code}",
             )
         )
