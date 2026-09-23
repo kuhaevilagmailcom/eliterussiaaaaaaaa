@@ -351,7 +351,7 @@ def payment_methods_keyboard(
             )
         )
 
-    add_nav_buttons(kb, back_data=f"plan:{code}")
+    add_nav_buttons(kb, back_data="plans")
     return kb.as_markup()
 
 
