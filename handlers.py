@@ -896,6 +896,35 @@ def build_router(
             pass
         return user
 
+
+    async def apply_paid_purchase(
+        buyer_telegram_id: int,
+        target_telegram_id: int,
+        code: str,
+        payment_event_key: str,
+    ) -> tuple[dict[str, Any], int]:
+        user = await activate_paid_plan(target_telegram_id, code)
+
+        reward_amount = int(DIAMOND_REWARDS.get(code, 0))
+        if reward_amount:
+            await db.add_diamonds(
+                telegram_id=buyer_telegram_id,
+                amount=reward_amount,
+                reason=f"Покупка VPN: {PLANS[code]['name']}",
+                event_key=f"payment-reward:{payment_event_key}",
+            )
+
+        referrer_id = user.get("referrer_id")
+        if referrer_id:
+            await db.add_diamonds(
+                telegram_id=int(referrer_id),
+                amount=REFERRAL_FIRST_PAID_REWARD,
+                reason="Друг впервые купил VPN",
+                event_key=f"referral-first-paid:{target_telegram_id}",
+            )
+
+        return user, reward_amount
+
     @router.message(Command("setbanner"))
     async def set_banner(message: Message) -> None:
         if not message.from_user or message.from_user.id not in config.admin_ids:
