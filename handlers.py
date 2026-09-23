@@ -1715,6 +1715,9 @@ def build_router(
         )
         kb.row(
             blue_inline_button("💳 Платежи", callback_data="admin:payments"),
+            blue_inline_button("💎 Бонусы", callback_data="admin:bonuses"),
+        )
+        kb.row(
             blue_inline_button("⚙️ Система", callback_data="admin:system"),
         )
         kb.row(
@@ -1838,6 +1841,7 @@ def build_router(
             f"Тариф — <b>{html.escape(user.get('plan_name') or '—')}</b>\n"
             f"До — <b>{format_until(user, config) if active else '—'}</b>\n"
             f"Устройств — <b>до {int(user.get('max_devices') or 1)}</b>\n"
+            f"💎 Алмазы — <b>{int(user.get('diamonds') or 0)}</b>\n"
             f"Пробник — <b>{'использован' if user.get('trial_used') else 'доступен'}</b>\n"
             f"Приглашено — <b>{referrals}</b>"
         )
@@ -1875,6 +1879,42 @@ def build_router(
             message,
             actor,
             "\n".join(lines).rstrip(),
+            reply_markup=kb.as_markup(),
+        )
+
+    async def show_admin_bonuses(message: Message, actor) -> None:
+        stock = await db.promo_stock_overview()
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:bonuses"))
+        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
+
+        lines = [
+            "💎 <b>Бонусная система</b>",
+            "",
+            "Команды:",
+            "<code>/diamonds ID AMOUNT</code>",
+            "<code>/promoproduct SLUG PRICE TITLE</code>",
+            "<code>/promocode SLUG CODE</code>",
+            "",
+            "🎟 <b>Промокоды</b>",
+        ]
+
+        if not stock:
+            lines.append("Товаров пока нет.")
+        else:
+            for item in stock:
+                lines.append(
+                    f"• {html.escape(str(item['title']))} "
+                    f"(<code>{html.escape(str(item['slug']))}</code>) — "
+                    f"<b>{int(item['price_diamonds'])} 💎</b> · "
+                    f"остаток {int(item['stock'] or 0)} · "
+                    f"выдано {int(item['issued'] or 0)}"
+                )
+
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
             reply_markup=kb.as_markup(),
         )
 
@@ -1940,6 +1980,15 @@ def build_router(
         await callback.answer()
         if callback.message:
             await show_admin_payments(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:bonuses")
+    async def admin_bonuses_callback(callback: CallbackQuery) -> None:
+        if not is_admin(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        await callback.answer()
+        if callback.message:
+            await show_admin_bonuses(callback.message, callback.from_user)
 
     @router.callback_query(F.data == "admin:system")
     async def admin_system_callback(callback: CallbackQuery) -> None:
@@ -2024,6 +2073,119 @@ def build_router(
         if not is_admin(message.from_user.id):
             return
         await show_admin_stats(message, message.from_user)
+
+    @router.message(Command("diamonds"))
+    async def admin_diamonds(message: Message) -> None:
+        if not is_admin(message.from_user.id):
+            return
+
+        parts = (message.text or "").split()
+        if len(parts) != 3:
+            await message.answer("Использование: /diamonds TELEGRAM_ID AMOUNT")
+            return
+
+        try:
+            telegram_id = int(parts[1])
+            amount = int(parts[2])
+        except ValueError:
+            await message.answer("ID и AMOUNT должны быть числами.")
+            return
+
+        if amount == 0 or abs(amount) > 1_000_000:
+            await message.answer("AMOUNT: от -1000000 до 1000000, кроме 0.")
+            return
+
+        try:
+            await db.get_user(telegram_id)
+        except KeyError:
+            await message.answer("Пользователь ещё не запускал бота.")
+            return
+
+        changed = await db.add_diamonds(
+            telegram_id=telegram_id,
+            amount=amount,
+            reason="Изменение администратором",
+            event_key=f"admin-diamonds:{message.from_user.id}:{telegram_id}:{uuid4().hex}",
+        )
+        balance = await db.diamond_balance(telegram_id)
+        if not changed:
+            await message.answer("Баланс не изменился.")
+            return
+
+        await send_screen(
+            message,
+            message.from_user,
+            f"💎 Баланс <code>{telegram_id}</code> изменён.\n"
+            f"Теперь: <b>{balance} 💎</b>",
+            reply_markup=admin_main_keyboard(),
+        )
+
+    @router.message(Command("promoproduct"))
+    async def admin_promo_product(message: Message) -> None:
+        if not is_admin(message.from_user.id):
+            return
+
+        parts = (message.text or "").split(maxsplit=3)
+        if len(parts) != 4:
+            await message.answer(
+                "Использование: /promoproduct SLUG PRICE TITLE\n"
+                "Пример: /promoproduct yandex_plus 500 Яндекс Плюс 60 дней"
+            )
+            return
+
+        slug = parts[1].strip().lower()
+        try:
+            price = int(parts[2])
+        except ValueError:
+            await message.answer("PRICE должен быть числом.")
+            return
+        title = parts[3].strip()
+
+        if not re.fullmatch(r"[a-z0-9_-]{2,48}", slug):
+            await message.answer("SLUG: только a-z, 0-9, _ и -, длина 2–48.")
+            return
+        if price < 1 or price > 1_000_000 or not title:
+            await message.answer("Проверь цену и название товара.")
+            return
+
+        await db.create_promo_product(slug, title, price)
+        await send_screen(
+            message,
+            message.from_user,
+            f"✅ Товар <b>{html.escape(title)}</b> сохранён за <b>{price} 💎</b>.\n"
+            f"Теперь добавляй коды: <code>/promocode {html.escape(slug)} CODE</code>",
+            reply_markup=admin_main_keyboard(),
+        )
+
+    @router.message(Command("promocode"))
+    async def admin_promo_code(message: Message) -> None:
+        if not is_admin(message.from_user.id):
+            return
+
+        parts = (message.text or "").split(maxsplit=2)
+        if len(parts) != 3:
+            await message.answer("Использование: /promocode SLUG CODE")
+            return
+
+        slug = parts[1].strip().lower()
+        code = parts[2].strip()
+        if not code:
+            await message.answer("CODE пустой.")
+            return
+
+        added = await db.add_promo_code(slug, code)
+        if not added:
+            await message.answer(
+                "Не удалось добавить код: товар не найден или такой код уже есть."
+            )
+            return
+
+        await send_screen(
+            message,
+            message.from_user,
+            f"✅ Код добавлен в товар <code>{html.escape(slug)}</code>.",
+            reply_markup=admin_main_keyboard(),
+        )
 
     @router.message(Command("grant"))
     async def grant(message: Message) -> None:
