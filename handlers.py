@@ -1314,7 +1314,7 @@ def build_router(
             message.from_user,
             f"{e} <b>Выберите подписку</b>\n\n"
             "До <b>5 устройств</b> на каждом тарифе.\n"
-            "Оплата через СБП.",
+            "Оплата через СБП или Telegram Stars.",
             reply_markup=plans_keyboard(config),
         )
 
@@ -1329,7 +1329,7 @@ def build_router(
             callback.from_user,
             f"{e} <b>Выберите подписку</b>\n\n"
             "До <b>5 устройств</b> на каждом тарифе.\n"
-            "Оплата через СБП.",
+            "Оплата через СБП или Telegram Stars.",
             reply_markup=plans_keyboard(config),
         )
 
@@ -2144,6 +2144,7 @@ def build_router(
             f"✅ Активные подписки: <b>{stats['active']}</b>\n"
             f"🆕 За 24 часа: <b>+{stats['new_24h']}</b>\n\n"
             f"💳 СБП: <b>{pay_status}</b>\n"
+            f"⭐ Telegram Stars: <b>включены</b>\n"
             f"🌐 VPN: <b>{vpn_status}</b>\n\n"
             "<i>Выберите раздел.</i>"
         )
@@ -2169,7 +2170,9 @@ def build_router(
             f"Пробник использовали — <b>{stats['trials']}</b>\n\n"
             "💰 <b>Оплаты</b>\n"
             f"Успешных СБП — <b>{stats['sbp_paid']}</b>\n"
-            f"СБП оборот — <b>{stats['sbp_revenue']} ₽</b>"
+            f"СБП оборот — <b>{stats['sbp_revenue']} ₽</b>\n"
+            f"Оплат Stars — <b>{stats['star_paid']}</b>\n"
+            f"Stars получено — <b>{stats['star_revenue']} ⭐</b>"
         )
         await send_screen(message, actor, text, reply_markup=kb.as_markup())
 
@@ -2258,7 +2261,13 @@ def build_router(
     async def show_admin_payments(message: Message, actor) -> None:
         payments = await db.recent_sbp_payments(10)
         kb = InlineKeyboardBuilder()
-        lines = ["💳 <b>Последние платежи СБП</b>", ""]
+        lines = [
+            "💳 <b>Последние платежи</b>",
+            f"⭐ Всего оплат Stars: <b>{(await db.admin_overview())['star_paid']}</b>",
+            "",
+            "🏦 <b>СБП</b>",
+            "",
+        ]
 
         if not payments:
             lines.append("Платежей пока нет.")
