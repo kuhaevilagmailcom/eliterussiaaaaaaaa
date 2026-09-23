@@ -108,6 +108,24 @@ PLANS: dict[str, dict[str, Any]] = {
     },
 }
 
+DIAMOND_REWARDS: dict[str, int] = {
+    "15": 10,
+    "30": 25,
+    "365": 400,
+    "forever": 700,
+}
+
+DIAMOND_SHOP_DAYS: dict[str, dict[str, int]] = {
+    "3": {"days": 3, "cost": 60},
+    "7": {"days": 7, "cost": 120},
+    "30": {"days": 30, "cost": 400},
+}
+
+EXTRA_DEVICE_COST = 250
+REFERRAL_TRIAL_REWARD = 15
+REFERRAL_FIRST_PAID_REWARD = 30
+
+
 
 def is_active(user: dict[str, Any]) -> bool:
     until = from_iso(user.get("subscription_until"))
@@ -258,7 +276,10 @@ def main_menu_inline_keyboard() -> Any:
         blue_inline_button("📱 Устройства", callback_data="menu:devices"),
     )
     kb.row(
+        blue_inline_button("💎 Алмазы", callback_data="diamonds"),
         blue_inline_button("👥 Друзья", callback_data="menu:friends"),
+    )
+    kb.row(
         blue_inline_button("🆘 Поддержка", callback_data="menu:support"),
     )
     return kb.as_markup()
@@ -309,6 +330,7 @@ def profile_text(
 
     lines = [
         f"{e_profile} <b>Ваш ID:</b> <code>{user_id}</code>",
+        f"💎 <b>Алмазы:</b> {int(user.get('diamonds') or 0)}",
         "",
         f"{e_sub} <b>Информация о подписке:</b>",
         f"├ Статус: <b>{'Активна' if active else 'Не активна'}</b>",
