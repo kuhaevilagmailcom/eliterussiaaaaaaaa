@@ -4,6 +4,7 @@ import base64
 import html
 import logging
 import re
+from io import BytesIO
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from PIL import Image
 
 from config import Config
 from db import Database, from_iso, utcnow
@@ -48,24 +50,33 @@ def main_menu_banner() -> BufferedInputFile:
             (MAIN_MENU_BANNER_DIR / f"{index:02d}.txt")
             .read_text(encoding="utf-8")
             .strip()
-            for index in range(1, 9)
+            for index in range(1, 30)
         )
-        _main_menu_banner_bytes = base64.b64decode(encoded, validate=True)
+        webp_bytes = base64.b64decode(encoded, validate=True)
 
-        if not (
-            _main_menu_banner_bytes.startswith(b"\xff\xd8")
-            and _main_menu_banner_bytes.endswith(b"\xff\xd9")
-        ):
-            raise ValueError("Invalid main menu JPEG")
+        with Image.open(BytesIO(webp_bytes)) as image:
+            image = image.convert("RGB")
+            if image.size != (1600, 900):
+                image = image.resize((1600, 900), Image.Resampling.LANCZOS)
+            output = BytesIO()
+            image.save(
+                output,
+                format="JPEG",
+                quality=95,
+                subsampling=0,
+                optimize=False,
+                progressive=False,
+            )
+            _main_menu_banner_bytes = output.getvalue()
 
         logger.info(
-            "Main menu banner loaded: %s bytes",
+            "Main menu HQ banner loaded: 1600x900, %s bytes",
             len(_main_menu_banner_bytes),
         )
 
     return BufferedInputFile(
         _main_menu_banner_bytes,
-        filename="mgn_vpn_main_menu.jpg",
+        filename="mgn_vpn_main_menu_1600x900.jpg",
     )
 
 
