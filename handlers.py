@@ -18,9 +18,7 @@ from aiogram.types import (
     BufferedInputFile,
     InlineKeyboardButton,
     KeyboardButton,
-    LabeledPrice,
     Message,
-    PreCheckoutQuery,
     ReplyKeyboardMarkup,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -72,9 +70,30 @@ def main_menu_banner() -> BufferedInputFile:
 
 
 PLANS: dict[str, dict[str, Any]] = {
-    "30": {"days": 30, "name": "30 дней", "devices": 5},
-    "90": {"days": 90, "name": "90 дней", "devices": 5},
-    "365": {"days": 365, "name": "365 дней", "devices": 5},
+    "15": {
+        "days": 15,
+        "name": "15 дней",
+        "devices": 5,
+        "price_rub": 49,
+    },
+    "30": {
+        "days": 30,
+        "name": "1 месяц",
+        "devices": 5,
+        "price_rub": 99,
+    },
+    "365": {
+        "days": 365,
+        "name": "1 год",
+        "devices": 5,
+        "price_rub": 2000,
+    },
+    "forever": {
+        "days": 36500,
+        "name": "Навсегда",
+        "devices": 5,
+        "price_rub": 3333,
+    },
 }
 
 
@@ -83,23 +102,14 @@ def is_active(user: dict[str, Any]) -> bool:
     return bool(until and until > utcnow())
 
 
-def plan_price_stars(config: Config, code: str) -> int:
-    return {
-        "30": config.plan_30_price,
-        "90": config.plan_90_price,
-        "365": config.plan_365_price,
-    }[code]
-
-
 def plan_price_rub(config: Config, code: str) -> int:
-    return {
-        "30": config.plan_30_rub,
-        "90": config.plan_90_rub,
-        "365": config.plan_365_rub,
-    }[code]
+    return int(PLANS[code]["price_rub"])
+
 
 
 def format_until(user: dict[str, Any], config: Config) -> str:
+    if user.get("plan_name") == "Навсегда":
+        return "Навсегда"
     until = from_iso(user.get("subscription_until"))
     if not until:
         return "нет"
@@ -107,6 +117,8 @@ def format_until(user: dict[str, Any], config: Config) -> str:
 
 
 def remaining_text(user: dict[str, Any]) -> str:
+    if user.get("plan_name") == "Навсегда":
+        return "Без ограничений"
     until = from_iso(user.get("subscription_until"))
     if not until:
         return "0 мин."
@@ -161,32 +173,27 @@ def strip_custom_emoji(value: str) -> str:
 
 
 def main_keyboard(
-    emoji: EmojiBank,
+    emoji: EmojiBank | None = None,
     *,
-    custom_icons: bool = True,
+    custom_icons: bool = False,
 ) -> ReplyKeyboardMarkup:
-    def button(text: str, index: int, pack: str = PACK_UI) -> KeyboardButton:
-        kwargs: dict[str, Any] = {"text": text, "style": "primary"}
-        if custom_icons:
-            custom_id = emoji.raw_id(index, pack=pack)
-            if custom_id:
-                kwargs["icon_custom_emoji_id"] = custom_id
-        return KeyboardButton(**kwargs)
+    def button(text: str) -> KeyboardButton:
+        return KeyboardButton(text=text, style="primary")
 
     return ReplyKeyboardMarkup(
         keyboard=[
-            [button("🔗 Подключить VPN", 2)],
+            [button("🔗 Подключить VPN")],
             [
-                button("👤 Профиль", 3),
-                button("ℹ️ Информация", 6),
+                button("👤 Профиль"),
+                button("ℹ️ Информация"),
             ],
             [
-                button("💎 Купить VPN", 1, PACK_CRYPTO),
-                button("📱 Устройства", 4),
+                button("💎 Купить VPN"),
+                button("📱 Устройства"),
             ],
             [
-                button("👥 Друзья", 5),
-                button("🆘 Поддержка", 7),
+                button("👥 Друзья"),
+                button("🆘 Поддержка"),
             ],
         ],
         resize_keyboard=True,
@@ -194,6 +201,7 @@ def main_keyboard(
         one_time_keyboard=False,
         input_field_placeholder="MGN VPN",
     )
+
 
 
 def blue_inline_button(
@@ -246,18 +254,13 @@ def payment_methods_keyboard(config: Config, code: str) -> Any:
     kb = InlineKeyboardBuilder()
     kb.row(
         blue_inline_button(
-            f"🏦 СБП · {plan_price_rub(config, code)} ₽",
+            f"🏦 Оплатить по СБП · {plan_price_rub(config, code)} ₽",
             callback_data=f"sbp:{code}",
-        )
-    )
-    kb.row(
-        blue_inline_button(
-            f"⭐ Telegram Stars · {plan_price_stars(config, code)}",
-            callback_data=f"stars:{code}",
         )
     )
     add_nav_buttons(kb, back_data="plans")
     return kb.as_markup()
+
 
 
 def profile_text(
@@ -624,7 +627,7 @@ def build_router(
             message.from_user,
             f"{e} <b>Выберите подписку</b>\n\n"
             "До <b>5 устройств</b> на каждом тарифе.\n"
-            "Оплата через СБП или Telegram Stars.",
+            "Оплата через СБП.",
             reply_markup=plans_keyboard(config),
         )
 
@@ -639,7 +642,7 @@ def build_router(
             callback.from_user,
             f"{e} <b>Выберите подписку</b>\n\n"
             "До <b>5 устройств</b> на каждом тарифе.\n"
-            "Оплата через СБП или Telegram Stars.",
+            "Оплата через СБП.",
             reply_markup=plans_keyboard(config),
         )
 
@@ -659,8 +662,7 @@ def build_router(
             callback.from_user,
             f"{e} <b>{plan['name']}</b>\n\n"
             f"До {plan['devices']} устройств\n"
-            f"<b>{plan_price_rub(config, code)} ₽</b>  ·  СБП\n"
-            f"<b>{plan_price_stars(config, code)} ⭐</b>  ·  Telegram Stars",
+            f"<b>{plan_price_rub(config, code)} ₽</b> · СБП",
             reply_markup=payment_methods_keyboard(config, code),
         )
 
@@ -798,72 +800,6 @@ def build_router(
                 "Оплата пока не подтверждена.",
                 show_alert=True,
             )
-
-    @router.callback_query(F.data.startswith("stars:"))
-    async def buy_stars(callback: CallbackQuery) -> None:
-        if not callback.message:
-            return
-        code = callback.data.split(":", 1)[1]
-        plan = PLANS.get(code)
-        if not plan:
-            await callback.answer("Тариф не найден", show_alert=True)
-            return
-
-        await callback.answer()
-        await callback.message.answer_invoice(
-            title=f"MGN VPN — {plan['name']}",
-            description=f"Подписка MGN VPN. До {plan['devices']} устройств.",
-            payload=f"vpn:{code}",
-            provider_token="",
-            currency="XTR",
-            prices=[
-                LabeledPrice(
-                    label=f"MGN VPN {plan['name']}",
-                    amount=plan_price_stars(config, code),
-                )
-            ],
-        )
-
-    @router.pre_checkout_query()
-    async def pre_checkout(query: PreCheckoutQuery) -> None:
-        payload = query.invoice_payload
-        if not payload.startswith("vpn:"):
-            await query.answer(ok=False, error_message="Неизвестный платёж.")
-            return
-        code = payload.split(":", 1)[1]
-        if (
-            code not in PLANS
-            or query.total_amount != plan_price_stars(config, code)
-        ):
-            await query.answer(
-                ok=False,
-                error_message="Тариф изменился. Откройте покупку заново.",
-            )
-            return
-        await query.answer(ok=True)
-
-    @router.message(F.successful_payment)
-    async def successful_payment(message: Message) -> None:
-        payment = message.successful_payment
-        if payment is None:
-            return
-        payload = payment.invoice_payload
-        code = payload.split(":", 1)[1] if payload.startswith("vpn:") else ""
-        if code not in PLANS:
-            await message.answer("Платёж получен. Обратитесь к администратору.")
-            return
-
-        await ensure_actor(message.from_user)
-        fresh = await db.record_payment(
-            telegram_id=message.from_user.id,
-            charge_id=payment.telegram_payment_charge_id,
-            payload=payload,
-            amount=payment.total_amount,
-        )
-        if fresh:
-            await activate_paid_plan(message.from_user.id, code)
-
-        await show_profile(message, message.from_user)
 
     @router.message(F.text.in_({"🔗 Подключить VPN", "🔗 Подключиться", "Подключить VPN", "Подключиться"}))
     async def connect(message: Message) -> None:
@@ -1181,8 +1117,7 @@ def build_router(
             f"Пробник использовали — <b>{stats['trials']}</b>\n\n"
             "💰 <b>Оплаты</b>\n"
             f"Успешных СБП — <b>{stats['sbp_paid']}</b>\n"
-            f"СБП оборот — <b>{stats['sbp_revenue']} ₽</b>\n"
-            f"Telegram Stars — <b>{stats['stars_revenue']} ⭐</b>"
+            f"СБП оборот — <b>{stats['sbp_revenue']} ₽</b>"
         )
         await send_screen(message, actor, text, reply_markup=kb.as_markup())
 
@@ -1263,8 +1198,7 @@ def build_router(
             f"До — <b>{format_until(user, config) if active else '—'}</b>\n"
             f"Устройств — <b>до {int(user.get('max_devices') or 1)}</b>\n"
             f"Пробник — <b>{'использован' if user.get('trial_used') else 'доступен'}</b>\n"
-            f"Приглашено — <b>{referrals}</b>\n"
-            f"Stars оплачено — <b>{int(user.get('total_paid_stars') or 0)} ⭐</b>"
+            f"Приглашено — <b>{referrals}</b>"
         )
         await send_screen(message, actor, text, reply_markup=kb.as_markup())
 
