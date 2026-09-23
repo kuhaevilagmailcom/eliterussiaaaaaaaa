@@ -18,6 +18,7 @@ from aiogram.types import (
     CallbackQuery,
     BufferedInputFile,
     InlineKeyboardButton,
+    InputMediaPhoto,
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
@@ -370,14 +371,6 @@ def build_router(
             actor.first_name,
         )
 
-    async def safe_delete(chat_id: int, message_id: int | None, bot) -> None:
-        if not message_id:
-            return
-        try:
-            await bot.delete_message(chat_id, message_id)
-        except Exception:
-            pass
-
     async def is_trial_channel_member(bot, user_id: int) -> bool:
         try:
             member = await bot.get_chat_member(
@@ -418,42 +411,79 @@ def build_router(
         user = await ensure_actor(actor)
         last_id = user.get("last_menu_message_id")
 
-        if message.from_user and not message.from_user.is_bot:
-            await safe_delete(message.chat.id, message.message_id, message.bot)
-
-        # Main UI is one persistent photo message. Normal user screens edit
-        # its caption instead of sending the banner again and again.
+        # Never delete the current UI message. The bot keeps one persistent
+        # media message and edits its photo/caption/inline keyboard in place.
         if last_id:
-            try:
-                edited = await message.bot.edit_message_caption(
-                    chat_id=message.chat.id,
-                    message_id=int(last_id),
-                    caption=text,
-                    reply_markup=None if bottom_menu else reply_markup,
-                )
-                return edited
-            except TelegramBadRequest as exc:
-                if "message is not modified" in str(exc).lower():
-                    return message
-
-                # Telegram can reject a custom-emoji entity. Retry with plain
-                # fallback emoji while keeping the same photo/message.
+            if bottom_menu:
+                try:
+                    edited = await message.bot.edit_message_media(
+                        chat_id=message.chat.id,
+                        message_id=int(last_id),
+                        media=InputMediaPhoto(
+                            media=current_main_menu_banner(),
+                            caption=text,
+                        ),
+                        reply_markup=None,
+                    )
+                    return edited
+                except TelegramBadRequest as exc:
+                    if "message is not modified" in str(exc).lower():
+                        return message
+                    logger.warning(
+                        "Could not edit main-menu media in place: %s",
+                        exc,
+                    )
+                    try:
+                        edited = await message.bot.edit_message_media(
+                            chat_id=message.chat.id,
+                            message_id=int(last_id),
+                            media=InputMediaPhoto(
+                                media=current_main_menu_banner(),
+                                caption=strip_custom_emoji(text),
+                            ),
+                            reply_markup=None,
+                        )
+                        return edited
+                    except Exception as retry_exc:
+                        logger.warning(
+                            "Main-menu media retry failed: %s",
+                            retry_exc,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Could not edit main-menu media in place: %s",
+                        exc,
+                    )
+            else:
                 try:
                     edited = await message.bot.edit_message_caption(
                         chat_id=message.chat.id,
                         message_id=int(last_id),
-                        caption=strip_custom_emoji(text),
-                        reply_markup=None if bottom_menu else reply_markup,
+                        caption=text,
+                        reply_markup=reply_markup,
                     )
                     return edited
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                except TelegramBadRequest as exc:
+                    if "message is not modified" in str(exc).lower():
+                        return message
+                    try:
+                        edited = await message.bot.edit_message_caption(
+                            chat_id=message.chat.id,
+                            message_id=int(last_id),
+                            caption=strip_custom_emoji(text),
+                            reply_markup=reply_markup,
+                        )
+                        return edited
+                    except Exception as retry_exc:
+                        logger.warning(
+                            "Caption edit retry failed: %s",
+                            retry_exc,
+                        )
+                except Exception as exc:
+                    logger.warning("Caption edit failed: %s", exc)
 
-            # If the stored menu is from an older bot version and is a text
-            # message, ordinary screens can still edit it in place.
-            if not bottom_menu:
+                # Legacy text-only menu messages are edited as text instead of
+                # being deleted/replaced. This preserves the message id.
                 try:
                     edited = await message.bot.edit_message_text(
                         chat_id=message.chat.id,
@@ -478,64 +508,38 @@ def build_router(
                 except Exception:
                     pass
 
-            # Old/uneditable menu: remove it before creating exactly one
-            # replacement, so duplicate banners never accumulate.
-            await safe_delete(message.chat.id, int(last_id), message.bot)
+            # Do not delete an existing message under any circumstances.
+            # If it cannot be edited, keep it untouched and log the problem.
+            logger.error(
+                "Persistent menu message %s could not be edited; not deleting it",
+                last_id,
+            )
+            return message
 
-        if bottom_menu:
-            try:
-                sent = await message.bot.send_photo(
-                    chat_id=message.chat.id,
-                    photo=current_main_menu_banner(),
-                    caption=text,
-                    reply_markup=main_keyboard(emoji),
-                )
-                logger.info(
-                    "Main menu banner sent to chat %s as message %s",
-                    message.chat.id,
-                    sent.message_id,
-                )
-            except TelegramBadRequest as exc:
-                logger.exception("Main menu banner send failed: %s", exc)
-                try:
-                    sent = await message.bot.send_photo(
-                        chat_id=message.chat.id,
-                        photo=current_main_menu_banner(),
-                        caption=strip_custom_emoji(text),
-                        reply_markup=main_keyboard(emoji, custom_icons=False),
-                    )
-                except Exception as retry_exc:
-                    logger.exception("Main menu banner retry failed: %s", retry_exc)
-                    sent = await message.bot.send_message(
-                        chat_id=message.chat.id,
-                        text=strip_custom_emoji(text),
-                        reply_markup=main_keyboard(emoji, custom_icons=False),
-                    )
-            except Exception as exc:
-                logger.exception("Main menu banner send crashed: %s", exc)
-                sent = await message.bot.send_message(
-                    chat_id=message.chat.id,
-                    text=strip_custom_emoji(text),
-                    reply_markup=main_keyboard(emoji, custom_icons=False),
-                )
-        else:
-            # Direct access to a section before /start: keep old behavior.
-            # Once the user opens the main menu, this text message is replaced
-            # by the single persistent banner.
-            try:
-                sent = await message.bot.send_message(
-                    message.chat.id,
-                    text,
-                    reply_markup=reply_markup,
-                )
-            except TelegramBadRequest:
-                sent = await message.bot.send_message(
-                    message.chat.id,
-                    strip_custom_emoji(text),
-                    reply_markup=reply_markup,
-                )
+        # Only the very first screen creates a bot message. After that all
+        # screens reuse this exact message id.
+        try:
+            sent = await message.bot.send_photo(
+                chat_id=message.chat.id,
+                photo=current_main_menu_banner(),
+                caption=text,
+                reply_markup=main_keyboard(emoji),
+            )
+        except TelegramBadRequest as exc:
+            logger.warning("Initial main-menu photo failed: %s", exc)
+            sent = await message.bot.send_photo(
+                chat_id=message.chat.id,
+                photo=current_main_menu_banner(),
+                caption=strip_custom_emoji(text),
+                reply_markup=main_keyboard(emoji, custom_icons=False),
+            )
 
         await db.set_last_menu_message(actor.id, sent.message_id)
+        logger.info(
+            "Persistent menu created for %s as message %s",
+            actor.id,
+            sent.message_id,
+        )
         return sent
 
     async def show_home(message: Message, actor) -> None:
@@ -626,15 +630,9 @@ def build_router(
         photo = source_message.photo[-1]
         save_main_menu_banner_file_id(photo.file_id)
 
-        # Remove the old menu message for this admin, so the next /start
-        # creates one fresh menu with the newly selected photo.
-        user = await ensure_actor(message.from_user)
-        old_menu_id = user.get("last_menu_message_id")
-        if old_menu_id:
-            await safe_delete(message.chat.id, int(old_menu_id), message.bot)
-        await db.set_last_menu_message(message.from_user.id, None)
-
-        await message.answer("✅ Баннер главного меню обновлён. Нажми /start.")
+        # Update the existing main-menu message in place. No delete, no new
+        # confirmation message, no duplicate banner.
+        await show_home(message, message.from_user)
 
     @router.message(CommandStart())
     async def start(message: Message, command: CommandObject) -> None:
