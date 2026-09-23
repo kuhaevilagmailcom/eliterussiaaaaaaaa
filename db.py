@@ -116,6 +116,17 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_promo_codes_product
                 ON promo_codes(product_id, redeemed_by);
+
+
+                CREATE TABLE IF NOT EXISTS admin_roles (
+                    telegram_id INTEGER PRIMARY KEY,
+                    role TEXT NOT NULL CHECK(role IN ('full', 'limited')),
+                    granted_by INTEGER NOT NULL,
+                    granted_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_admin_roles_role
+                ON admin_roles(role);
                 """
             )
 
@@ -843,10 +854,77 @@ class Database:
             await db.commit()
             return cursor.rowcount == 1
 
+    async def get_admin_role(self, telegram_id: int) -> str | None:
+        async with aiosqlite.connect(self.path) as db:
+            row = await (
+                await db.execute(
+                    "SELECT role FROM admin_roles WHERE telegram_id=?",
+                    (telegram_id,),
+                )
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    async def set_admin_role(
+        self,
+        telegram_id: int,
+        role: str,
+        granted_by: int,
+    ) -> None:
+        role = role.strip().lower()
+        if role not in {"full", "limited"}:
+            raise ValueError("role must be full or limited")
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO admin_roles (
+                    telegram_id, role, granted_by, granted_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(telegram_id) DO UPDATE SET
+                    role=excluded.role,
+                    granted_by=excluded.granted_by,
+                    granted_at=excluded.granted_at
+                """,
+                (
+                    telegram_id,
+                    role,
+                    granted_by,
+                    to_iso(utcnow()),
+                ),
+            )
+            await db.commit()
+
+    async def remove_admin_role(self, telegram_id: int) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                "DELETE FROM admin_roles WHERE telegram_id=?",
+                (telegram_id,),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
+    async def list_admin_roles(self) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT a.telegram_id, a.role, a.granted_by, a.granted_at,
+                           u.username, u.first_name
+                    FROM admin_roles a
+                    LEFT JOIN users u ON u.telegram_id=a.telegram_id
+                    ORDER BY
+                        CASE a.role WHEN 'full' THEN 0 ELSE 1 END,
+                        a.granted_at DESC
+                    """
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     async def admin_overview(self) -> dict[str, int]:
         now = to_iso(utcnow())
         day_ago = to_iso(utcnow() - timedelta(days=1))
         week_ago = to_iso(utcnow() - timedelta(days=7))
+        month_ago = to_iso(utcnow() - timedelta(days=30))
 
         async with aiosqlite.connect(self.path) as db:
             total = (await (await db.execute(
@@ -867,6 +945,19 @@ class Database:
             new_7d = (await (await db.execute(
                 "SELECT COUNT(*) FROM users WHERE created_at >= ?",
                 (week_ago,),
+            )).fetchone())[0]
+            new_30d = (await (await db.execute(
+                "SELECT COUNT(*) FROM users WHERE created_at >= ?",
+                (month_ago,),
+            )).fetchone())[0]
+            active_paid = (await (await db.execute(
+                """
+                SELECT COUNT(*) FROM users
+                WHERE subscription_until IS NOT NULL
+                  AND subscription_until > ?
+                  AND plan_name != 'Пробный'
+                """,
+                (now,),
             )).fetchone())[0]
             trials = (await (await db.execute(
                 "SELECT COUNT(*) FROM users WHERE trial_used=1"
@@ -889,6 +980,8 @@ class Database:
             "active": int(active),
             "new_24h": int(new_24h),
             "new_7d": int(new_7d),
+            "new_30d": int(new_30d),
+            "active_paid": int(active_paid),
             "trials": int(trials),
             "sbp_paid": int(sbp_paid),
             "sbp_revenue": int(sbp_revenue),
