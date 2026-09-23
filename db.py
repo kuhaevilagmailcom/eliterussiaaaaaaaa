@@ -374,7 +374,7 @@ class Database:
             row = await (
                 await db.execute(
                     """
-                    SELECT subscription_until, diamonds, max_devices
+                    SELECT subscription_until, diamonds, max_devices, bonus_devices
                     FROM users
                     WHERE telegram_id=?
                     """,
@@ -399,19 +399,26 @@ class Database:
             start = max(utcnow(), current) if current else utcnow()
             until = start + timedelta(days=days)
 
+            effective_devices = max(
+                int(row["max_devices"] or 1),
+                5 + int(row["bonus_devices"] or 0),
+            )
+
             await db.execute(
                 """
                 UPDATE users
                 SET diamonds=diamonds-?,
                     subscription_until=?,
                     plan_name=?,
-                    traffic_limit_gb=0
+                    traffic_limit_gb=0,
+                    max_devices=?
                 WHERE telegram_id=?
                 """,
                 (
                     cost,
                     to_iso(until),
                     f"Бонус: {days} дн.",
+                    effective_devices,
                     telegram_id,
                 ),
             )
