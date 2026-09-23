@@ -451,6 +451,13 @@ def build_router(
         banner_file_id_path.parent.mkdir(parents=True, exist_ok=True)
         banner_file_id_path.write_text(file_id.strip(), encoding="utf-8")
 
+
+    def clear_main_menu_banner_file_id() -> None:
+        try:
+            banner_file_id_path.unlink(missing_ok=True)
+        except Exception:
+            logger.exception("Could not clear saved main-menu banner file_id")
+
     async def ensure_actor(actor) -> dict[str, Any]:
         return await db.ensure_user(
             actor.id,
@@ -514,21 +521,38 @@ def build_router(
         last_id = user.get("last_menu_message_id")
 
         async def create_first_menu() -> Message:
+            banner = current_main_menu_banner()
             try:
                 sent = await message.bot.send_photo(
                     chat_id=message.chat.id,
-                    photo=current_main_menu_banner(),
+                    photo=banner,
                     caption=text,
                     reply_markup=main_menu_inline_keyboard(),
                 )
             except TelegramBadRequest as exc:
                 logger.warning("Initial main-menu photo failed: %s", exc)
-                sent = await message.bot.send_photo(
-                    chat_id=message.chat.id,
-                    photo=current_main_menu_banner(),
-                    caption=strip_custom_emoji(text),
-                    reply_markup=main_menu_inline_keyboard(),
-                )
+
+                # A Telegram file_id belongs to the bot that uploaded it and
+                # can become unusable after token/bot changes. Fall back to
+                # the bundled banner instead of leaving /start silent.
+                if isinstance(banner, str):
+                    clear_main_menu_banner_file_id()
+                    banner = main_menu_banner()
+
+                try:
+                    sent = await message.bot.send_photo(
+                        chat_id=message.chat.id,
+                        photo=banner,
+                        caption=text,
+                        reply_markup=main_menu_inline_keyboard(),
+                    )
+                except TelegramBadRequest:
+                    sent = await message.bot.send_photo(
+                        chat_id=message.chat.id,
+                        photo=banner,
+                        caption=strip_custom_emoji(text),
+                        reply_markup=main_menu_inline_keyboard(),
+                    )
 
             await db.set_last_menu_message(actor.id, sent.message_id)
             logger.info(
