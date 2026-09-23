@@ -1342,6 +1342,7 @@ def build_router(
         if not plan:
             await callback.answer("Тариф не найден", show_alert=True)
             return
+
         await callback.answer()
         e = emoji.icon(2, pack=PACK_CRYPTO)
         await send_screen(
@@ -1349,15 +1350,85 @@ def build_router(
             callback.from_user,
             f"{e} <b>{plan['name']}</b>\n\n"
             f"До {plan['devices']} устройств\n"
-            f"<b>{plan_price_rub(config, code)} ₽</b> · СБП",
+            f"🏦 <b>{plan_price_rub(config, code)} ₽</b> · СБП\n"
+            f"⭐ <b>{plan_price_stars(config, code)} Stars</b>\n"
+            f"💎 После оплаты: <b>+{DIAMOND_REWARDS.get(code, 0)} 💎</b>\n\n"
+            f"<i>Курс для тарифов: {STAR_RATE_XTR} ⭐ = {STAR_RATE_RUB} ₽.</i>",
             reply_markup=payment_methods_keyboard(config, code),
         )
 
-    @router.callback_query(F.data.startswith("sbp:"))
-    async def buy_sbp(callback: CallbackQuery) -> None:
+    @router.callback_query(F.data.startswith("gift:"))
+    async def start_gift(callback: CallbackQuery) -> None:
         if not callback.message:
             return
         code = callback.data.split(":", 1)[1]
+        if code not in PLANS:
+            await callback.answer("Тариф не найден", show_alert=True)
+            return
+
+        pending_gift_plans[callback.from_user.id] = code
+        await callback.answer()
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "🎁 <b>Подписка другому человеку</b>\n\n"
+            "Отправьте следующим сообщением <b>@username</b> получателя.\n\n"
+            "<i>Получатель должен хотя бы один раз запустить @mgnvpn_bot.</i>",
+            reply_markup=section_nav_keyboard(back_data=f"plan:{code}"),
+        )
+
+    @router.message(F.text.regexp(r"^@[A-Za-z0-9_]{3,32}$"))
+    async def gift_username(message: Message) -> None:
+        code = pending_gift_plans.get(message.from_user.id)
+        if not code:
+            return
+
+        target = await db.get_user_by_username(message.text or "")
+        if not target:
+            await send_screen(
+                message,
+                message.from_user,
+                "🎁 <b>Пользователь не найден</b>\n\n"
+                "Попросите человека сначала запустить <b>@mgnvpn_bot</b>, "
+                "после этого снова отправьте его @username.",
+                reply_markup=section_nav_keyboard(back_data=f"plan:{code}"),
+            )
+            return
+
+        target_id = int(target["telegram_id"])
+        target_username = target.get("username")
+        label = (
+            f"@{html.escape(str(target_username))}"
+            if target_username
+            else f"<code>{target_id}</code>"
+        )
+
+        pending_gift_plans.pop(message.from_user.id, None)
+        plan = PLANS[code]
+
+        await send_screen(
+            message,
+            message.from_user,
+            "🎁 <b>Подарочная подписка</b>\n\n"
+            f"Получатель — <b>{label}</b>\n"
+            f"Тариф — <b>{plan['name']}</b>\n"
+            f"🏦 {plan_price_rub(config, code)} ₽\n"
+            f"⭐ {plan_price_stars(config, code)} Stars\n\n"
+            "Выберите способ оплаты.",
+            reply_markup=payment_methods_keyboard(
+                config,
+                code,
+                target_telegram_id=target_id,
+            ),
+        )
+
+    async def begin_sbp_checkout(
+        callback: CallbackQuery,
+        code: str,
+        target_telegram_id: int,
+    ) -> None:
+        if not callback.message:
+            return
         plan = PLANS.get(code)
         if not plan:
             await callback.answer("Тариф не найден", show_alert=True)
@@ -1371,15 +1442,34 @@ def build_router(
 
         await callback.answer()
         await ensure_actor(callback.from_user)
+
+        try:
+            target = await db.get_user(target_telegram_id)
+        except KeyError:
+            await callback.answer(
+                "Получатель больше не найден в базе.",
+                show_alert=True,
+            )
+            return
+
         order_id = f"vpn-{callback.from_user.id}-{uuid4().hex[:12]}"
         amount = plan_price_rub(config, code)
+        target_label = (
+            f"@{target['username']}"
+            if target.get("username")
+            else str(target_telegram_id)
+        )
 
         try:
             payment = await create_payment(
                 config,
                 order_id=order_id,
                 amount=Decimal(amount),
-                description=f"MGN VPN {plan['name']}",
+                description=(
+                    f"MGN VPN {plan['name']}"
+                    if target_telegram_id == callback.from_user.id
+                    else f"MGN VPN {plan['name']} для {target_label}"
+                ),
                 user_id=callback.from_user.id,
             )
             payment_id = str(payment["payment_id"])
@@ -1388,6 +1478,7 @@ def build_router(
                 payment_id=payment_id,
                 order_id=order_id,
                 telegram_id=callback.from_user.id,
+                target_telegram_id=target_telegram_id,
                 plan_code=code,
                 amount_rub=amount,
             )
@@ -1396,7 +1487,7 @@ def build_router(
                 callback.message,
                 callback.from_user,
                 "<b>Не удалось создать платёж.</b>\nПопробуйте ещё раз немного позже.",
-                bottom_menu=True,
+                reply_markup=section_nav_keyboard(back_data=f"plan:{code}"),
             )
             return
 
@@ -1410,15 +1501,248 @@ def build_router(
         )
         add_nav_buttons(kb, back_data=f"plan:{code}")
 
-        e = emoji.icon(4, pack=PACK_CRYPTO)
+        gift_line = (
+            ""
+            if target_telegram_id == callback.from_user.id
+            else f"Получатель — <b>{html.escape(target_label)}</b>\n"
+        )
         await send_screen(
             callback.message,
             callback.from_user,
-            f"{e} <b>Оплата по СБП</b>\n\n"
+            "🏦 <b>Оплата по СБП</b>\n\n"
+            f"{gift_line}"
             f"Тариф — <b>{plan['name']}</b>\n"
             f"Сумма — <b>{amount} ₽</b>\n\n"
             "Оплатите счёт и нажмите «Проверить оплату».",
             reply_markup=kb.as_markup(),
+        )
+
+    @router.callback_query(F.data.startswith("sbp:"))
+    async def buy_sbp(callback: CallbackQuery) -> None:
+        code = callback.data.split(":", 1)[1]
+        await begin_sbp_checkout(
+            callback,
+            code,
+            callback.from_user.id,
+        )
+
+    @router.callback_query(F.data.startswith("sbpgift:"))
+    async def buy_sbp_gift(callback: CallbackQuery) -> None:
+        parts = callback.data.split(":")
+        if len(parts) != 3 or not parts[2].isdigit():
+            await callback.answer("Некорректный получатель", show_alert=True)
+            return
+        await begin_sbp_checkout(callback, parts[1], int(parts[2]))
+
+    async def begin_stars_checkout(
+        callback: CallbackQuery,
+        code: str,
+        target_telegram_id: int,
+    ) -> None:
+        if not callback.message:
+            return
+
+        plan = PLANS.get(code)
+        if not plan:
+            await callback.answer("Тариф не найден", show_alert=True)
+            return
+
+        try:
+            target = await db.get_user(target_telegram_id)
+        except KeyError:
+            await callback.answer(
+                "Получатель не найден в базе.",
+                show_alert=True,
+            )
+            return
+
+        stars = plan_price_stars(config, code)
+        payload = (
+            f"xtr|{code}|{callback.from_user.id}|"
+            f"{target_telegram_id}|{uuid4().hex[:12]}"
+        )
+        target_label = (
+            f"@{target['username']}"
+            if target.get("username")
+            else str(target_telegram_id)
+        )
+
+        try:
+            invoice_url = await callback.message.bot.create_invoice_link(
+                title=f"MGN VPN · {plan['name']}",
+                description=(
+                    f"Подписка MGN VPN: {plan['name']}"
+                    if target_telegram_id == callback.from_user.id
+                    else f"Подписка MGN VPN для {target_label}: {plan['name']}"
+                ),
+                payload=payload,
+                currency="XTR",
+                prices=[
+                    LabeledPrice(
+                        label=f"MGN VPN · {plan['name']}",
+                        amount=stars,
+                    )
+                ],
+            )
+        except Exception as exc:
+            logger.exception("Stars invoice creation failed: %s", exc)
+            await callback.answer(
+                "Не удалось создать оплату Stars.",
+                show_alert=True,
+            )
+            return
+
+        await callback.answer()
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                f"⭐ Оплатить {stars} Stars",
+                url=invoice_url,
+            )
+        )
+        add_nav_buttons(kb, back_data=f"plan:{code}")
+
+        gift_line = (
+            ""
+            if target_telegram_id == callback.from_user.id
+            else f"Получатель — <b>{html.escape(target_label)}</b>\n"
+        )
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "⭐ <b>Оплата Telegram Stars</b>\n\n"
+            f"{gift_line}"
+            f"Тариф — <b>{plan['name']}</b>\n"
+            f"Стоимость — <b>{stars} ⭐</b>\n"
+            f"Эквивалент тарифа — <b>{plan_price_rub(config, code)} ₽</b>\n\n"
+            "Нажмите кнопку ниже и подтвердите оплату в Telegram.",
+            reply_markup=kb.as_markup(),
+        )
+
+    @router.callback_query(F.data.startswith("stars:"))
+    async def buy_stars(callback: CallbackQuery) -> None:
+        code = callback.data.split(":", 1)[1]
+        await begin_stars_checkout(
+            callback,
+            code,
+            callback.from_user.id,
+        )
+
+    @router.callback_query(F.data.startswith("starsgift:"))
+    async def buy_stars_gift(callback: CallbackQuery) -> None:
+        parts = callback.data.split(":")
+        if len(parts) != 3 or not parts[2].isdigit():
+            await callback.answer("Некорректный получатель", show_alert=True)
+            return
+        await begin_stars_checkout(callback, parts[1], int(parts[2]))
+
+    @router.pre_checkout_query()
+    async def pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
+        payload = pre_checkout_query.invoice_payload or ""
+        parts = payload.split("|")
+        if len(parts) != 5 or parts[0] != "xtr":
+            await pre_checkout_query.answer(
+                ok=False,
+                error_message="Некорректный платёж.",
+            )
+            return
+
+        _, code, buyer_raw, target_raw, _nonce = parts
+        if (
+            code not in PLANS
+            or not buyer_raw.isdigit()
+            or not target_raw.isdigit()
+            or int(buyer_raw) != pre_checkout_query.from_user.id
+            or pre_checkout_query.currency != "XTR"
+            or pre_checkout_query.total_amount != plan_price_stars(config, code)
+        ):
+            await pre_checkout_query.answer(
+                ok=False,
+                error_message="Параметры оплаты изменились. Откройте тариф заново.",
+            )
+            return
+
+        try:
+            await db.get_user(int(target_raw))
+        except KeyError:
+            await pre_checkout_query.answer(
+                ok=False,
+                error_message="Получатель не найден.",
+            )
+            return
+
+        await pre_checkout_query.answer(ok=True)
+
+    @router.message(F.successful_payment)
+    async def stars_success(message: Message) -> None:
+        payment = message.successful_payment
+        if not payment or payment.currency != "XTR":
+            return
+
+        parts = (payment.invoice_payload or "").split("|")
+        if len(parts) != 5 or parts[0] != "xtr":
+            return
+
+        _, code, buyer_raw, target_raw, _nonce = parts
+        if (
+            code not in PLANS
+            or not buyer_raw.isdigit()
+            or not target_raw.isdigit()
+            or int(buyer_raw) != message.from_user.id
+            or payment.total_amount != plan_price_stars(config, code)
+        ):
+            logger.error("Rejected malformed Stars success payload: %s", payment.invoice_payload)
+            return
+
+        buyer_id = int(buyer_raw)
+        target_id = int(target_raw)
+        charge_id = payment.telegram_payment_charge_id
+
+        fresh = await db.record_star_payment(
+            telegram_payment_charge_id=charge_id,
+            buyer_telegram_id=buyer_id,
+            target_telegram_id=target_id,
+            plan_code=code,
+            stars=int(payment.total_amount),
+        )
+
+        reward_amount = 0
+        if fresh:
+            _target_user, reward_amount = await apply_paid_purchase(
+                buyer_telegram_id=buyer_id,
+                target_telegram_id=target_id,
+                code=code,
+                payment_event_key=f"stars:{charge_id}",
+            )
+
+        if target_id == buyer_id:
+            await show_profile(message, message.from_user)
+            return
+
+        try:
+            target = await db.get_user(target_id)
+            target_label = (
+                f"@{target['username']}"
+                if target.get("username")
+                else str(target_id)
+            )
+        except KeyError:
+            target_label = str(target_id)
+
+        bonus_line = (
+            f"\n💎 Вам начислено <b>+{reward_amount} 💎</b>."
+            if reward_amount
+            else ""
+        )
+        await send_screen(
+            message,
+            message.from_user,
+            "✅ <b>Подарок активирован</b>\n\n"
+            f"Получатель — <b>{html.escape(target_label)}</b>\n"
+            f"Тариф — <b>{PLANS[code]['name']}</b>\n"
+            f"Оплачено — <b>{payment.total_amount} ⭐</b>"
+            f"{bonus_line}",
+            reply_markup=section_nav_keyboard(back_data="home"),
         )
 
     @router.callback_query(F.data.startswith("checksbp:"))
@@ -1468,37 +1792,47 @@ def build_router(
         if status == "paid":
             fresh = await db.mark_sbp_paid(payment_id)
             reward_amount = 0
+            target_id = int(
+                local.get("target_telegram_id")
+                or callback.from_user.id
+            )
+
             if fresh:
-                plan_code = str(local["plan_code"])
-                await activate_paid_plan(
-                    callback.from_user.id,
-                    plan_code,
+                _target_user, reward_amount = await apply_paid_purchase(
+                    buyer_telegram_id=callback.from_user.id,
+                    target_telegram_id=target_id,
+                    code=str(local["plan_code"]),
+                    payment_event_key=f"sbp:{payment_id}",
                 )
-
-                reward_amount = int(DIAMOND_REWARDS.get(plan_code, 0))
-                if reward_amount:
-                    await db.add_diamonds(
-                        telegram_id=callback.from_user.id,
-                        amount=reward_amount,
-                        reason=f"Покупка VPN: {PLANS[plan_code]['name']}",
-                        event_key=f"payment-reward:{payment_id}",
-                    )
-
-                paid_user = await db.get_user(callback.from_user.id)
-                referrer_id = paid_user.get("referrer_id")
-                if referrer_id:
-                    await db.add_diamonds(
-                        telegram_id=int(referrer_id),
-                        amount=REFERRAL_FIRST_PAID_REWARD,
-                        reason="Друг впервые купил VPN",
-                        event_key=f"referral-first-paid:{callback.from_user.id}",
-                    )
 
             if reward_amount:
                 await callback.answer(f"Оплата получена · +{reward_amount} 💎")
             else:
                 await callback.answer("Оплата получена")
-            await show_profile(callback.message, callback.from_user)
+
+            if target_id == callback.from_user.id:
+                await show_profile(callback.message, callback.from_user)
+                return
+
+            try:
+                target = await db.get_user(target_id)
+                target_label = (
+                    f"@{target['username']}"
+                    if target.get("username")
+                    else str(target_id)
+                )
+            except KeyError:
+                target_label = str(target_id)
+
+            await send_screen(
+                callback.message,
+                callback.from_user,
+                "✅ <b>Подарок активирован</b>\n\n"
+                f"Получатель — <b>{html.escape(target_label)}</b>\n"
+                f"Тариф — <b>{PLANS[str(local['plan_code'])]['name']}</b>\n"
+                f"Оплачено — <b>{int(local['amount_rub'])} ₽</b>",
+                reply_markup=section_nav_keyboard(back_data="home"),
+            )
             return
 
         await db.set_sbp_status(payment_id, status or "processing")
