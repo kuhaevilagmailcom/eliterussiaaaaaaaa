@@ -21,6 +21,9 @@ class VpnState:
 
 
 class VpnProvider:
+    service_ready: bool = True
+    mode_name: str = "vpn"
+
     async def provision(self, user: dict[str, Any]) -> VpnState:
         raise NotImplementedError
 
@@ -35,13 +38,19 @@ class VpnProvider:
 
 
 class DemoVpnProvider(VpnProvider):
+    service_ready = False
+    mode_name = "demo"
+
     def __init__(self, base_url: str, server_name: str):
         self.base_url = base_url
         self.server_name = server_name
 
     def _state(self, user: dict[str, Any]) -> VpnState:
         return VpnState(
-            subscription_url=f'{self.base_url}/{quote(user["sub_token"])}',
+            # Demo mode intentionally does not expose a fake connection URL.
+            # As soon as a real provider is configured, handlers use the
+            # provider's actual subscription URL automatically.
+            subscription_url="",
             server=self.server_name,
             traffic_used_gb=0.0,
             traffic_limit_gb=float(user["traffic_limit_gb"] or 0),
@@ -59,6 +68,9 @@ class DemoVpnProvider(VpnProvider):
 
 
 class WebhookVpnProvider(VpnProvider):
+    service_ready = True
+    mode_name = "webhook"
+
     def __init__(self, api_url: str, api_token: str):
         if not api_url:
             raise RuntimeError("VPN_API_URL is required for VPN_MODE=webhook")
@@ -131,7 +143,10 @@ class WebhookVpnProvider(VpnProvider):
 
 
 class XuiVpnProvider(VpnProvider):
-    """Native provider for current 3x-ui client API."""
+    """Native provider for the configured 3x-ui client API."""
+
+    service_ready = True
+    mode_name = "3xui"
 
     def __init__(
         self,
