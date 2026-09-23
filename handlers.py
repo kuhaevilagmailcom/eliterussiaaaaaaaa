@@ -174,11 +174,7 @@ def remaining_text(user: dict[str, Any]) -> str:
 
 def fallback_state(user: dict[str, Any], config: Config) -> VpnState:
     return VpnState(
-        subscription_url=(
-            f'{config.vpn_sub_base_url}/{quote(user["sub_token"])}'
-            if user.get("sub_token")
-            else ""
-        ),
+        subscription_url="",
         server=config.vpn_server_name,
         traffic_used_gb=0.0,
         traffic_limit_gb=0.0,
@@ -193,6 +189,8 @@ async def load_state(
 ) -> tuple[VpnState, bool]:
     if not is_active(user):
         return fallback_state(user, config), True
+    if not getattr(provider, "service_ready", True):
+        return fallback_state(user, config), False
     try:
         return await provider.get_state(user), True
     except Exception:
@@ -504,6 +502,7 @@ def build_router(
         reply_markup=main_menu_inline_keyboard(),
         bottom_menu: bool = False,
         recover_on_edit_failure: bool = False,
+        force_new: bool = False,
     ) -> Message:
         user = await ensure_actor(actor)
         last_id = user.get("last_menu_message_id")
@@ -532,6 +531,40 @@ def build_router(
                 sent.message_id,
             )
             return sent
+
+        if force_new:
+            # Explicit /start must always produce a visible response at the
+            # bottom of the chat. Keep at most one tracked bot UI message:
+            # remove the previous one when Telegram allows it, then create a
+            # fresh menu. If it was already deleted, just recreate it.
+            if last_id:
+                try:
+                    await message.bot.delete_message(
+                        chat_id=message.chat.id,
+                        message_id=int(last_id),
+                    )
+                except TelegramBadRequest as exc:
+                    error_text = str(exc).lower()
+                    if (
+                        "message to delete not found" not in error_text
+                        and "message not found" not in error_text
+                    ):
+                        logger.warning(
+                            "Could not remove previous menu %s for user %s: %s",
+                            last_id,
+                            actor.id,
+                            exc,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Could not remove previous menu %s for user %s: %s",
+                        last_id,
+                        actor.id,
+                        exc,
+                    )
+
+            await db.set_last_menu_message(actor.id, None)
+            return await create_first_menu()
 
         if not last_id:
             return await create_first_menu()
@@ -713,6 +746,7 @@ def build_router(
         actor,
         *,
         recover_on_edit_failure: bool = False,
+        force_new: bool = False,
     ) -> None:
         user = await ensure_actor(actor)
         state, ok = await load_state(user, provider, config)
@@ -760,6 +794,7 @@ def build_router(
             "\n".join(lines),
             bottom_menu=True,
             recover_on_edit_failure=recover_on_edit_failure,
+            force_new=force_new,
         )
 
     async def show_profile(message: Message, actor) -> None:
@@ -910,8 +945,12 @@ def build_router(
         )
         try:
             await provider.provision(user)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "VPN provisioning deferred for user %s: %s",
+                telegram_id,
+                exc,
+            )
         return user
 
 
@@ -973,10 +1012,19 @@ def build_router(
                     message.from_user.id,
                     int(raw),
                 )
+        try:
+            await message.bot.send_chat_action(
+                chat_id=message.chat.id,
+                action="typing",
+            )
+        except Exception:
+            pass
+
         await show_home(
             message,
             message.from_user,
             recover_on_edit_failure=True,
+            force_new=True,
         )
 
     @router.message(F.text.in_({"🏠 Главное", "Главное", "🏠 Главное меню", "Главное меню"}))
@@ -1026,12 +1074,24 @@ def build_router(
             return
 
         state, ok = await load_state(user, provider, config)
+        if not getattr(provider, "service_ready", True):
+            await send_screen(
+                callback.message,
+                callback.from_user,
+                "🔗 <b>Подключение VPN</b>\n\n"
+                "Подписка активна, но VPN-серверы пока ещё не подключены.\n\n"
+                "Бот уже готов: после подключения серверов здесь автоматически "
+                "появится ваша персональная ссылка.",
+                reply_markup=section_nav_keyboard(),
+            )
+            return
         if not ok or not state.subscription_url:
             await send_screen(
                 callback.message,
                 callback.from_user,
                 "🔗 <b>Подключение VPN</b>\n\n"
-                "Ссылка подключения пока недоступна. Попробуйте немного позже.",
+                "VPN-сервер временно не ответил. Подписка сохранена — "
+                "попробуйте открыть подключение немного позже.",
                 reply_markup=section_nav_keyboard(),
             )
             return
@@ -1901,12 +1961,24 @@ def build_router(
             return
 
         state, ok = await load_state(user, provider, config)
+        if not getattr(provider, "service_ready", True):
+            await send_screen(
+                message,
+                message.from_user,
+                "🔗 <b>Подключение VPN</b>\n\n"
+                "Подписка активна, но VPN-серверы пока ещё не подключены.\n\n"
+                "Бот уже готов: после подключения серверов здесь автоматически "
+                "появится ваша персональная ссылка.",
+                reply_markup=section_nav_keyboard(),
+            )
+            return
         if not ok or not state.subscription_url:
             await send_screen(
                 message,
                 message.from_user,
                 "🔗 <b>Подключение VPN</b>\n\n"
-                "Ссылка подключения пока недоступна. Попробуйте немного позже.",
+                "VPN-сервер временно не ответил. Подписка сохранена — "
+                "попробуйте открыть подключение немного позже.",
                 reply_markup=section_nav_keyboard(),
             )
             return
@@ -1986,8 +2058,12 @@ def build_router(
 
         try:
             await provider.provision(user)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Trial VPN provisioning deferred for user %s: %s",
+                callback.from_user.id,
+                exc,
+            )
 
         await callback.answer("Пробный VPN активирован")
         await show_profile(callback.message, callback.from_user)
@@ -2056,17 +2132,66 @@ def build_router(
             return
         device_id = callback.data.split(":", 1)[1]
         user = await ensure_actor(callback.from_user)
+        if not getattr(provider, "service_ready", True):
+            await callback.answer(
+                "VPN-серверы пока не подключены.",
+                show_alert=True,
+            )
+            return
+
         try:
             await provider.delete_device(user, device_id)
             await callback.answer("Устройство отключено")
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Device delete failed for user %s, device %s: %s",
+                callback.from_user.id,
+                device_id,
+                exc,
+            )
             await callback.answer(
                 "Не удалось отключить устройство.",
                 show_alert=True,
             )
             return
 
-        await show_profile(callback.message, callback.from_user)
+        # Refresh device list in the same persistent UI message.
+        state, ok = await load_state(user, provider, config)
+        e = emoji.icon(7, pack=PACK_UI)
+        lines = [
+            f"{e} <b>Устройства</b>",
+            "",
+            f"Подключено — <b>{len(state.devices)} из {int(user.get('max_devices') or 1)}</b>",
+        ]
+        kb = InlineKeyboardBuilder()
+        if state.devices:
+            lines.append("")
+            for i, item in enumerate(state.devices[:10], start=1):
+                name = html.escape(
+                    str(item.get("name") or item.get("device_name") or f"Устройство {i}")
+                )
+                platform = html.escape(str(item.get("platform") or item.get("os") or ""))
+                suffix = f" — {platform}" if platform else ""
+                lines.append(f"{i}. {name}{suffix}")
+                item_id = str(item.get("id") or item.get("device_id") or "")
+                if item_id and len(item_id.encode("utf-8")) <= 36:
+                    kb.row(
+                        blue_inline_button(
+                            f"❌ Отключить устройство {i}",
+                            callback_data=f"deldev:{item_id}",
+                        )
+                    )
+        else:
+            lines += ["", "<i>Подключённых устройств пока нет.</i>"]
+        if not ok:
+            lines += ["", "<i>VPN-сервер временно не ответил.</i>"]
+        add_nav_buttons(kb, back_data="home")
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
+        )
 
     @router.message(F.text.in_({"👥 Друзья", "👥 Пригласить друга", "Пригласить друга", "Друзья"}))
     async def invite(message: Message) -> None:
@@ -2360,7 +2485,7 @@ def build_router(
     async def show_admin_system(message: Message, actor) -> None:
         rolly = "✅ настроена" if config.rollypay_enabled else "❌ не настроена"
         rolly_mode = "тест" if config.rollypay_test_mode else "боевой"
-        vpn_ready = "✅" if config.vpn_mode != "demo" else "⚠️"
+        vpn_ready = "✅" if getattr(provider, "service_ready", True) else "⚠️"
 
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:system"))
@@ -2369,6 +2494,7 @@ def build_router(
         text = (
             "⚙️ <b>Система</b>\n\n"
             f"{vpn_ready} VPN режим — <b>{html.escape(config.vpn_mode)}</b>\n"
+            f"🔗 Реальные подключения — <b>{'готовы' if getattr(provider, 'service_ready', True) else 'ожидают серверы'}</b>\n"
             f"🌐 Сервер — <b>{html.escape(config.vpn_server_name)}</b>\n"
             f"💳 RollyPay — <b>{rolly}</b>\n"
             f"🧾 Режим оплаты — <b>{rolly_mode}</b>\n"
