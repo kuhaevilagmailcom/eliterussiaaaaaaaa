@@ -237,7 +237,6 @@ def add_nav_buttons(
 ) -> None:
     kb.row(
         blue_inline_button("⬅️ Назад", callback_data=back_data),
-        blue_inline_button("🏠 Главное меню", callback_data="home"),
     )
 
 
@@ -377,11 +376,24 @@ def build_router(
                 chat_id=config.trial_channel_username,
                 user_id=user_id,
             )
-        except Exception:
+        except Exception as exc:
+            logger.exception(
+                "Trial channel membership check failed for user %s in %s: %s",
+                user_id,
+                config.trial_channel_username,
+                exc,
+            )
             return False
 
         status = getattr(member.status, "value", str(member.status))
-        return status in {"member", "administrator", "creator"}
+        if status in {"member", "administrator", "creator"}:
+            return True
+
+        # Restricted members may still be members of the channel.
+        if status == "restricted" and bool(getattr(member, "is_member", False)):
+            return True
+
+        return False
 
     def trial_channel_keyboard() -> Any:
         kb = InlineKeyboardBuilder()
@@ -857,37 +869,31 @@ def build_router(
     async def connect(message: Message) -> None:
         user = await ensure_actor(message.from_user)
         if not is_active(user):
-            kb = InlineKeyboardBuilder()
             if not user.get("trial_used"):
+                await send_screen(
+                    message,
+                    message.from_user,
+                    "🎁 <b>Пробная подписка</b>\n\n"
+                    f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
+                    "затем нажмите <b>«✅ Проверить подписку»</b>.",
+                    reply_markup=trial_channel_keyboard(),
+                )
+            else:
+                kb = InlineKeyboardBuilder()
                 kb.row(
                     blue_inline_button(
-                        "🎁 Активировать пробный VPN",
-                        callback_data="trial",
+                        "💎 Купить подписку",
+                        callback_data="plans",
                     )
                 )
-            kb.row(
-                blue_inline_button(
-                    "💎 Купить подписку",
-                    callback_data="plans",
+                add_nav_buttons(kb, back_data="home")
+                await send_screen(
+                    message,
+                    message.from_user,
+                    "🔗 <b>Подключение VPN</b>\n\n"
+                    "Пробный период уже использован. Выберите подписку.",
+                    reply_markup=kb.as_markup(),
                 )
-            )
-            add_nav_buttons(kb, back_data="home")
-
-            trial_note = ""
-            if not user.get("trial_used"):
-                trial_note = (
-                    "\n\nДля пробного доступа сначала подпишитесь на "
-                    f"<b>{html.escape(config.trial_channel_username)}</b>."
-                )
-
-            await send_screen(
-                message,
-                message.from_user,
-                "🔗 <b>Подключение VPN</b>\n\n"
-                "У вас пока нет активной подписки."
-                + trial_note,
-                reply_markup=kb.as_markup(),
-            )
             return
 
         state, ok = await load_state(user, provider, config)
@@ -940,16 +946,13 @@ def build_router(
             callback.from_user.id,
         )
         if not subscribed:
-            await callback.answer(
-                "Сначала подпишитесь на канал.",
-                show_alert=True,
-            )
+            await callback.answer("Подписка пока не найдена.")
             await send_screen(
                 callback.message,
                 callback.from_user,
                 "🎁 <b>Пробная подписка</b>\n\n"
-                f"Для активации подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>.\n"
-                "После подписки нажмите <b>«✅ Проверить подписку»</b>.",
+                f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
+                "затем нажмите <b>«✅ Проверить подписку»</b>.",
                 reply_markup=trial_channel_keyboard(),
             )
             return
