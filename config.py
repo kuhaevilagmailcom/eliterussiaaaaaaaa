@@ -49,14 +49,6 @@ class Config:
     trial_channel_username: str
     trial_channel_url: str
 
-    plan_30_price: int
-    plan_90_price: int
-    plan_365_price: int
-
-    plan_30_rub: int
-    plan_90_rub: int
-    plan_365_rub: int
-
     emoji_packs: tuple[str, ...]
 
     rollypay_api_base: str
@@ -118,12 +110,6 @@ class Config:
                 "TRIAL_CHANNEL_URL",
                 "https://t.me/mgnvpnn",
             ).strip(),
-            plan_30_price=max(1, int(os.getenv("PLAN_30_PRICE", "150"))),
-            plan_90_price=max(1, int(os.getenv("PLAN_90_PRICE", "350"))),
-            plan_365_price=max(1, int(os.getenv("PLAN_365_PRICE", "990"))),
-            plan_30_rub=max(1, int(os.getenv("PLAN_30_RUB", "150"))),
-            plan_90_rub=max(1, int(os.getenv("PLAN_90_RUB", "350"))),
-            plan_365_rub=max(1, int(os.getenv("PLAN_365_RUB", "990"))),
             emoji_packs=tuple(
                 x.strip()
                 for x in os.getenv(
