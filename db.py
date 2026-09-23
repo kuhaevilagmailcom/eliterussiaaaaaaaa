@@ -274,8 +274,10 @@ class Database:
         amount = int(amount)
         if amount == 0:
             return False
+
         async with aiosqlite.connect(self.path) as db:
             await db.execute("BEGIN IMMEDIATE")
+
             exists = await (
                 await db.execute(
                     "SELECT 1 FROM diamond_ledger WHERE event_key=?",
@@ -286,18 +288,27 @@ class Database:
                 await db.rollback()
                 return False
 
-            cursor = await db.execute(
-                """
-                UPDATE users
-                SET diamonds = MAX(0, diamonds + ?)
-                WHERE telegram_id=?
-                """,
-                (amount, telegram_id),
-            )
-            if cursor.rowcount != 1:
+            row = await (
+                await db.execute(
+                    "SELECT diamonds FROM users WHERE telegram_id=?",
+                    (telegram_id,),
+                )
+            ).fetchone()
+            if row is None:
                 await db.rollback()
                 return False
 
+            old_balance = int(row[0])
+            new_balance = max(0, old_balance + amount)
+            actual_amount = new_balance - old_balance
+            if actual_amount == 0:
+                await db.rollback()
+                return False
+
+            await db.execute(
+                "UPDATE users SET diamonds=? WHERE telegram_id=?",
+                (new_balance, telegram_id),
+            )
             await db.execute(
                 """
                 INSERT INTO diamond_ledger (
@@ -306,7 +317,7 @@ class Database:
                 """,
                 (
                     telegram_id,
-                    amount,
+                    actual_amount,
                     reason[:120],
                     event_key[:160],
                     to_iso(utcnow()),
