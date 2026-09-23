@@ -50,7 +50,7 @@ def main_menu_banner() -> BufferedInputFile:
             (MAIN_MENU_BANNER_DIR / f"{index:02d}.txt")
             .read_text(encoding="utf-8")
             .strip()
-            for index in range(1, 30)
+            for index in range(1, 19)
         )
         webp_bytes = base64.b64decode(encoded, validate=True)
 
@@ -346,6 +346,23 @@ def build_router(
 ) -> Router:
     router = Router()
 
+    banner_file_id_path = Path(config.db_path).with_name("main_menu_banner_file_id.txt")
+
+    def current_main_menu_banner():
+        try:
+            file_id = banner_file_id_path.read_text(encoding="utf-8").strip()
+            if file_id:
+                return file_id
+        except FileNotFoundError:
+            pass
+        except Exception:
+            logger.exception("Could not read saved main-menu banner file_id")
+        return main_menu_banner()
+
+    def save_main_menu_banner_file_id(file_id: str) -> None:
+        banner_file_id_path.parent.mkdir(parents=True, exist_ok=True)
+        banner_file_id_path.write_text(file_id.strip(), encoding="utf-8")
+
     async def ensure_actor(actor) -> dict[str, Any]:
         return await db.ensure_user(
             actor.id,
@@ -469,7 +486,7 @@ def build_router(
             try:
                 sent = await message.bot.send_photo(
                     chat_id=message.chat.id,
-                    photo=main_menu_banner(),
+                    photo=current_main_menu_banner(),
                     caption=text,
                     reply_markup=main_keyboard(emoji),
                 )
@@ -483,7 +500,7 @@ def build_router(
                 try:
                     sent = await message.bot.send_photo(
                         chat_id=message.chat.id,
-                        photo=main_menu_banner(),
+                        photo=current_main_menu_banner(),
                         caption=strip_custom_emoji(text),
                         reply_markup=main_keyboard(emoji, custom_icons=False),
                     )
@@ -592,6 +609,32 @@ def build_router(
         except Exception:
             pass
         return user
+
+    @router.message(Command("setbanner"))
+    async def set_banner(message: Message) -> None:
+        if not message.from_user or message.from_user.id not in config.admin_ids:
+            return
+
+        source_message = message.reply_to_message or message
+        if not source_message.photo:
+            await message.answer(
+                "Пришли нужную картинку как фото с подписью /setbanner "
+                "или ответь командой /setbanner на фото."
+            )
+            return
+
+        photo = source_message.photo[-1]
+        save_main_menu_banner_file_id(photo.file_id)
+
+        # Remove the old menu message for this admin, so the next /start
+        # creates one fresh menu with the newly selected photo.
+        user = await ensure_actor(message.from_user)
+        old_menu_id = user.get("last_menu_message_id")
+        if old_menu_id:
+            await safe_delete(message.chat.id, int(old_menu_id), message.bot)
+        await db.set_last_menu_message(message.from_user.id, None)
+
+        await message.answer("✅ Баннер главного меню обновлён. Нажми /start.")
 
     @router.message(CommandStart())
     async def start(message: Message, command: CommandObject) -> None:
