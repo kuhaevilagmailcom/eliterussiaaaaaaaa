@@ -1007,7 +1007,9 @@ def build_router(
             callback.from_user,
             f"{e} <b>Друзья</b>\n\n"
             f"Ваша ссылка:\n<code>{html.escape(link)}</code>\n\n"
-            f"Приглашено  <b>{count}</b>",
+            f"Приглашено — <b>{count}</b>\n\n"
+            f"Друг активировал пробник — <b>+{REFERRAL_TRIAL_REWARD} 💎</b>\n"
+            f"Первая покупка друга — <b>+{REFERRAL_FIRST_PAID_REWARD} 💎</b>",
             reply_markup=kb.as_markup(),
         )
 
@@ -1391,12 +1393,37 @@ def build_router(
 
         if status == "paid":
             fresh = await db.mark_sbp_paid(payment_id)
+            reward_amount = 0
             if fresh:
+                plan_code = str(local["plan_code"])
                 await activate_paid_plan(
                     callback.from_user.id,
-                    str(local["plan_code"]),
+                    plan_code,
                 )
-            await callback.answer("Оплата получена")
+
+                reward_amount = int(DIAMOND_REWARDS.get(plan_code, 0))
+                if reward_amount:
+                    await db.add_diamonds(
+                        telegram_id=callback.from_user.id,
+                        amount=reward_amount,
+                        reason=f"Покупка VPN: {PLANS[plan_code]['name']}",
+                        event_key=f"payment-reward:{payment_id}",
+                    )
+
+                paid_user = await db.get_user(callback.from_user.id)
+                referrer_id = paid_user.get("referrer_id")
+                if referrer_id:
+                    await db.add_diamonds(
+                        telegram_id=int(referrer_id),
+                        amount=REFERRAL_FIRST_PAID_REWARD,
+                        reason="Друг впервые купил VPN",
+                        event_key=f"referral-first-paid:{callback.from_user.id}",
+                    )
+
+            if reward_amount:
+                await callback.answer(f"Оплата получена · +{reward_amount} 💎")
+            else:
+                await callback.answer("Оплата получена")
             await show_profile(callback.message, callback.from_user)
             return
 
@@ -1517,6 +1544,16 @@ def build_router(
             return
 
         user = await db.get_user(callback.from_user.id)
+
+        referrer_id = user.get("referrer_id")
+        if referrer_id:
+            await db.add_diamonds(
+                telegram_id=int(referrer_id),
+                amount=REFERRAL_TRIAL_REWARD,
+                reason="Друг активировал пробный VPN",
+                event_key=f"referral-trial:{callback.from_user.id}",
+            )
+
         try:
             await provider.provision(user)
         except Exception:
@@ -1624,7 +1661,9 @@ def build_router(
             message.from_user,
             f"{e} <b>Друзья</b>\n\n"
             f"Ваша ссылка:\n<code>{html.escape(link)}</code>\n\n"
-            f"Приглашено  <b>{count}</b>",
+            f"Приглашено — <b>{count}</b>\n\n"
+            f"Друг активировал пробник — <b>+{REFERRAL_TRIAL_REWARD} 💎</b>\n"
+            f"Первая покупка друга — <b>+{REFERRAL_FIRST_PAID_REWARD} 💎</b>",
             reply_markup=kb.as_markup(),
         )
 
