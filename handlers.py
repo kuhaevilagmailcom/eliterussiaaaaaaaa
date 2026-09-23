@@ -539,7 +539,7 @@ def build_router(
         actor,
         text: str,
         *,
-        reply_markup=home_markup,
+        reply_markup=None,
         bottom_menu: bool = False,
         recover_on_edit_failure: bool = False,
         force_new: bool = False,
@@ -548,6 +548,8 @@ def build_router(
         last_id = user.get("last_menu_message_id")
         admin_role = await get_admin_role(int(actor.id))
         home_markup = main_menu_inline_keyboard(admin_role)
+        if reply_markup is None:
+            reply_markup = home_markup
 
         async def create_first_menu() -> Message:
             banner = current_main_menu_banner()
@@ -836,7 +838,7 @@ def build_router(
         actor,
         text: str,
         *,
-        reply_markup=main_menu_inline_keyboard(),
+        reply_markup=None,
         bottom_menu: bool = False,
         recover_on_edit_failure: bool = False,
         force_new: bool = False,
