@@ -1060,6 +1060,161 @@ def build_router(
             reply_markup=kb.as_markup(),
         )
 
+    @router.callback_query(F.data == "diamonds")
+    async def diamonds_home(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if callback.message:
+            await show_diamonds(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "diamonds:shop")
+    async def diamonds_shop(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if callback.message:
+            await show_diamond_shop(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "diamonds:earn")
+    async def diamonds_earn(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if callback.message:
+            await show_diamond_earn(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "diamonds:history")
+    async def diamonds_history(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if callback.message:
+            await show_diamond_history(callback.message, callback.from_user)
+
+    @router.callback_query(F.data.startswith("shop:days:"))
+    async def buy_shop_days(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        key = callback.data.rsplit(":", 1)[-1]
+        item = DIAMOND_SHOP_DAYS.get(key)
+        if not item:
+            await callback.answer("Товар не найден", show_alert=True)
+            return
+
+        balance = await db.diamond_balance(callback.from_user.id)
+        cost = int(item["cost"])
+        if balance < cost:
+            await callback.answer(
+                f"Не хватает {cost - balance} 💎",
+                show_alert=True,
+            )
+            return
+
+        user = await db.purchase_vpn_days(
+            telegram_id=callback.from_user.id,
+            days=int(item["days"]),
+            cost=cost,
+            event_key=f"shop-days:{callback.from_user.id}:{uuid4().hex}",
+        )
+        if not user:
+            await callback.answer("Не удалось выполнить покупку", show_alert=True)
+            return
+
+        try:
+            await provider.provision(user)
+        except Exception:
+            pass
+
+        await callback.answer(f"+{item['days']} дней VPN")
+        await show_diamond_shop(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "shop:device")
+    async def buy_shop_device(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        user = await ensure_actor(callback.from_user)
+        balance = int(user.get("diamonds") or 0)
+        if balance < EXTRA_DEVICE_COST:
+            await callback.answer(
+                f"Не хватает {EXTRA_DEVICE_COST - balance} 💎",
+                show_alert=True,
+            )
+            return
+        if int(user.get("max_devices") or 1) >= 10:
+            await callback.answer(
+                "Достигнут лимит: 10 устройств.",
+                show_alert=True,
+            )
+            return
+
+        user = await db.purchase_extra_device(
+            telegram_id=callback.from_user.id,
+            cost=EXTRA_DEVICE_COST,
+            event_key=f"shop-device:{callback.from_user.id}:{uuid4().hex}",
+            max_total_devices=10,
+        )
+        if not user:
+            await callback.answer("Не удалось выполнить покупку", show_alert=True)
+            return
+
+        try:
+            await provider.provision(user)
+        except Exception:
+            pass
+
+        await callback.answer("+1 устройство")
+        await show_diamond_shop(callback.message, callback.from_user)
+
+    @router.callback_query(F.data.startswith("shop:promo:"))
+    async def buy_shop_promo(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        slug = callback.data.split(":", 2)[-1]
+        product_list = await db.promo_products()
+        product = next(
+            (item for item in product_list if str(item["slug"]) == slug),
+            None,
+        )
+        if not product:
+            await callback.answer(
+                "Промокоды закончились или товар недоступен.",
+                show_alert=True,
+            )
+            await show_diamond_shop(callback.message, callback.from_user)
+            return
+
+        balance = await db.diamond_balance(callback.from_user.id)
+        cost = int(product["price_diamonds"])
+        if balance < cost:
+            await callback.answer(
+                f"Не хватает {cost - balance} 💎",
+                show_alert=True,
+            )
+            return
+
+        reward = await db.redeem_promo(
+            telegram_id=callback.from_user.id,
+            slug=slug,
+            event_key=f"shop-promo:{callback.from_user.id}:{uuid4().hex}",
+        )
+        if not reward:
+            await callback.answer(
+                "Промокод уже закончился. Баланс не списан.",
+                show_alert=True,
+            )
+            await show_diamond_shop(callback.message, callback.from_user)
+            return
+
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button("⬅️ Магазин", callback_data="diamonds:shop"),
+        )
+        await callback.answer("Промокод получен")
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "🎟 <b>Покупка готова</b>\n\n"
+            f"{html.escape(str(reward['title']))}\n"
+            f"Списано: <b>{int(reward['price_diamonds'])} 💎</b>\n\n"
+            "Ваш промокод:\n"
+            f"<code>{html.escape(str(reward['code']))}</code>\n\n"
+            "<i>Сохраните код. Он также останется в истории алмазов.</i>",
+            reply_markup=kb.as_markup(),
+        )
+
     @router.message(Command("ping"))
     async def ping(message: Message) -> None:
         await send_screen(
