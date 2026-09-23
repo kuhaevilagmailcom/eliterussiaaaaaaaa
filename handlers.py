@@ -541,9 +541,23 @@ def build_router(
                 logger.warning("Initial main-menu photo failed: %s", exc)
 
                 # A Telegram file_id belongs to the bot that uploaded it and
-                # can become unusable after token/bot changes. Fall back to
-                # the bundled banner instead of leaving /start silent.
-                if isinstance(banner, str):
+                # can become unusable after token/bot changes. Only discard
+                # the saved banner when Telegram specifically reports a media
+                # or file-reference problem; caption/entity errors must not
+                # wipe a valid custom banner.
+                error_text = str(exc).lower()
+                media_error = any(
+                    marker in error_text
+                    for marker in (
+                        "image_process_failed",
+                        "wrong file identifier",
+                        "file reference",
+                        "failed to get http url",
+                        "photo_invalid",
+                        "wrong type of the web page content",
+                    )
+                )
+                if isinstance(banner, str) and media_error:
                     clear_main_menu_banner_file_id()
                     banner = main_menu_banner()
 
