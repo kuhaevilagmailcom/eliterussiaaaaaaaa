@@ -709,6 +709,134 @@ def build_router(
             reply_markup=section_nav_keyboard(),
         )
 
+    async def show_diamonds(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        balance = int(user.get("diamonds") or 0)
+
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button("🛍 Магазин", callback_data="diamonds:shop"),
+            blue_inline_button("👥 Заработать", callback_data="diamonds:earn"),
+        )
+        kb.row(
+            blue_inline_button("📜 История", callback_data="diamonds:history"),
+        )
+        add_nav_buttons(kb, back_data="home")
+
+        await send_screen(
+            message,
+            actor,
+            "💎 <b>Алмазы MGN VPN</b>\n\n"
+            f"Баланс — <b>{balance} 💎</b>\n\n"
+            "Получайте алмазы за покупки и приглашённых друзей, "
+            "а затем меняйте их на дни VPN, дополнительные устройства "
+            "и промокоды.",
+            reply_markup=kb.as_markup(),
+        )
+
+    async def show_diamond_shop(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        balance = int(user.get("diamonds") or 0)
+        kb = InlineKeyboardBuilder()
+
+        for key, item in DIAMOND_SHOP_DAYS.items():
+            kb.row(
+                blue_inline_button(
+                    f"⏳ {item['days']} дн. VPN · {item['cost']} 💎",
+                    callback_data=f"shop:days:{key}",
+                )
+            )
+
+        kb.row(
+            blue_inline_button(
+                f"📱 +1 устройство · {EXTRA_DEVICE_COST} 💎",
+                callback_data="shop:device",
+            )
+        )
+
+        promos = await db.promo_products()
+        for item in promos[:12]:
+            slug = str(item["slug"])
+            title = str(item["title"])
+            price = int(item["price_diamonds"])
+            stock = int(item["stock"])
+            kb.row(
+                blue_inline_button(
+                    f"🎟 {title[:28]} · {price} 💎 ({stock})",
+                    callback_data=f"shop:promo:{slug}",
+                )
+            )
+
+        add_nav_buttons(kb, back_data="diamonds")
+        promo_note = (
+            "\n\n🎟 Доступные промокоды показаны ниже."
+            if promos
+            else "\n\n🎟 Промокодов сейчас нет в наличии."
+        )
+        await send_screen(
+            message,
+            actor,
+            "🛍 <b>Магазин за алмазы</b>\n\n"
+            f"Ваш баланс — <b>{balance} 💎</b>\n\n"
+            "Выберите награду. Покупки списываются с баланса сразу."
+            + promo_note,
+            reply_markup=kb.as_markup(),
+        )
+
+    async def show_diamond_earn(message: Message, actor) -> None:
+        await ensure_actor(actor)
+        bot_info = await message.bot.get_me()
+        link = f"https://t.me/{bot_info.username}?start=ref_{actor.id}"
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "👥 Поделиться ссылкой",
+                url=(
+                    "https://t.me/share/url?url="
+                    + quote(link, safe="")
+                    + "&text="
+                    + quote("Подключай MGN VPN", safe="")
+                ),
+            )
+        )
+        add_nav_buttons(kb, back_data="diamonds")
+
+        await send_screen(
+            message,
+            actor,
+            "💎 <b>Как заработать алмазы</b>\n\n"
+            f"15 дней VPN — <b>+{DIAMOND_REWARDS['15']} 💎</b>\n"
+            f"1 месяц — <b>+{DIAMOND_REWARDS['30']} 💎</b>\n"
+            f"1 год — <b>+{DIAMOND_REWARDS['365']} 💎</b>\n"
+            f"Навсегда — <b>+{DIAMOND_REWARDS['forever']} 💎</b>\n\n"
+            f"Друг активировал пробник — <b>+{REFERRAL_TRIAL_REWARD} 💎</b>\n"
+            f"Друг впервые купил VPN — <b>+{REFERRAL_FIRST_PAID_REWARD} 💎</b>\n\n"
+            f"Ваша ссылка:\n<code>{html.escape(link)}</code>",
+            reply_markup=kb.as_markup(),
+        )
+
+    async def show_diamond_history(message: Message, actor) -> None:
+        await ensure_actor(actor)
+        history = await db.diamond_history(actor.id, 10)
+        lines = ["📜 <b>История алмазов</b>", ""]
+
+        if not history:
+            lines.append("Операций пока нет.")
+        else:
+            for item in history:
+                amount = int(item["amount"])
+                sign = "+" if amount > 0 else ""
+                lines.append(
+                    f"{sign}{amount} 💎 · {html.escape(str(item['reason']))}"
+                )
+
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=section_nav_keyboard(back_data="diamonds"),
+        )
+
     async def activate_paid_plan(telegram_id: int, code: str) -> dict[str, Any]:
         plan = PLANS[code]
         user = await db.extend_subscription(
