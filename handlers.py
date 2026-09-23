@@ -20,7 +20,9 @@ from aiogram.types import (
     InlineKeyboardButton,
     InputMediaPhoto,
     KeyboardButton,
+    LabeledPrice,
     Message,
+    PreCheckoutQuery,
     ReplyKeyboardMarkup,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -125,6 +127,9 @@ EXTRA_DEVICE_COST = 250
 REFERRAL_TRIAL_REWARD = 15
 REFERRAL_FIRST_PAID_REWARD = 30
 
+STAR_RATE_XTR = 50
+STAR_RATE_RUB = 87
+
 
 
 def is_active(user: dict[str, Any]) -> bool:
@@ -135,6 +140,10 @@ def is_active(user: dict[str, Any]) -> bool:
 def plan_price_rub(config: Config, code: str) -> int:
     return int(PLANS[code]["price_rub"])
 
+
+def plan_price_stars(config: Config, code: str) -> int:
+    rub = plan_price_rub(config, code)
+    return max(1, (rub * STAR_RATE_XTR + STAR_RATE_RUB - 1) // STAR_RATE_RUB)
 
 
 def format_until(user: dict[str, Any], config: Config) -> str:
@@ -299,15 +308,50 @@ def plans_keyboard(config: Config) -> Any:
     return kb.as_markup()
 
 
-def payment_methods_keyboard(config: Config, code: str) -> Any:
+def payment_methods_keyboard(
+    config: Config,
+    code: str,
+    *,
+    target_telegram_id: int | None = None,
+) -> Any:
     kb = InlineKeyboardBuilder()
+
+    if target_telegram_id is None:
+        sbp_data = f"sbp:{code}"
+        stars_data = f"stars:{code}"
+    else:
+        sbp_data = f"sbpgift:{code}:{target_telegram_id}"
+        stars_data = f"starsgift:{code}:{target_telegram_id}"
+
     kb.row(
         blue_inline_button(
-            f"🏦 Оплатить по СБП · {plan_price_rub(config, code)} ₽",
-            callback_data=f"sbp:{code}",
+            f"🏦 СБП · {plan_price_rub(config, code)} ₽",
+            callback_data=sbp_data,
         )
     )
-    add_nav_buttons(kb, back_data="plans")
+    kb.row(
+        blue_inline_button(
+            f"⭐ Telegram Stars · {plan_price_stars(config, code)} ⭐",
+            callback_data=stars_data,
+        )
+    )
+
+    if target_telegram_id is None:
+        kb.row(
+            blue_inline_button(
+                "🎁 Купить другому",
+                callback_data=f"gift:{code}",
+            )
+        )
+    else:
+        kb.row(
+            blue_inline_button(
+                "🎁 Другой получатель",
+                callback_data=f"gift:{code}",
+            )
+        )
+
+    add_nav_buttons(kb, back_data=f"plan:{code}")
     return kb.as_markup()
 
 
@@ -384,6 +428,7 @@ def build_router(
     provider: VpnProvider,
 ) -> Router:
     router = Router()
+    pending_gift_plans: dict[int, str] = {}
 
     banner_file_id_path = Path(config.db_path).with_name("main_menu_banner_file_id.txt")
 
