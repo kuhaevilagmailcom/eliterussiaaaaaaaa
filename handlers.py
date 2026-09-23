@@ -246,6 +246,23 @@ def section_nav_keyboard(*, back_data: str = "home") -> Any:
     return kb.as_markup()
 
 
+def main_menu_inline_keyboard() -> Any:
+    kb = InlineKeyboardBuilder()
+    kb.row(blue_inline_button("🔗 Подключить VPN", callback_data="menu:connect"))
+    kb.row(
+        blue_inline_button("👤 Профиль", callback_data="menu:profile"),
+        blue_inline_button("ℹ️ Информация", callback_data="menu:info"),
+    )
+    kb.row(
+        blue_inline_button("💎 Купить VPN", callback_data="plans"),
+        blue_inline_button("📱 Устройства", callback_data="menu:devices"),
+    )
+    kb.row(
+        blue_inline_button("👥 Друзья", callback_data="menu:friends"),
+        blue_inline_button("🆘 Поддержка", callback_data="menu:support"),
+    )
+    return kb.as_markup()
+
 def plans_keyboard(config: Config) -> Any:
     kb = InlineKeyboardBuilder()
     for code, plan in PLANS.items():
@@ -417,7 +434,7 @@ def build_router(
         actor,
         text: str,
         *,
-        reply_markup=None,
+        reply_markup=main_menu_inline_keyboard(),
         bottom_menu: bool = False,
     ) -> Message:
         user = await ensure_actor(actor)
@@ -429,7 +446,7 @@ def build_router(
                     chat_id=message.chat.id,
                     photo=current_main_menu_banner(),
                     caption=text,
-                    reply_markup=main_keyboard(emoji),
+                    reply_markup=main_menu_inline_keyboard(),
                 )
             except TelegramBadRequest as exc:
                 logger.warning("Initial main-menu photo failed: %s", exc)
@@ -437,7 +454,7 @@ def build_router(
                     chat_id=message.chat.id,
                     photo=current_main_menu_banner(),
                     caption=strip_custom_emoji(text),
-                    reply_markup=main_keyboard(emoji, custom_icons=False),
+                    reply_markup=main_menu_inline_keyboard(),
                 )
 
             await db.set_last_menu_message(actor.id, sent.message_id)
@@ -461,7 +478,7 @@ def build_router(
                         media=current_main_menu_banner(),
                         caption=text,
                     ),
-                    reply_markup=None,
+                    reply_markup=main_menu_inline_keyboard(),
                 )
                 return edited
             except TelegramBadRequest as exc:
@@ -520,7 +537,7 @@ def build_router(
                         chat_id=message.chat.id,
                         message_id=int(last_id),
                         text=strip_custom_emoji(text),
-                        reply_markup=None,
+                        reply_markup=main_menu_inline_keyboard(),
                     )
                     return edited
                 except TelegramBadRequest as text_exc:
@@ -725,6 +742,173 @@ def build_router(
         await callback.answer()
         if callback.message:
             await show_home(callback.message, callback.from_user)
+
+
+    @router.callback_query(F.data == "menu:profile")
+    async def menu_profile(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if callback.message:
+            await show_profile(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "menu:connect")
+    async def menu_connect(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not callback.message:
+            return
+        user = await ensure_actor(callback.from_user)
+        if not is_active(user):
+            if not user.get("trial_used"):
+                await send_screen(
+                    callback.message,
+                    callback.from_user,
+                    "🎁 <b>Пробная подписка</b>\n\n"
+                    f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
+                    "затем нажмите <b>«✅ Проверить подписку»</b>.",
+                    reply_markup=trial_channel_keyboard(),
+                )
+            else:
+                kb = InlineKeyboardBuilder()
+                kb.row(blue_inline_button("💎 Купить подписку", callback_data="plans"))
+                add_nav_buttons(kb, back_data="home")
+                await send_screen(
+                    callback.message,
+                    callback.from_user,
+                    "🔗 <b>Подключение VPN</b>\n\n"
+                    "Пробный период уже использован. Выберите подписку.",
+                    reply_markup=kb.as_markup(),
+                )
+            return
+
+        state, ok = await load_state(user, provider, config)
+        if not ok or not state.subscription_url:
+            await send_screen(
+                callback.message,
+                callback.from_user,
+                "🔗 <b>Подключение VPN</b>\n\n"
+                "Ссылка подключения пока недоступна. Попробуйте немного позже.",
+                reply_markup=section_nav_keyboard(),
+            )
+            return
+
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("🔗 Открыть подключение", url=state.subscription_url))
+        add_nav_buttons(kb, back_data="home")
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            connection_text(user, state, emoji),
+            reply_markup=kb.as_markup(),
+        )
+
+    @router.callback_query(F.data == "menu:info")
+    async def menu_info(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not callback.message:
+            return
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("📢 Канал MGN VPN", url=config.trial_channel_url))
+        add_nav_buttons(kb, back_data="home")
+        e = emoji.icon(9, pack=PACK_UI)
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            f"{e} <b>Информация</b>\n\n"
+            "🔐 Доступ выдаётся по персональной ссылке.\n"
+            "📱 Платная подписка — до <b>5 устройств</b>.\n"
+            "🎁 Пробный доступ можно активировать один раз после подписки на наш Telegram-канал.\n"
+            "⚙️ Управление подпиской и устройствами находится прямо в боте.",
+            reply_markup=kb.as_markup(),
+        )
+
+    @router.callback_query(F.data == "menu:support")
+    async def menu_support(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if callback.message:
+            e = emoji.icon(9, pack=PACK_UI)
+            await send_screen(
+                callback.message,
+                callback.from_user,
+                f"{e} <b>Поддержка</b>\n\n"
+                "1. Активируйте пробный доступ или купите подписку.\n"
+                "2. Нажмите <b>«🔗 Подключить VPN»</b>.\n"
+                "3. Откройте персональную ссылку на нужном устройстве.\n\n"
+                "Подключённые устройства можно отключить в разделе <b>«📱 Устройства»</b>.",
+                reply_markup=section_nav_keyboard(),
+            )
+
+    @router.callback_query(F.data == "menu:friends")
+    async def menu_friends(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not callback.message:
+            return
+        bot_info = await callback.message.bot.get_me()
+        link = f"https://t.me/{bot_info.username}?start=ref_{callback.from_user.id}"
+        count = await db.referral_count(callback.from_user.id)
+        share_url = (
+            "https://t.me/share/url?url=" + quote(link, safe="")
+            + "&text=" + quote("Подключай MGN VPN", safe="")
+        )
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("👥 Поделиться", url=share_url))
+        add_nav_buttons(kb, back_data="home")
+        e = emoji.icon(8, pack=PACK_UI)
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            f"{e} <b>Друзья</b>\n\n"
+            f"Ваша ссылка:\n<code>{html.escape(link)}</code>\n\n"
+            f"Приглашено  <b>{count}</b>",
+            reply_markup=kb.as_markup(),
+        )
+
+    @router.callback_query(F.data == "menu:devices")
+    async def menu_devices(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not callback.message:
+            return
+        user = await ensure_actor(callback.from_user)
+        if not is_active(user):
+            await send_screen(
+                callback.message,
+                callback.from_user,
+                "<b>Устройства</b>\n\n"
+                "Список появится после активации подписки.",
+                reply_markup=section_nav_keyboard(),
+            )
+            return
+
+        state, ok = await load_state(user, provider, config)
+        e = emoji.icon(7, pack=PACK_UI)
+        lines = [
+            f"{e} <b>Устройства</b>",
+            "",
+            f"Подключено — <b>{len(state.devices)} из {int(user.get('max_devices') or 1)}</b>",
+        ]
+        kb = InlineKeyboardBuilder()
+        if state.devices:
+            lines.append("")
+            for i, item in enumerate(state.devices[:10], start=1):
+                name = html.escape(str(item.get("name") or item.get("device_name") or f"Устройство {i}"))
+                platform = html.escape(str(item.get("platform") or item.get("os") or ""))
+                suffix = f" — {platform}" if platform else ""
+                lines.append(f"{i}. {name}{suffix}")
+                device_id = str(item.get("id") or item.get("device_id") or "")
+                if device_id and len(device_id.encode("utf-8")) <= 36:
+                    kb.row(blue_inline_button(
+                        f"❌ Отключить устройство {i}",
+                        callback_data=f"deldev:{device_id}",
+                    ))
+        else:
+            lines += ["", "<i>Подключённых устройств пока нет.</i>"]
+        if not ok:
+            lines += ["", "<i>Сервер устройств временно не ответил.</i>"]
+        add_nav_buttons(kb, back_data="home")
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
+        )
 
     @router.message(Command("ping"))
     async def ping(message: Message) -> None:
