@@ -280,7 +280,7 @@ def section_nav_keyboard(*, back_data: str = "home") -> Any:
     return kb.as_markup()
 
 
-def main_menu_inline_keyboard() -> Any:
+def main_menu_inline_keyboard(admin_role: str | None = None) -> Any:
     kb = InlineKeyboardBuilder()
     kb.row(blue_inline_button("🔗 Подключить VPN", callback_data="menu:connect"))
     kb.row(
@@ -298,6 +298,10 @@ def main_menu_inline_keyboard() -> Any:
     kb.row(
         blue_inline_button("🆘 Поддержка", callback_data="menu:support"),
     )
+    if admin_role:
+        kb.row(
+            blue_inline_button("🛡 Админка", callback_data="admin:home"),
+        )
     return kb.as_markup()
 
 def plans_keyboard(config: Config) -> Any:
@@ -473,6 +477,21 @@ def build_router(
             actor.first_name,
         )
 
+
+    async def get_admin_role(user_id: int) -> str | None:
+        if user_id in config.admin_ids:
+            return "owner"
+        return await db.get_admin_role(user_id)
+
+    async def has_admin_access(user_id: int) -> bool:
+        return bool(await get_admin_role(user_id))
+
+    async def has_full_admin_access(user_id: int) -> bool:
+        return (await get_admin_role(user_id)) in {"owner", "full"}
+
+    def is_owner(user_id: int) -> bool:
+        return user_id in config.admin_ids
+
     async def is_trial_channel_member(bot, user_id: int) -> bool:
         try:
             member = await bot.get_chat_member(
@@ -520,13 +539,15 @@ def build_router(
         actor,
         text: str,
         *,
-        reply_markup=main_menu_inline_keyboard(),
+        reply_markup=home_markup,
         bottom_menu: bool = False,
         recover_on_edit_failure: bool = False,
         force_new: bool = False,
     ) -> Message:
         user = await ensure_actor(actor)
         last_id = user.get("last_menu_message_id")
+        admin_role = await get_admin_role(int(actor.id))
+        home_markup = main_menu_inline_keyboard(admin_role)
 
         async def create_first_menu() -> Message:
             banner = current_main_menu_banner()
@@ -535,7 +556,7 @@ def build_router(
                     chat_id=message.chat.id,
                     photo=banner,
                     caption=text,
-                    reply_markup=main_menu_inline_keyboard(),
+                    reply_markup=home_markup,
                 )
             except TelegramBadRequest as exc:
                 logger.warning("Initial main-menu photo failed: %s", exc)
@@ -566,14 +587,14 @@ def build_router(
                         chat_id=message.chat.id,
                         photo=banner,
                         caption=text,
-                        reply_markup=main_menu_inline_keyboard(),
+                        reply_markup=home_markup,
                     )
                 except TelegramBadRequest:
                     sent = await message.bot.send_photo(
                         chat_id=message.chat.id,
                         photo=banner,
                         caption=strip_custom_emoji(text),
-                        reply_markup=main_menu_inline_keyboard(),
+                        reply_markup=home_markup,
                     )
 
             await db.set_last_menu_message(actor.id, sent.message_id)
@@ -639,7 +660,7 @@ def build_router(
                         media=current_main_menu_banner(),
                         caption=text,
                     ),
-                    reply_markup=main_menu_inline_keyboard(),
+                    reply_markup=home_markup,
                 )
                 return edited
             except TelegramBadRequest as exc:
@@ -706,7 +727,7 @@ def build_router(
                         chat_id=message.chat.id,
                         message_id=int(last_id),
                         text=strip_custom_emoji(text),
-                        reply_markup=main_menu_inline_keyboard(),
+                        reply_markup=home_markup,
                     )
                     return edited
                 except TelegramBadRequest as text_exc:
