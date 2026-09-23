@@ -503,6 +503,7 @@ def build_router(
         *,
         reply_markup=main_menu_inline_keyboard(),
         bottom_menu: bool = False,
+        recover_on_edit_failure: bool = False,
     ) -> Message:
         user = await ensure_actor(actor)
         last_id = user.get("last_menu_message_id")
@@ -557,6 +558,14 @@ def build_router(
                     "Could not edit main-menu media in place: %s",
                     exc,
                 )
+
+                if recover_on_edit_failure:
+                    logger.info(
+                        "Recovering stale main menu for user %s after /start",
+                        actor.id,
+                    )
+                    await db.set_last_menu_message(actor.id, None)
+                    return await create_first_menu()
 
                 # Stale id from an already deleted old menu: there is no
                 # visible message to preserve, so create the single menu again.
@@ -627,6 +636,9 @@ def build_router(
                     "Could not edit main-menu media in place: %s",
                     exc,
                 )
+                if recover_on_edit_failure:
+                    await db.set_last_menu_message(actor.id, None)
+                    return await create_first_menu()
                 return message
 
         # Normal sections edit the caption of the same photo message.
@@ -696,7 +708,12 @@ def build_router(
 
         return message
 
-    async def show_home(message: Message, actor) -> None:
+    async def show_home(
+        message: Message,
+        actor,
+        *,
+        recover_on_edit_failure: bool = False,
+    ) -> None:
         user = await ensure_actor(actor)
         state, ok = await load_state(user, provider, config)
         active = is_active(user)
@@ -742,6 +759,7 @@ def build_router(
             actor,
             "\n".join(lines),
             bottom_menu=True,
+            recover_on_edit_failure=recover_on_edit_failure,
         )
 
     async def show_profile(message: Message, actor) -> None:
@@ -955,7 +973,11 @@ def build_router(
                     message.from_user.id,
                     int(raw),
                 )
-        await show_home(message, message.from_user)
+        await show_home(
+            message,
+            message.from_user,
+            recover_on_edit_failure=True,
+        )
 
     @router.message(F.text.in_({"🏠 Главное", "Главное", "🏠 Главное меню", "Главное меню"}))
     async def home(message: Message) -> None:
