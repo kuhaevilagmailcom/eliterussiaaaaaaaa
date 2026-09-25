@@ -62,6 +62,7 @@ DIAMOND_SHOP_DAYS: dict[str, dict[str, int]] = {
 
 BASE_DEVICES = 1
 MAX_DEVICES = 5
+DEVICE_PRODUCT_CODE = "device"
 EXTRA_DEVICE_PRICE_RUB = 100
 
 # Optional reward-store price. Paid device slots use EXTRA_DEVICE_PRICE_RUB.
