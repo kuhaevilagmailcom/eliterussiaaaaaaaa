@@ -411,6 +411,22 @@ def profile_text(
     return "\n".join(lines)
 
 
+def public_subscription_url(
+    user: dict[str, Any],
+    state: VpnState,
+    config: Config,
+) -> str:
+    if (
+        config.vpn_mode == "h1cloud"
+        and config.miniapp_url
+        and user.get("sub_token")
+        and is_active(user)
+    ):
+        token = quote(str(user["sub_token"]), safe="")
+        return f"{config.miniapp_url.rstrip('/')}/sub/{token}"
+    return state.subscription_url or ""
+
+
 def connection_text(
     user: dict[str, Any],
     state: VpnState,
@@ -1200,7 +1216,12 @@ def build_router(
             return
 
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("🔗 Открыть подключение", url=state.subscription_url))
+        kb.row(
+            blue_inline_button(
+                "🔗 Открыть подключение",
+                url=public_subscription_url(user, state, config),
+            )
+        )
         add_nav_buttons(kb, back_data="home")
         await send_screen(
             callback.message,
@@ -2093,7 +2114,7 @@ def build_router(
         kb.row(
             blue_inline_button(
                 "🔗 Открыть подключение",
-                url=state.subscription_url,
+                url=public_subscription_url(user, state, config),
             )
         )
         add_nav_buttons(kb, back_data="home")
