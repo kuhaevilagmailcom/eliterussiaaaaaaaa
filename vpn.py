@@ -339,6 +339,14 @@ class H1CloudVpnProvider(VpnProvider):
         if not isinstance(raw, list):
             raw = data.get("items")
         if not isinstance(raw, list):
+            for key in ("data", "result"):
+                nested = data.get(key)
+                if isinstance(nested, dict):
+                    candidate = nested.get("nodes")
+                    if isinstance(candidate, list):
+                        raw = candidate
+                        break
+        if not isinstance(raw, list):
             return []
         return [dict(item) for item in raw if isinstance(item, dict)]
 
@@ -373,7 +381,11 @@ class H1CloudVpnProvider(VpnProvider):
                 return value
 
         client_uuid = str(client.get("uuid") or "").strip()
-        if self.subscription_template and client_uuid:
+        if (
+            self.subscription_template.startswith(("http://", "https://"))
+            and "{uuid}" in self.subscription_template
+            and client_uuid
+        ):
             return self.subscription_template.replace(
                 "{uuid}",
                 quote(client_uuid, safe=""),
@@ -403,7 +415,6 @@ class H1CloudVpnProvider(VpnProvider):
             "expires_at": expires_at,
             "traffic_limit_gb": traffic_limit,
             "device_limit": device_limit,
-            "manual": True,
             "channels": [],
             "inbound_ids": inbound_ids,
         }
@@ -413,6 +424,7 @@ class H1CloudVpnProvider(VpnProvider):
                 {
                     "name": name,
                     "uuid": client_uuid,
+                    "manual": True,
                 }
             )
             data = await self._request(
