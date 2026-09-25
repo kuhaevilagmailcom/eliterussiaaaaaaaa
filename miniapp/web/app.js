@@ -4,8 +4,8 @@
     try{
       tg.ready();
       tg.expand();
-      tg.setHeaderColor?.('#070708');
-      tg.setBackgroundColor?.('#070708');
+      tg.setHeaderColor?.('#b9b9bb');
+      tg.setBackgroundColor?.('#b9b9bb');
     }catch(_){}
   }
 
@@ -65,7 +65,11 @@
     if(sec<=0)return '—';
     if(sec>3000000000)return 'Навсегда';
     const days=Math.floor(sec/86400);
-    if(days>0)return days+' дн.';
+    if(days>0){
+      const mod10=days%10,mod100=days%100;
+      const word=(mod10===1&&mod100!==11)?'день':([2,3,4].includes(mod10)&&![12,13,14].includes(mod100)?'дня':'дней');
+      return days+' '+word;
+    }
     const hours=Math.floor(sec/3600);
     if(hours>0)return hours+' ч.';
     return Math.max(1,Math.floor(sec/60))+' мин.';
@@ -117,7 +121,7 @@
     $('#homePlan').textContent=active?(d.subscription.plan||'MGN VPN'):'Нет подписки';
     $('#homePlanNote').textContent=subscriptionNote(d);
     $('#homeRemaining').textContent=active?fmtRemain(d.subscription.remaining_seconds):'—';
-    $('#homeDeviceUsage').textContent=used+' / '+limit;
+    $('#homeDeviceUsage').textContent=used+' из '+limit;
     $('#deviceProgress').style.width=pct+'%';
     $('b',$('#homeSubscriptionAction')).textContent=active?'Продлить подписку':'Выбрать подписку';
 
