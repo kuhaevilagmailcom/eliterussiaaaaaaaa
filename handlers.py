@@ -25,10 +25,21 @@ from aiogram.types import (
     Message,
     PreCheckoutQuery,
     ReplyKeyboardMarkup,
+    WebAppInfo,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from PIL import Image
 
+from catalog import (
+    DIAMOND_REWARDS,
+    DIAMOND_SHOP_DAYS,
+    EXTRA_DEVICE_COST,
+    PLANS,
+    REFERRAL_FIRST_PAID_REWARD,
+    REFERRAL_TRIAL_REWARD,
+    plan_price_rub,
+    plan_price_stars,
+)
 from config import Config
 from db import Database, from_iso, utcnow
 from emoji import EmojiBank
@@ -82,55 +93,6 @@ def main_menu_banner() -> BufferedInputFile:
         _main_menu_banner_bytes,
         filename="mgn_vpn_main_menu_1600x900.jpg",
     )
-
-
-PLANS: dict[str, dict[str, Any]] = {
-    "15": {
-        "days": 15,
-        "name": "15 дней",
-        "devices": 5,
-        "price_rub": 49,
-    },
-    "30": {
-        "days": 30,
-        "name": "1 месяц",
-        "devices": 5,
-        "price_rub": 99,
-    },
-    "365": {
-        "days": 365,
-        "name": "1 год",
-        "devices": 5,
-        "price_rub": 2000,
-    },
-    "forever": {
-        "days": 36500,
-        "name": "Навсегда",
-        "devices": 5,
-        "price_rub": 3333,
-    },
-}
-
-DIAMOND_REWARDS: dict[str, int] = {
-    "15": 10,
-    "30": 25,
-    "365": 400,
-    "forever": 700,
-}
-
-DIAMOND_SHOP_DAYS: dict[str, dict[str, int]] = {
-    "3": {"days": 3, "cost": 60},
-    "7": {"days": 7, "cost": 120},
-    "30": {"days": 30, "cost": 400},
-}
-
-EXTRA_DEVICE_COST = 250
-REFERRAL_TRIAL_REWARD = 15
-REFERRAL_FIRST_PAID_REWARD = 30
-
-STAR_RATE_XTR = 50
-STAR_RATE_RUB = 87
-
 
 
 def is_active(user: dict[str, Any]) -> bool:
@@ -280,8 +242,19 @@ def section_nav_keyboard(*, back_data: str = "home") -> Any:
     return kb.as_markup()
 
 
-def main_menu_inline_keyboard(admin_role: str | None = None) -> Any:
+def main_menu_inline_keyboard(
+    admin_role: str | None = None,
+    miniapp_url: str = "",
+) -> Any:
     kb = InlineKeyboardBuilder()
+    if miniapp_url:
+        kb.row(
+            InlineKeyboardButton(
+                text="🚀 Открыть MGN VPN",
+                web_app=WebAppInfo(url=miniapp_url),
+                style="primary",
+            )
+        )
     kb.row(blue_inline_button("🔗 Подключить VPN", callback_data="menu:connect"))
     kb.row(
         blue_inline_button("👤 Профиль", callback_data="menu:profile"),
@@ -547,7 +520,7 @@ def build_router(
         user = await ensure_actor(actor)
         last_id = user.get("last_menu_message_id")
         admin_role = await get_admin_role(int(actor.id))
-        home_markup = main_menu_inline_keyboard(admin_role)
+        home_markup = main_menu_inline_keyboard(admin_role, config.miniapp_url)
         if reply_markup is None:
             reply_markup = home_markup
 
