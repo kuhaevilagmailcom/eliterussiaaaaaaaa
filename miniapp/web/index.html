@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="theme-color" content="#08080a">
+  <title>MGN VPN</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="/static/styles.css?v=1">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">M</div>
+        <div><strong>MGN VPN</strong><span>быстро · просто · безопасно</span></div>
+      </div>
+      <button class="avatar" id="avatarBtn" aria-label="Профиль"><span id="avatarText">M</span><img id="avatarImg" alt=""></button>
+    </header>
+
+    <main>
+      <section class="page active" data-page="home">
+        <div class="hero-card">
+          <div class="hero-glow"></div>
+          <div class="status-row"><span class="status-dot" id="statusDot"></span><b id="statusText">Проверяем подключение…</b></div>
+          <button class="power" id="powerBtn" aria-label="Подключить VPN">
+            <span class="power-ring"></span>
+            <svg viewBox="0 0 24 24"><path d="M12 2v10M6.3 5.7a8 8 0 1 0 11.4 0"/></svg>
+          </button>
+          <h1 id="heroTitle">MGN VPN</h1>
+          <p id="heroSub">Загрузка данных…</p>
+          <div class="server-pill"><span>●</span><b id="serverName">MGN VPN</b><small id="serverState">сервер</small></div>
+        </div>
+
+        <div class="quick-grid">
+          <button class="quick-card" data-nav="plans"><span>💎</span><div><b>Подписка</b><small id="quickPlan">Выбрать тариф</small></div></button>
+          <button class="quick-card" data-nav="devices"><span>📱</span><div><b>Устройства</b><small id="quickDevices">0 подключено</small></div></button>
+          <button class="quick-card" id="copyLink"><span>🔗</span><div><b>Ссылка</b><small>Скопировать подключение</small></div></button>
+          <button class="quick-card" data-nav="profile"><span>💎</span><div><b>Алмазы</b><small id="quickDiamonds">0 💎</small></div></button>
+        </div>
+
+        <div class="info-card" id="trialCard" hidden>
+          <div class="info-icon">🎁</div>
+          <div><b>Пробный доступ</b><p>Подпишись на канал и активируй бесплатный пробный период.</p></div>
+          <button id="trialBtn">Активировать</button>
+        </div>
+
+        <div class="info-card muted" id="serverWaitCard" hidden>
+          <div class="info-icon">⚙️</div>
+          <div><b>Серверы готовятся</b><p>Подписка сохранена. Как только VPN-сервер будет подключён, ссылка появится автоматически.</p></div>
+        </div>
+      </section>
+
+      <section class="page" data-page="plans">
+        <div class="page-head"><div><span>ПОДПИСКА</span><h2>Выбери тариф</h2></div><button class="close-page" data-nav="home">×</button></div>
+        <div class="plans" id="plans"></div>
+        <p class="fineprint">Все тарифы работают до 5 устройств. Оплата — Telegram Stars или СБП, если он подключён.</p>
+      </section>
+
+      <section class="page" data-page="devices">
+        <div class="page-head"><div><span>БЕЗОПАСНОСТЬ</span><h2>Устройства</h2></div><button class="close-page" data-nav="home">×</button></div>
+        <div class="device-summary"><div><b id="deviceCount">0</b><small>подключено</small></div><div><b id="deviceLimit">1</b><small>доступно</small></div></div>
+        <div class="device-list" id="deviceList"></div>
+      </section>
+
+      <section class="page" data-page="profile">
+        <div class="profile-hero">
+          <div class="profile-avatar"><span id="profileAvatarText">M</span><img id="profileAvatarImg" alt=""></div>
+          <h2 id="profileName">Пользователь</h2>
+          <p id="profileUsername">@username</p>
+        </div>
+        <div class="stats-row">
+          <div><b id="profileDiamonds">0</b><small>алмазов 💎</small></div>
+          <div><b id="profileRefs">0</b><small>друзей</small></div>
+          <div><b id="profileDevices">1</b><small>устройств</small></div>
+        </div>
+        <div class="profile-card">
+          <div><span>Тариф</span><b id="profilePlan">Нет подписки</b></div>
+          <div><span>Действует до</span><b id="profileUntil">—</b></div>
+          <div><span>Сервер</span><b id="profileServer">—</b></div>
+        </div>
+        <button class="wide-btn" id="shareBtn">👥 Пригласить друга</button>
+        <button class="wide-btn ghost" data-nav="plans">Продлить подписку</button>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" id="bottomNav">
+      <button class="active" data-nav="home"><span>⌂</span><small>Главная</small></button>
+      <button data-nav="plans"><span>◇</span><small>Подписка</small></button>
+      <button data-nav="devices"><span>▣</span><small>Устройства</small></button>
+      <button data-nav="profile"><span>○</span><small>Профиль</small></button>
+    </nav>
+  </div>
+
+  <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+  <section class="sheet" id="paymentSheet" hidden>
+    <div class="sheet-handle"></div>
+    <button class="sheet-close" id="sheetClose">×</button>
+    <span class="sheet-eyebrow">ОПЛАТА</span>
+    <h3 id="sheetTitle">Тариф</h3>
+    <p id="sheetText">Выбери способ оплаты.</p>
+    <div class="payment-actions">
+      <button id="payStars"><span>⭐</span><div><b>Telegram Stars</b><small id="starsPrice">—</small></div><i>›</i></button>
+      <button id="paySbp"><span>🏦</span><div><b>СБП</b><small id="sbpPrice">—</small></div><i>›</i></button>
+    </div>
+    <button class="check-payment" id="checkPayment" hidden>Проверить оплату СБП</button>
+  </section>
+
+  <div class="toast" id="toast"></div>
+  <div class="loader" id="loader"><div class="loader-logo">M</div><span></span></div>
+
+  <script src="/static/app.js?v=1"></script>
+</body>
+</html>
