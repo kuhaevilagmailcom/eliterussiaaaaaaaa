@@ -115,6 +115,7 @@ class MiniAppServer:
         self.site: web.TCPSite | None = None
         self._bot_username = ""
         self._last_reconcile: dict[int, float] = {}
+        self._reconcile_tasks: dict[int, asyncio.Task] = {}
         self._subscription_cache: dict[str, dict] = {}
 
     def _telegram_user(self, request: web.Request) -> dict:
@@ -150,6 +151,32 @@ class MiniAppServer:
             devices=[],
         )
 
+    async def _reconcile_h1(self, user: dict) -> None:
+        user_id = int(user["telegram_id"])
+        try:
+            await asyncio.wait_for(
+                self.provider.provision(user),
+                15.0,
+            )
+            self._last_reconcile[user_id] = time.monotonic()
+        except Exception as exc:
+            logger.warning(
+                "Mini App H1 background reconciliation failed for %s: %s",
+                user_id,
+                str(exc).strip() or type(exc).__name__,
+            )
+        finally:
+            self._reconcile_tasks.pop(user_id, None)
+
+    def _schedule_h1_reconcile(self, user: dict) -> None:
+        user_id = int(user["telegram_id"])
+        current = self._reconcile_tasks.get(user_id)
+        if current and not current.done():
+            return
+        self._reconcile_tasks[user_id] = asyncio.create_task(
+            self._reconcile_h1(dict(user))
+        )
+
     async def _load_state(self, user: dict) -> tuple[VpnState, bool]:
         if not _active(user):
             return self._fallback_state(user), True
@@ -157,47 +184,47 @@ class MiniAppServer:
             return self._fallback_state(user), False
 
         user_id = int(user["telegram_id"])
-        now = time.monotonic()
-        should_reconcile = (
-            getattr(self.provider, "mode_name", "") == "h1cloud"
-            and now - self._last_reconcile.get(user_id, 0.0) >= 60.0
-        )
+        is_h1 = getattr(self.provider, "mode_name", "") == "h1cloud"
 
-        if should_reconcile:
-            try:
-                state = await asyncio.wait_for(
-                    self.provider.provision(user),
-                    20.0,
-                )
-                self._last_reconcile[user_id] = now
-                return state, True
-            except Exception as exc:
-                logger.warning(
-                    "Mini App H1 reconciliation deferred for %s: %s",
-                    user_id,
-                    exc,
-                )
-
+        # Fast path: the main panel already has the canonical client/sub_url.
+        # Never make opening the Mini App wait for every remote country.
         try:
-            return await asyncio.wait_for(
+            state = await asyncio.wait_for(
                 self.provider.get_state(user),
-                6.0,
-            ), True
-        except Exception:
-            try:
-                state = await asyncio.wait_for(
-                    self.provider.provision(user),
-                    20.0,
-                )
-                self._last_reconcile[user_id] = now
-                return state, True
-            except Exception as exc:
+                5.0,
+            )
+            if (
+                is_h1
+                and time.monotonic() - self._last_reconcile.get(user_id, 0.0)
+                >= 60.0
+            ):
+                self._schedule_h1_reconcile(user)
+            return state, True
+        except Exception as state_exc:
+            if not is_h1:
                 logger.warning(
-                    "Mini App VPN state unavailable for %s: %s",
+                    "Mini App VPN state read failed for %s: %s",
                     user_id,
-                    exc,
+                    str(state_exc).strip() or type(state_exc).__name__,
                 )
-                return self._fallback_state(user), False
+
+        # First activation or a missing main client: provisioning is required.
+        try:
+            state = await asyncio.wait_for(
+                self.provider.provision(user),
+                15.0,
+            )
+            if is_h1:
+                self._last_reconcile[user_id] = time.monotonic()
+            return state, True
+        except Exception as exc:
+            logger.warning(
+                "Mini App VPN state unavailable for %s: %s",
+                user_id,
+                str(exc).strip() or type(exc).__name__,
+            )
+            return self._fallback_state(user), False
+
 
     def _external_base_url(self, request: web.Request) -> str:
         if self.config.miniapp_url:
@@ -801,6 +828,13 @@ class MiniAppServer:
         )
 
     async def close(self) -> None:
+        tasks = list(self._reconcile_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._reconcile_tasks.clear()
+
         if self.runner is not None:
             await self.runner.cleanup()
             self.runner = None
