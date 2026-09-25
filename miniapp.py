@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -9,7 +10,7 @@ import time
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote
 from uuid import uuid4
 
 from aiohttp import web
@@ -27,7 +28,7 @@ from catalog import (
 )
 from db import Database, from_iso, utcnow
 from payments import RollyPayError, create_payment, get_payment
-from vpn import VpnProvider, VpnState
+from vpn import VpnProvider, VpnState, prettify_subscription_payload
 
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,8 @@ class MiniAppServer:
         self.runner: web.AppRunner | None = None
         self.site: web.TCPSite | None = None
         self._bot_username = ""
+        self._last_reconcile: dict[int, float] = {}
+        self._subscription_cache: dict[str, dict] = {}
 
     def _telegram_user(self, request: web.Request) -> dict:
         raw = request.headers.get("X-Telegram-Init-Data", "")
@@ -152,32 +155,65 @@ class MiniAppServer:
             return self._fallback_state(user), True
         if not getattr(self.provider, "service_ready", True):
             return self._fallback_state(user), False
-        try:
-            if getattr(self.provider, "mode_name", "") == "h1cloud":
-                # H1Panel clients created by older builds may have a valid
-                # sub_url but no inbounds/remote replicas. Reconcile them
-                # before returning the subscription.
-                return await asyncio.wait_for(
+
+        user_id = int(user["telegram_id"])
+        now = time.monotonic()
+        should_reconcile = (
+            getattr(self.provider, "mode_name", "") == "h1cloud"
+            and now - self._last_reconcile.get(user_id, 0.0) >= 60.0
+        )
+
+        if should_reconcile:
+            try:
+                state = await asyncio.wait_for(
                     self.provider.provision(user),
                     20.0,
-                ), True
+                )
+                self._last_reconcile[user_id] = now
+                return state, True
+            except Exception as exc:
+                logger.warning(
+                    "Mini App H1 reconciliation deferred for %s: %s",
+                    user_id,
+                    exc,
+                )
+
+        try:
             return await asyncio.wait_for(
                 self.provider.get_state(user),
                 6.0,
             ), True
         except Exception:
             try:
-                return await asyncio.wait_for(
+                state = await asyncio.wait_for(
                     self.provider.provision(user),
                     20.0,
-                ), True
+                )
+                self._last_reconcile[user_id] = now
+                return state, True
             except Exception as exc:
                 logger.warning(
                     "Mini App VPN state unavailable for %s: %s",
-                    user["telegram_id"],
+                    user_id,
                     exc,
                 )
                 return self._fallback_state(user), False
+
+    def _public_subscription_url(
+        self,
+        user: dict,
+        state: VpnState | None = None,
+    ) -> str:
+        if (
+            getattr(self.provider, "mode_name", "") == "h1cloud"
+            and self.config.miniapp_url
+            and user.get("sub_token")
+            and _active(user)
+        ):
+            token = quote(str(user["sub_token"]), safe="")
+            return f"{self.config.miniapp_url.rstrip('/')}/sub/{token}"
+        return (state.subscription_url if state else "") or ""
+
 
     async def _activate_paid(self, buyer_id: int, target_id: int, code: str, event_key: str) -> None:
         plan = PLANS[code]
@@ -225,6 +261,99 @@ class MiniAppServer:
             }
         )
 
+    async def subscription(self, request: web.Request) -> web.Response:
+        token = str(request.match_info.get("token") or "").strip()
+        user = await self.db.get_user_by_sub_token(token)
+        if user is None:
+            raise web.HTTPNotFound(text="Subscription not found")
+        if not _active(user):
+            raise web.HTTPForbidden(text="Subscription expired")
+
+        cached = self._subscription_cache.get(token)
+        now = time.monotonic()
+        if cached and now - float(cached["created"]) <= 30.0:
+            return web.Response(
+                body=cached["body"],
+                headers=dict(cached["headers"]),
+            )
+
+        async def load_payload() -> tuple[bytes, dict[str, str], int]:
+            body, upstream_headers = await self.provider.fetch_subscription(user)
+            rendered, count = prettify_subscription_payload(body)
+            return rendered, upstream_headers, count
+
+        try:
+            try:
+                body, upstream_headers, count = await asyncio.wait_for(
+                    load_payload(),
+                    12.0,
+                )
+            except Exception:
+                await asyncio.wait_for(self.provider.provision(user), 20.0)
+                body, upstream_headers, count = await asyncio.wait_for(
+                    load_payload(),
+                    12.0,
+                )
+
+            if count < 1:
+                await asyncio.wait_for(self.provider.provision(user), 20.0)
+                body, upstream_headers, count = await asyncio.wait_for(
+                    load_payload(),
+                    12.0,
+                )
+            if count < 1:
+                raise RuntimeError("H1Cloud subscription contains no VLESS nodes")
+
+            title = base64.b64encode("MGN VPN".encode("utf-8")).decode("ascii")
+            headers = {
+                "Content-Type": "text/plain; charset=utf-8",
+                "Cache-Control": "no-store",
+                "Content-Disposition": 'inline; filename="MGN-VPN.txt"',
+                "Profile-Title": f"base64:{title}",
+                "Profile-Update-Interval": "12",
+            }
+            for key in (
+                "subscription-userinfo",
+                "support-url",
+                "profile-web-page-url",
+            ):
+                value = upstream_headers.get(key)
+                if value:
+                    headers[key.title()] = value
+
+            self._subscription_cache[token] = {
+                "created": now,
+                "body": body,
+                "headers": headers,
+            }
+            logger.info(
+                "MGN subscription served for %s with %s node(s)",
+                user["telegram_id"],
+                count,
+            )
+            return web.Response(body=body, headers=headers)
+        except Exception as exc:
+            # Existing configurations remain useful during a short H1 outage.
+            # Serve a recently cached copy rather than turning the profile empty.
+            if cached and now - float(cached["created"]) <= 600.0:
+                logger.warning(
+                    "MGN subscription upstream unavailable for %s; serving stale cache: %s",
+                    user["telegram_id"],
+                    exc,
+                )
+                return web.Response(
+                    body=cached["body"],
+                    headers=dict(cached["headers"]),
+                )
+            logger.warning(
+                "MGN subscription unavailable for %s: %s",
+                user["telegram_id"],
+                exc,
+            )
+            raise web.HTTPServiceUnavailable(
+                text="MGN VPN subscription is temporarily unavailable"
+            )
+
     async def me(self, request: web.Request) -> web.Response:
         uid, tg_user, row = await self._auth(request)
         state, vpn_ok = await self._load_state(row)
@@ -262,7 +391,7 @@ class MiniAppServer:
                     "ready": bool(getattr(self.provider, "service_ready", True)),
                     "ok": vpn_ok,
                     "server": state.server or self.config.vpn_server_name,
-                    "subscription_url": state.subscription_url or "",
+                    "subscription_url": self._public_subscription_url(row, state),
                     "traffic_used_gb": round(float(state.traffic_used_gb or 0), 2),
                     "traffic_limit_gb": round(float(state.traffic_limit_gb or 0), 2),
                     "devices": state.devices,
@@ -607,6 +736,7 @@ class MiniAppServer:
         app.router.add_get("/", self.index)
         app.router.add_get("/miniapp", self.index)
         app.router.add_get("/miniapp/", self.index)
+        app.router.add_get("/sub/{token}", self.subscription)
         app.router.add_get("/api/miniapp/health", self.health)
         app.router.add_get("/api/miniapp/me", self.me)
         app.router.add_post("/api/miniapp/trial", self.activate_trial)
