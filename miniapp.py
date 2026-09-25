@@ -199,19 +199,52 @@ class MiniAppServer:
                 )
                 return self._fallback_state(user), False
 
+    def _external_base_url(self, request: web.Request) -> str:
+        if self.config.miniapp_url:
+            return self.config.miniapp_url.rstrip("/")
+
+        forwarded_proto = (
+            request.headers.get("X-Forwarded-Proto", "")
+            .split(",", 1)[0]
+            .strip()
+        )
+        forwarded_host = (
+            request.headers.get("X-Forwarded-Host", "")
+            .split(",", 1)[0]
+            .strip()
+        )
+        scheme = forwarded_proto or request.scheme or "https"
+        host = forwarded_host or request.headers.get("Host", "").strip()
+
+        if host:
+            # Public Telegram Mini Apps are HTTPS. Some reverse proxies expose
+            # the app to aiohttp as plain HTTP, so prefer HTTPS for external
+            # hosts unless the proxy explicitly supplied another scheme.
+            if not forwarded_proto and host not in {"localhost", "127.0.0.1"}:
+                scheme = "https"
+            return f"{scheme}://{host}".rstrip("/")
+        return ""
+
     def _public_subscription_url(
         self,
         user: dict,
         state: VpnState | None = None,
+        *,
+        request: web.Request | None = None,
     ) -> str:
+        base_url = (
+            self._external_base_url(request)
+            if request is not None
+            else self.config.miniapp_url.rstrip("/")
+        )
         if (
             getattr(self.provider, "mode_name", "") == "h1cloud"
-            and self.config.miniapp_url
+            and base_url
             and user.get("sub_token")
             and _active(user)
         ):
             token = quote(str(user["sub_token"]), safe="")
-            return f"{self.config.miniapp_url.rstrip('/')}/sub/{token}"
+            return f"{base_url}/sub/{token}"
         return (state.subscription_url if state else "") or ""
 
 
@@ -391,7 +424,11 @@ class MiniAppServer:
                     "ready": bool(getattr(self.provider, "service_ready", True)),
                     "ok": vpn_ok,
                     "server": state.server or self.config.vpn_server_name,
-                    "subscription_url": self._public_subscription_url(row, state),
+                    "subscription_url": self._public_subscription_url(
+                        row,
+                        state,
+                        request=request,
+                    ),
                     "traffic_used_gb": round(float(state.traffic_used_gb or 0), 2),
                     "traffic_limit_gb": round(float(state.traffic_limit_gb or 0), 2),
                     "devices": state.devices,
