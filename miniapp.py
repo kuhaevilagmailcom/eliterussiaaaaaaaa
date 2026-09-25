@@ -153,12 +153,30 @@ class MiniAppServer:
         if not getattr(self.provider, "service_ready", True):
             return self._fallback_state(user), False
         try:
-            return await asyncio.wait_for(self.provider.get_state(user), 4.0), True
+            if getattr(self.provider, "mode_name", "") == "h1cloud":
+                # H1Panel clients created by older builds may have a valid
+                # sub_url but no inbounds/remote replicas. Reconcile them
+                # before returning the subscription.
+                return await asyncio.wait_for(
+                    self.provider.provision(user),
+                    20.0,
+                ), True
+            return await asyncio.wait_for(
+                self.provider.get_state(user),
+                6.0,
+            ), True
         except Exception:
             try:
-                return await asyncio.wait_for(self.provider.provision(user), 6.0), True
+                return await asyncio.wait_for(
+                    self.provider.provision(user),
+                    20.0,
+                ), True
             except Exception as exc:
-                logger.warning("Mini App VPN state unavailable for %s: %s", user["telegram_id"], exc)
+                logger.warning(
+                    "Mini App VPN state unavailable for %s: %s",
+                    user["telegram_id"],
+                    exc,
+                )
                 return self._fallback_state(user), False
 
     async def _activate_paid(self, buyer_id: int, target_id: int, code: str, event_key: str) -> None:
