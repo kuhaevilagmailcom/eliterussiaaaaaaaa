@@ -381,3 +381,100 @@ body:after{
   .page[data-page="home"] .quick-grid button>span{width:39px;height:39px}
   .page[data-page="home"] .quick-grid b{font-size:12.5px}.page[data-page="home"] .quick-grid small{font-size:9.5px}
 }
+
+/* MGN VPN concept compatibility patch v6.1 */
+.page[data-page="home"] .hero-stats>div{
+  min-width:0;
+  display:flex;
+  align-items:center;
+  gap:12px;
+  background:transparent;
+  border:0;
+  border-radius:0;
+  padding:0;
+}
+.page[data-page="home"] .stat-icon{
+  display:grid;
+  place-items:center;
+  min-width:43px;
+}
+.page[data-page="home"] .hero-stats span:not(.stat-icon){
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+}
+.page[data-page="home"] .link-card{
+  display:block;
+  grid-template-columns:none;
+  align-items:initial;
+  gap:0;
+  border:0;
+}
+.page[data-page="home"] .link-heading{
+  position:relative;
+  display:flex;
+  align-items:center;
+  gap:13px;
+}
+.page[data-page="home"] .link-icon{
+  display:grid;
+  place-items:center;
+  color:#fff;
+}
+.page[data-page="home"] .link-copy{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+}
+.page[data-page="home"] .link-copy span{
+  white-space:normal;
+  overflow:visible;
+  text-overflow:clip;
+}
+.page[data-page="home"] .link-value{
+  position:relative;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  color:#fff;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);
+}
+.page[data-page="home"] .copy-button{
+  position:relative;
+  width:100%;
+  height:auto;
+  border:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:10px;
+  color:#0a0a0c;
+  background:#fff;
+}
+.page[data-page="home"] .copy-button svg{color:#0a0a0c}
+.page[data-page="home"] .link-help{
+  position:relative;
+  width:100%;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:9px;
+  color:#fff;
+}
+.page[data-page="home"] .quick-grid button{
+  display:grid;
+  grid-template-columns:43px 1fr;
+  grid-template-rows:auto auto;
+  align-content:center;
+  text-align:left;
+}
+.page[data-page="home"] .quick-grid button>span{
+  grid-row:1/3;
+  display:grid;
+  place-items:center;
+  margin:0;
+}
+
