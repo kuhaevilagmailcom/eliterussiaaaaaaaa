@@ -262,102 +262,84 @@ class H1CloudVpnProvider(VpnProvider):
     async def _inbound_ids(self, *, prefix: str = "") -> list[str]:
         data = await self._request("GET", f"{prefix}/inbounds")
 
+        raw = data.get("inbounds") if isinstance(data, dict) else None
+        if raw is None and isinstance(data, dict):
+            for key in ("data", "result"):
+                nested = data.get(key)
+                if isinstance(nested, dict) and nested.get("inbounds") is not None:
+                    raw = nested.get("inbounds")
+                    break
+
         result: list[str] = []
         seen: set[str] = set()
 
         def add(value: Any) -> None:
-            inbound_id = str(value or "").strip()
-            if inbound_id and inbound_id not in seen:
-                seen.add(inbound_id)
-                result.append(inbound_id)
+            text = str(value or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                result.append(text)
 
-        def walk(
-            value: Any,
-            *,
-            map_key: str | None = None,
-            inside_inbounds: bool = False,
-        ) -> None:
-            if isinstance(value, list):
-                for item in value:
-                    walk(item, inside_inbounds=inside_inbounds)
-                return
-
-            if not isinstance(value, dict):
-                if inside_inbounds and isinstance(value, (str, int)):
+        if isinstance(raw, dict):
+            entries = list(raw.items())
+            for map_key, item in entries:
+                if isinstance(item, dict):
+                    value = (
+                        item.get("id")
+                        or item.get("inbound_id")
+                        or item.get("inboundId")
+                        or map_key
+                    )
                     add(value)
-                return
+                elif isinstance(item, (str, int)):
+                    add(item if str(item).strip() else map_key)
+                elif isinstance(item, (list, tuple)) and item:
+                    add(item[0])
+                else:
+                    add(map_key)
 
-            protocol = str(value.get("protocol") or "").lower()
-            label = str(
-                value.get("remark")
-                or value.get("name")
-                or value.get("tag")
-                or ""
-            ).lower()
-
-            looks_like_inbound = any(
-                key in value
-                for key in (
-                    "protocol",
-                    "port",
-                    "remark",
-                    "network",
-                    "path",
-                    "tag",
-                    "listen",
-                    "streamSettings",
-                )
-            )
-
-            inbound_id = None
-            for key in ("id", "inbound_id", "inboundId"):
-                candidate = value.get(key)
-                if candidate is not None and str(candidate).strip():
-                    inbound_id = candidate
-                    break
-
-            if (
-                inbound_id is None
-                and inside_inbounds
-                and map_key
-                and looks_like_inbound
-            ):
-                inbound_id = map_key
-
-            if (
-                inbound_id is not None
-                and looks_like_inbound
-                and protocol not in {"api", "dokodemo-door"}
-                and label != "api"
-            ):
-                add(inbound_id)
-
-            for key, child in value.items():
-                child_inside = inside_inbounds or key in {
-                    "inbounds",
-                    "items",
-                    "inbound",
-                }
-                walk(
-                    child,
-                    map_key=str(key),
-                    inside_inbounds=child_inside,
-                )
-
-        walk(data)
+        elif isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict):
+                    value = (
+                        item.get("id")
+                        or item.get("inbound_id")
+                        or item.get("inboundId")
+                    )
+                    if value is not None:
+                        add(value)
+                elif isinstance(item, (str, int)):
+                    add(item)
+                elif isinstance(item, (list, tuple)) and item:
+                    # Some H1 builds serialize an inbound as a positional row.
+                    # The first column is the inbound ID; do not treat the
+                    # remaining columns (port, remark, protocol, etc.) as IDs.
+                    add(item[0])
 
         if not result:
-            if isinstance(data, dict):
-                shape = {
-                    key: type(value).__name__
-                    for key, value in list(data.items())[:12]
-                }
+            item_shape = "none"
+            if isinstance(raw, list):
+                if raw:
+                    first = raw[0]
+                    if isinstance(first, dict):
+                        item_shape = f"dict(keys={list(first.keys())[:12]})"
+                    elif isinstance(first, (list, tuple)):
+                        item_shape = (
+                            f"row(len={len(first)}, "
+                            f"types={[type(v).__name__ for v in first[:8]]})"
+                        )
+                    else:
+                        item_shape = type(first).__name__
+                else:
+                    item_shape = "list(empty)"
+            elif isinstance(raw, dict):
+                item_shape = f"map(keys={list(raw.keys())[:12]})"
             else:
-                shape = {"root": type(data).__name__}
+                item_shape = type(raw).__name__
+
             logger.warning(
-                "H1Cloud /inbounds unsupported response for %s; shape=%s",
+                "H1Cloud /inbounds unsupported response for %s; item_shape=%s",
                 prefix or "main",
-                shape,
+                item_shape,
             )
             raise RuntimeError(
                 f"H1Cloud panel returned no usable inbounds for {prefix or 'main'}"
@@ -515,9 +497,10 @@ class H1CloudVpnProvider(VpnProvider):
         # Every panel connected in H1 "Servers" gets the same UUID.
         nodes = await self._federated_nodes()
         logger.info(
-            "H1Cloud federation: %s connected remote node(s) for %s",
+            "H1Cloud federation: %s connected remote node(s) for %s; node_ids=%s",
             len(nodes),
             name,
+            [self._node_id(node) for node in nodes if self._node_id(node)],
         )
         errors: list[str] = []
         for node in nodes:
