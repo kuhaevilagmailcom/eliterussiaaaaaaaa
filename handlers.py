@@ -999,8 +999,7 @@ def build_router(
             "💎 <b>Алмазы MGN VPN</b>\n\n"
             f"Баланс — <b>{balance} 💎</b>\n\n"
             "Получайте алмазы за покупки и приглашённых друзей, "
-            "а затем меняйте их на дни VPN, дополнительные устройства "
-            "и промокоды.",
+            "а затем меняйте их на дни VPN и промокоды.",
             reply_markup=kb.as_markup(),
         )
 
@@ -1016,13 +1015,6 @@ def build_router(
                     callback_data=f"shop:days:{key}",
                 )
             )
-
-        kb.row(
-            blue_inline_button(
-                f"📱 +1 устройство · {EXTRA_DEVICE_COST} 💎",
-                callback_data="shop:device",
-            )
-        )
 
         promos = await db.promo_products()
         for item in promos[:12]:
@@ -1075,10 +1067,11 @@ def build_router(
             message,
             actor,
             "💎 <b>Как заработать алмазы</b>\n\n"
-            f"15 дней VPN — <b>+{DIAMOND_REWARDS['15']} 💎</b>\n"
+            f"7 дней VPN — <b>+{DIAMOND_REWARDS['7']} 💎</b>\n"
             f"1 месяц — <b>+{DIAMOND_REWARDS['30']} 💎</b>\n"
-            f"1 год — <b>+{DIAMOND_REWARDS['365']} 💎</b>\n"
-            f"Навсегда — <b>+{DIAMOND_REWARDS['forever']} 💎</b>\n\n"
+            f"3 месяца — <b>+{DIAMOND_REWARDS['90']} 💎</b>\n"
+            f"6 месяцев — <b>+{DIAMOND_REWARDS['180']} 💎</b>\n"
+            f"1 год — <b>+{DIAMOND_REWARDS['365']} 💎</b>\n\n"
             f"Друг активировал пробник — <b>+{REFERRAL_TRIAL_REWARD} 💎</b>\n"
             f"Друг впервые купил VPN — <b>+{REFERRAL_FIRST_PAID_REWARD} 💎</b>\n\n"
             f"Ваша ссылка:\n<code>{html.escape(link)}</code>",
@@ -1284,7 +1277,7 @@ def build_router(
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("📢 Канал MGN VPN", url=config.trial_channel_url))
         add_nav_buttons(kb, back_data="home")
-        e = emoji.icon(9, pack=PACK_UI)
+        e = emoji.icon(5, pack=PACK_NEWS)
         await send_screen(
             callback.message,
             callback.from_user,
@@ -1300,7 +1293,7 @@ def build_router(
     async def menu_support(callback: CallbackQuery) -> None:
         await callback.answer()
         if callback.message:
-            e = emoji.icon(9, pack=PACK_UI)
+            e = emoji.icon(5, pack=PACK_NEWS)
             await send_screen(
                 callback.message,
                 callback.from_user,
@@ -1512,43 +1505,6 @@ def build_router(
             pass
 
         await callback.answer(f"+{item['days']} дней VPN")
-        await show_diamond_shop(callback.message, callback.from_user)
-
-    @router.callback_query(F.data == "shop:device")
-    async def buy_shop_device(callback: CallbackQuery) -> None:
-        if not callback.message:
-            return
-        user = await ensure_actor(callback.from_user)
-        balance = int(user.get("diamonds") or 0)
-        if balance < EXTRA_DEVICE_COST:
-            await callback.answer(
-                f"Не хватает {EXTRA_DEVICE_COST - balance} 💎",
-                show_alert=True,
-            )
-            return
-        if int(user.get("max_devices") or 1) >= 10:
-            await callback.answer(
-                "Достигнут лимит: 10 устройств.",
-                show_alert=True,
-            )
-            return
-
-        user = await db.purchase_extra_device(
-            telegram_id=callback.from_user.id,
-            cost=EXTRA_DEVICE_COST,
-            event_key=f"shop-device:{callback.from_user.id}:{uuid4().hex}",
-            max_total_devices=10,
-        )
-        if not user:
-            await callback.answer("Не удалось выполнить покупку", show_alert=True)
-            return
-
-        try:
-            await provider.provision(user)
-        except Exception:
-            pass
-
-        await callback.answer("+1 устройство")
         await show_diamond_shop(callback.message, callback.from_user)
 
     @router.callback_query(F.data.startswith("shop:promo:"))
@@ -2619,13 +2575,13 @@ def build_router(
         )
         add_nav_buttons(kb, back_data="home")
 
-        e = emoji.icon(9, pack=PACK_UI)
+        e = emoji.icon(5, pack=PACK_NEWS)
         await send_screen(
             message,
             message.from_user,
             f"{e} <b>Информация</b>\n\n"
             "🔐 Доступ выдаётся по персональной ссылке.\n"
-            "📱 Платная подписка — до <b>5 устройств</b>.\n"
+            f"📱 В тариф входит <b>1 устройство</b>; дополнительные — по <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>, максимум <b>{MAX_DEVICES}</b>.\n"
             "🎁 Пробный доступ можно активировать один раз после подписки на наш Telegram-канал.\n"
             "⚙️ Управление подпиской и устройствами находится прямо в боте.",
             reply_markup=kb.as_markup(),
@@ -2633,15 +2589,15 @@ def build_router(
 
     @router.message(F.text.in_({"🆘 Поддержка", "🆘 Помощь", "Поддержка", "Помощь"}))
     async def help_screen(message: Message) -> None:
-        e = emoji.icon(9, pack=PACK_UI)
+        e = emoji.icon(6, pack=PACK_NEWS)
         await send_screen(
             message,
             message.from_user,
             f"{e} <b>Поддержка</b>\n\n"
             "1. Активируйте пробный доступ или купите подписку.\n"
             "2. Нажмите <b>«🔗 Подключить VPN»</b>.\n"
-            "3. Откройте персональную ссылку на нужном устройстве.\n\n"
-            "Подключённые устройства можно отключить в разделе <b>«📱 Устройства»</b>.",
+            "3. Скопируйте ссылку одной кнопкой или сразу откройте её.\n\n"
+            "Дополнительные слоты находятся в разделе <b>«📱 Устройства»</b>.",
             reply_markup=section_nav_keyboard(),
         )
 
@@ -3270,7 +3226,7 @@ def build_router(
             telegram_id=telegram_id,
             days=days,
             plan_name=f"{days} дн.",
-            max_devices=5,
+            max_devices=BASE_DEVICES,
         )
         try:
             await provider.provision(user)
@@ -3457,7 +3413,7 @@ def build_router(
             telegram_id=telegram_id,
             days=days,
             plan_name=f"{days} дн.",
-            max_devices=5,
+            max_devices=BASE_DEVICES,
         )
         try:
             await provider.provision(user)
