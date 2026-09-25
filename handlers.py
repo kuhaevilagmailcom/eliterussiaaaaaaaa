@@ -2830,6 +2830,16 @@ def build_router(
                 blue_inline_button("+90 дней", callback_data=f"admin:grant:{telegram_id}:90"),
                 blue_inline_button("+365 дней", callback_data=f"admin:grant:{telegram_id}:365"),
             )
+            kb.row(
+                blue_inline_button(
+                    "📱 +1 слот",
+                    callback_data=f"admin:device:{telegram_id}:add",
+                ),
+                blue_inline_button(
+                    "📱 −1 слот",
+                    callback_data=f"admin:device:{telegram_id}:remove",
+                ),
+            )
 
         if actor_role == "owner" and telegram_id not in config.admin_ids:
             kb.row(
@@ -2862,7 +2872,8 @@ def build_router(
             f"Подписка — <b>{'активна' if active else 'не активна'}</b>",
             f"Тариф — <b>{html.escape(user.get('plan_name') or '—')}</b>",
             f"До — <b>{format_until(user, config) if active else '—'}</b>",
-            f"Устройств — <b>до {int(user.get('max_devices') or 1)}</b>",
+            f"Устройств — <b>{int(user.get('max_devices') or BASE_DEVICES)}/{MAX_DEVICES}</b>",
+            f"Доп. слотов — <b>{max(0, int(user.get('bonus_devices') or 0))}</b>",
             f"💎 Алмазы — <b>{int(user.get('diamonds') or 0)}</b>",
             f"Пробник — <b>{'использован' if user.get('trial_used') else 'доступен'}</b>",
             f"Приглашено — <b>{referrals}</b>",
@@ -3192,6 +3203,72 @@ def build_router(
             await callback.answer("Неизвестная роль", show_alert=True)
             return
 
+        await show_admin_user(
+            callback.message,
+            callback.from_user,
+            telegram_id,
+        )
+
+    @router.callback_query(F.data.startswith("admin:device:"))
+    async def admin_device_callback(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer(
+                "Нужна полная админка.",
+                show_alert=True,
+            )
+            return
+        if not callback.message:
+            return
+
+        parts = callback.data.split(":")
+        if len(parts) != 4 or not parts[2].isdigit():
+            await callback.answer("Некорректная команда", show_alert=True)
+            return
+
+        telegram_id = int(parts[2])
+        action = parts[3]
+        try:
+            current = await db.get_user(telegram_id)
+        except KeyError:
+            await callback.answer("Пользователь не найден", show_alert=True)
+            return
+
+        current_limit = int(current.get("max_devices") or BASE_DEVICES)
+
+        if action == "add":
+            if current_limit >= MAX_DEVICES:
+                await callback.answer(
+                    "Уже максимум: 5 устройств.",
+                    show_alert=True,
+                )
+                return
+            updated = await db.grant_extra_device(
+                telegram_id,
+                max_total_devices=MAX_DEVICES,
+            )
+            success_text = "+1 устройство выдано"
+        elif action == "remove":
+            if current_limit <= BASE_DEVICES:
+                await callback.answer(
+                    "Нельзя опустить ниже 1 устройства.",
+                    show_alert=True,
+                )
+                return
+            updated = await db.revoke_extra_device(telegram_id)
+            success_text = "−1 устройство"
+        else:
+            await callback.answer("Неизвестное действие", show_alert=True)
+            return
+
+        if not updated:
+            await callback.answer(
+                "Не удалось изменить лимит.",
+                show_alert=True,
+            )
+            return
+
+        await sync_device_limit(updated)
+        await callback.answer(success_text)
         await show_admin_user(
             callback.message,
             callback.from_user,
