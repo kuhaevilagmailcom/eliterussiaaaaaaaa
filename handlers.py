@@ -154,37 +154,35 @@ async def load_state(
         return fallback_state(user, config), True
     if not getattr(provider, "service_ready", True):
         return fallback_state(user, config), False
+
+    # Fast path for an already provisioned H1 client: opening the bot UI must
+    # not wait for every remote federation node.
     try:
-        if getattr(provider, "mode_name", "") == "h1cloud":
-            state = await asyncio.wait_for(
-                provider.provision(user),
-                timeout=20.0,
-            )
-        else:
-            state = await asyncio.wait_for(
-                provider.get_state(user),
-                timeout=6.0,
-            )
-        return state, True
-    except Exception as first_exc:
-        logger.warning(
-            "VPN state refresh failed for user %s: %s",
-            user.get("telegram_id"),
-            first_exc,
+        state = await asyncio.wait_for(
+            provider.get_state(user),
+            timeout=5.0,
         )
-        try:
-            state = await asyncio.wait_for(
-                provider.provision(user),
-                timeout=20.0,
-            )
-            return state, True
-        except Exception as exc:
-            logger.warning(
-                "VPN provisioning failed for user %s: %s",
-                user.get("telegram_id"),
-                exc,
-            )
-            return fallback_state(user, config), False
+        return state, True
+    except Exception as state_exc:
+        logger.warning(
+            "VPN state read failed for user %s: %s",
+            user.get("telegram_id"),
+            str(state_exc).strip() or type(state_exc).__name__,
+        )
+
+    try:
+        state = await asyncio.wait_for(
+            provider.provision(user),
+            timeout=15.0,
+        )
+        return state, True
+    except Exception as exc:
+        logger.warning(
+            "VPN provisioning failed for user %s: %s",
+            user.get("telegram_id"),
+            str(exc).strip() or type(exc).__name__,
+        )
+        return fallback_state(user, config), False
 
 
 def strip_custom_emoji(value: str) -> str:
