@@ -485,6 +485,47 @@ class MiniAppServer:
             }
         )
 
+    async def buy_bonus_days(self, request: web.Request) -> web.Response:
+        uid, _tg_user, _row = await self._auth(request)
+        data = await request.json()
+        code = str(data.get("code") or "")
+        item = DIAMOND_SHOP_DAYS.get(code)
+        if not item:
+            raise _json_error(400, "Награда не найдена")
+
+        balance = await self.db.diamond_balance(uid)
+        cost = int(item["cost"])
+        if balance < cost:
+            raise _json_error(409, f"Не хватает {cost - balance} алмазов")
+
+        updated = await self.db.purchase_vpn_days(
+            telegram_id=uid,
+            days=int(item["days"]),
+            cost=cost,
+            event_key=f"mini-days:{uid}:{code}:{uuid4().hex}",
+        )
+        if not updated:
+            raise _json_error(409, "Не удалось обменять алмазы")
+
+        if getattr(self.provider, "service_ready", True):
+            try:
+                await asyncio.wait_for(self.provider.provision(updated), 7.0)
+            except Exception as exc:
+                logger.warning(
+                    "Mini App bonus-days provisioning deferred for %s: %s",
+                    uid,
+                    exc,
+                )
+
+        return web.json_response(
+            {
+                "ok": True,
+                "diamonds": int(updated.get("diamonds") or 0),
+                "subscription_until": updated.get("subscription_until"),
+                "plan_name": updated.get("plan_name") or "",
+            }
+        )
+
     async def buy_extra_device(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
         current_limit = int(row.get("max_devices") or 1)
@@ -556,6 +597,7 @@ class MiniAppServer:
         app.router.add_get("/api/miniapp/payment/sbp/{payment_id}", self.sbp_check)
         app.router.add_post("/api/miniapp/shop/days/{code}", self.buy_bonus_days)
         app.router.add_post("/api/miniapp/shop/device", self.buy_extra_device)
+        app.router.add_post("/api/miniapp/shop/days", self.buy_bonus_days)
         app.router.add_delete("/api/miniapp/devices/{device_id}", self.delete_device)
         app.router.add_static("/static/", str(self.web_dir), show_index=False)
 
