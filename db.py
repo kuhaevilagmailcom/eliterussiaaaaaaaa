@@ -205,6 +205,24 @@ class Database:
         return dict(row)
 
 
+    async def get_user_by_sub_token(
+        self,
+        sub_token: str,
+    ) -> dict[str, Any] | None:
+        token = str(sub_token or "").strip()
+        if not token:
+            return None
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (
+                await db.execute(
+                    "SELECT * FROM users WHERE sub_token=? LIMIT 1",
+                    (token,),
+                )
+            ).fetchone()
+        return dict(row) if row else None
+
+
     async def get_user_by_username(
         self,
         username: str,
