@@ -262,73 +262,107 @@ class H1CloudVpnProvider(VpnProvider):
     async def _inbound_ids(self, *, prefix: str = "") -> list[str]:
         data = await self._request("GET", f"{prefix}/inbounds")
 
-        containers: list[Any] = []
-        if isinstance(data, dict):
-            for key in ("inbounds", "items"):
-                if data.get(key) is not None:
-                    containers.append(data[key])
-            for key in ("data", "result"):
-                nested = data.get(key)
-                if isinstance(nested, dict):
-                    for nested_key in ("inbounds", "items"):
-                        if nested.get(nested_key) is not None:
-                            containers.append(nested[nested_key])
-                elif isinstance(nested, list):
-                    containers.append(nested)
-
         result: list[str] = []
         seen: set[str] = set()
 
-        for container in containers:
-            if isinstance(container, list):
-                entries = [(None, item) for item in container]
-            elif isinstance(container, dict):
-                entries = [(str(key), item) for key, item in container.items()]
-            else:
-                entries = []
+        def add(value: Any) -> None:
+            inbound_id = str(value or "").strip()
+            if inbound_id and inbound_id not in seen:
+                seen.add(inbound_id)
+                result.append(inbound_id)
 
-            for map_key, item in entries:
-                inbound_id = ""
-                protocol = ""
-                label = ""
+        def walk(
+            value: Any,
+            *,
+            map_key: str | None = None,
+            inside_inbounds: bool = False,
+        ) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    walk(item, inside_inbounds=inside_inbounds)
+                return
 
-                if isinstance(item, (str, int)):
-                    inbound_id = str(item).strip()
-                elif isinstance(item, dict):
-                    for key in ("id", "inbound_id", "inboundId"):
-                        value = item.get(key)
-                        if value is not None and str(value).strip():
-                            inbound_id = str(value).strip()
-                            break
-                    if not inbound_id and map_key:
-                        inbound_id = map_key.strip()
+            if not isinstance(value, dict):
+                if inside_inbounds and isinstance(value, (str, int)):
+                    add(value)
+                return
 
-                    protocol = str(item.get("protocol") or "").lower()
-                    label = str(
-                        item.get("remark")
-                        or item.get("name")
-                        or item.get("tag")
-                        or ""
-                    ).lower()
+            protocol = str(value.get("protocol") or "").lower()
+            label = str(
+                value.get("remark")
+                or value.get("name")
+                or value.get("tag")
+                or ""
+            ).lower()
 
-                if not inbound_id:
-                    continue
-                if protocol in {"api", "dokodemo-door"} or label == "api":
-                    continue
-                if inbound_id not in seen:
-                    seen.add(inbound_id)
-                    result.append(inbound_id)
+            looks_like_inbound = any(
+                key in value
+                for key in (
+                    "protocol",
+                    "port",
+                    "remark",
+                    "network",
+                    "path",
+                    "tag",
+                    "listen",
+                    "streamSettings",
+                )
+            )
+
+            inbound_id = None
+            for key in ("id", "inbound_id", "inboundId"):
+                candidate = value.get(key)
+                if candidate is not None and str(candidate).strip():
+                    inbound_id = candidate
+                    break
+
+            if (
+                inbound_id is None
+                and inside_inbounds
+                and map_key
+                and looks_like_inbound
+            ):
+                inbound_id = map_key
+
+            if (
+                inbound_id is not None
+                and looks_like_inbound
+                and protocol not in {"api", "dokodemo-door"}
+                and label != "api"
+            ):
+                add(inbound_id)
+
+            for key, child in value.items():
+                child_inside = inside_inbounds or key in {
+                    "inbounds",
+                    "items",
+                    "inbound",
+                }
+                walk(
+                    child,
+                    map_key=str(key),
+                    inside_inbounds=child_inside,
+                )
+
+        walk(data)
 
         if not result:
-            top_keys = list(data.keys())[:12] if isinstance(data, dict) else []
+            if isinstance(data, dict):
+                shape = {
+                    key: type(value).__name__
+                    for key, value in list(data.items())[:12]
+                }
+            else:
+                shape = {"root": type(data).__name__}
             logger.warning(
-                "H1Cloud /inbounds unsupported response for %s; keys=%s",
+                "H1Cloud /inbounds unsupported response for %s; shape=%s",
                 prefix or "main",
-                top_keys,
+                shape,
             )
             raise RuntimeError(
                 f"H1Cloud panel returned no usable inbounds for {prefix or 'main'}"
             )
+
         return result
 
     async def _federated_nodes(self) -> list[dict[str, Any]]:
