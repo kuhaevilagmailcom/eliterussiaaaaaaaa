@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from dataclasses import dataclass
 from datetime import datetime
@@ -590,7 +591,7 @@ class H1CloudVpnProvider(VpnProvider):
             else ""
         ) or str(uuid4())
 
-        # Main NL panel.
+        # The main panel must succeed: it owns the canonical client/sub_url.
         await self._upsert_location(
             name=name,
             client_uuid=client_uuid,
@@ -599,40 +600,57 @@ class H1CloudVpnProvider(VpnProvider):
             device_limit=device_limit,
         )
 
-        # Every panel connected in H1 "Servers" gets the same UUID.
         nodes = await self._federated_nodes()
+        node_ids = [
+            self._node_id(node)
+            for node in nodes
+            if self._node_id(node)
+        ]
         logger.info(
             "H1Cloud federation: %s connected remote node(s) for %s; node_ids=%s",
-            len(nodes),
+            len(node_ids),
             name,
-            [self._node_id(node) for node in nodes if self._node_id(node)],
+            node_ids,
         )
-        errors: list[str] = []
-        for node in nodes:
-            node_id = self._node_id(node)
-            if not node_id:
-                continue
+
+        async def sync_node(node_id: str) -> tuple[str, str | None]:
+            prefix = f"/fed/lproxy/{quote(node_id, safe='')}"
             try:
-                await self._upsert_location(
-                    name=name,
-                    client_uuid=client_uuid,
-                    expires_at=desired_expiry,
-                    traffic_limit=traffic_limit,
-                    device_limit=device_limit,
-                    prefix=f"/fed/lproxy/{quote(node_id, safe='')}",
+                await asyncio.wait_for(
+                    self._upsert_location(
+                        name=name,
+                        client_uuid=client_uuid,
+                        expires_at=desired_expiry,
+                        traffic_limit=traffic_limit,
+                        device_limit=device_limit,
+                        prefix=prefix,
+                    ),
+                    timeout=9.0,
                 )
                 logger.info(
                     "H1Cloud federation node %s synced for %s",
                     node_id,
                     name,
                 )
+                return node_id, None
+            except asyncio.TimeoutError:
+                return node_id, "timeout"
             except Exception as exc:
-                errors.append(f"{node_id}: {exc}")
+                message = str(exc).strip() or type(exc).__name__
+                return node_id, message
 
+        # Remote panels are independent. Sync them concurrently so a slow or
+        # broken country cannot hold the whole purchase/Mini App for 20+ sec.
+        results = await asyncio.gather(
+            *(sync_node(node_id) for node_id in node_ids),
+            return_exceptions=False,
+        )
+        errors = [
+            f"{node_id}: {error}"
+            for node_id, error in results
+            if error
+        ]
         if errors:
-            # A single remote node must never make the whole subscription
-            # unavailable. Keep healthy locations working and retry the failed
-            # replica on the next reconciliation.
             logger.warning(
                 "H1Cloud federation partial for %s: %s",
                 name,
