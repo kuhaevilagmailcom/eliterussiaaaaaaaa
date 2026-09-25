@@ -1268,19 +1268,12 @@ def build_router(
             )
             return
 
-        kb = InlineKeyboardBuilder()
-        kb.row(
-            blue_inline_button(
-                "🔗 Открыть подключение",
-                url=public_subscription_url(user, state, config),
-            )
-        )
-        add_nav_buttons(kb, back_data="home")
+        subscription_url = public_subscription_url(user, state, config)
         await send_screen(
             callback.message,
             callback.from_user,
             connection_text(user, state, emoji),
-            reply_markup=kb.as_markup(),
+            reply_markup=connection_keyboard(subscription_url),
         )
 
     @router.callback_query(F.data == "menu:info")
@@ -2172,19 +2165,12 @@ def build_router(
             )
             return
 
-        kb = InlineKeyboardBuilder()
-        kb.row(
-            blue_inline_button(
-                "🔗 Открыть подключение",
-                url=public_subscription_url(user, state, config),
-            )
-        )
-        add_nav_buttons(kb, back_data="home")
+        subscription_url = public_subscription_url(user, state, config)
         await send_screen(
             message,
             message.from_user,
             connection_text(user, state, emoji),
-            reply_markup=kb.as_markup(),
+            reply_markup=connection_keyboard(subscription_url),
         )
 
     @router.callback_query(F.data.in_({"trial", "trialcheck"}))
