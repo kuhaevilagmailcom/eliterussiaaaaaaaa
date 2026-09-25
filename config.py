@@ -32,6 +32,11 @@ class Config:
     db_path: str
     display_tz: ZoneInfo
 
+    miniapp_url: str
+    miniapp_host: str
+    miniapp_port: int
+    miniapp_initdata_max_age: int
+
     vpn_mode: str
     vpn_sub_base_url: str
     vpn_api_url: str
@@ -79,11 +84,26 @@ class Config:
         if mode not in {"demo", "webhook", "3xui"}:
             raise RuntimeError("VPN_MODE must be demo, webhook or 3xui")
 
+        domain = os.getenv("DOMAIN", "").strip()
+        miniapp_url = os.getenv("MINIAPP_URL", "").strip().rstrip("/")
+        if not miniapp_url and domain:
+            miniapp_url = f"https://{domain}"
+
         return cls(
             bot_token=token,
             admin_ids=_ints(os.getenv("ADMIN_IDS", "8464597898")),
             db_path=os.getenv("DB_PATH", "mgn_vpn.sqlite3"),
             display_tz=ZoneInfo(os.getenv("DISPLAY_TZ", "Asia/Yekaterinburg")),
+            miniapp_url=miniapp_url,
+            miniapp_host=os.getenv("MINIAPP_HOST", "0.0.0.0").strip() or "0.0.0.0",
+            miniapp_port=max(
+                1,
+                int(os.getenv("PORT", os.getenv("MINIAPP_PORT", "3000"))),
+            ),
+            miniapp_initdata_max_age=max(
+                60,
+                int(os.getenv("MINIAPP_INITDATA_MAX_AGE", "3600")),
+            ),
             vpn_mode=mode,
             vpn_sub_base_url=os.getenv(
                 "VPN_SUB_BASE_URL",
