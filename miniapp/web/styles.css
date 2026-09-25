@@ -87,6 +87,7 @@ html,body{
 body{
   background:#b9b9bb;
   position:relative;
+  isolation:isolate;
 }
 body:before{
   content:"";
