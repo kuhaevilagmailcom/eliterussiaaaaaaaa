@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
+import logging
 from typing import Any
 from urllib.parse import quote
 
@@ -10,6 +11,7 @@ import aiohttp
 
 
 GB = 1024 ** 3
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -352,6 +354,11 @@ class H1CloudVpnProvider(VpnProvider):
         prefix: str = "",
     ) -> dict[str, Any]:
         inbound_ids = await self._inbound_ids(prefix=prefix)
+        logger.info(
+            "H1Cloud location %s: %s usable inbound(s)",
+            prefix or "main",
+            len(inbound_ids),
+        )
         existing = await self._get_client(name, prefix=prefix)
 
         payload: dict[str, Any] = {
@@ -423,6 +430,11 @@ class H1CloudVpnProvider(VpnProvider):
 
         # Every panel connected in H1 "Servers" gets the same UUID.
         nodes = await self._federated_nodes()
+        logger.info(
+            "H1Cloud federation: %s connected remote node(s) for %s",
+            len(nodes),
+            name,
+        )
         errors: list[str] = []
         for node in nodes:
             node_id = self._node_id(node)
@@ -436,6 +448,11 @@ class H1CloudVpnProvider(VpnProvider):
                     traffic_limit=traffic_limit,
                     device_limit=device_limit,
                     prefix=f"/fed/lproxy/{quote(node_id, safe='')}",
+                )
+                logger.info(
+                    "H1Cloud federation node %s synced for %s",
+                    node_id,
+                    name,
                 )
             except Exception as exc:
                 errors.append(f"{node_id}: {exc}")
