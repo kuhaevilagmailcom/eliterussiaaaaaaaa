@@ -4,27 +4,31 @@
     try{
       tg.ready();
       tg.expand();
-      tg.setHeaderColor?.('#050506');
-      tg.setBackgroundColor?.('#050506');
+      tg.setHeaderColor?.('#070708');
+      tg.setBackgroundColor?.('#070708');
       tg.disableVerticalSwipes?.();
     }catch(_){}
   }
 
   const $=(s,r=document)=>r.querySelector(s);
   const $$=(s,r=document)=>[...r.querySelectorAll(s)];
+
   const state={
     data:null,
     page:'home',
+    stack:['home'],
     selectedPlan:null,
     sbpPayment:null,
     busy:false,
   };
 
+  const CORE_PAGES=new Set(['home','plans','devices','profile']);
+
   const haptic=(type='light')=>{try{tg?.HapticFeedback?.impactOccurred(type)}catch(_){}};
   const notify=(type='success')=>{try{tg?.HapticFeedback?.notificationOccurred(type)}catch(_){}};
 
   function icons(){
-    try{window.lucide?.createIcons()}catch(_){}
+    try{window.lucide?.createIcons({attrs:{'aria-hidden':'true'}})}catch(_){}
   }
 
   function esc(value=''){
@@ -38,7 +42,7 @@
     el.textContent=message;
     el.classList.add('show');
     clearTimeout(toast.timer);
-    toast.timer=setTimeout(()=>el.classList.remove('show'),2400);
+    toast.timer=setTimeout(()=>el.classList.remove('show'),2200);
   }
 
   async function request(path,options={}){
@@ -47,7 +51,7 @@
     if(tg?.initData)headers['X-Telegram-Init-Data']=tg.initData;
 
     const controller=new AbortController();
-    const timeout=setTimeout(()=>controller.abort(),9000);
+    const timer=setTimeout(()=>controller.abort(),9000);
     let response;
     try{
       response=await fetch(path,{
@@ -60,7 +64,7 @@
       if(error?.name==='AbortError')throw new Error('Сервер отвечает слишком долго');
       throw new Error('Нет соединения с сервером');
     }finally{
-      clearTimeout(timeout);
+      clearTimeout(timer);
     }
 
     let data={};
@@ -78,6 +82,15 @@
     }catch(_){return '—'}
   }
 
+  function fmtDateTime(iso){
+    if(!iso)return '';
+    try{
+      return new Intl.DateTimeFormat('ru-RU',{
+        day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'
+      }).format(new Date(iso));
+    }catch(_){return ''}
+  }
+
   function fmtRemain(seconds){
     const sec=Number(seconds||0);
     if(sec<=0)return '—';
@@ -90,10 +103,11 @@
   }
 
   function setAvatar(prefix,user){
-    const name=(user?.first_name||'U').trim()||'U';
+    const initial=((user?.first_name||'U').trim()||'U').slice(0,1).toUpperCase();
     const text=$('#'+prefix+'Text');
     const image=$('#'+prefix+'Img');
-    if(text)text.textContent=name.slice(0,1).toUpperCase();
+    if(text)text.textContent=initial;
+
     if(image&&user?.photo_url){
       image.onload=()=>{
         image.style.display='block';
@@ -110,30 +124,30 @@
     }
   }
 
-  function subscriptionNote(data){
-    if(!data.subscription.active){
-      return data.subscription.trial_available
+  function subscriptionNote(d){
+    if(!d.subscription.active){
+      return d.subscription.trial_available
         ? 'Пробный доступ доступен после подписки на канал.'
-        : 'Выбери тариф, чтобы снова активировать VPN.';
+        : 'Выбери тариф, чтобы снова получить доступ.';
     }
-    if(!data.vpn.ready)return 'Подписка активна. VPN-серверы пока готовятся.';
-    if(!data.vpn.ok)return 'Подписка сохранена. Сервер временно не отвечает.';
+    if(!d.vpn.ready)return 'Подписка активна. VPN-серверы пока готовятся.';
+    if(!d.vpn.ok)return 'Подписка сохранена. Сервер временно не отвечает.';
     return 'Подписка активна и готова к использованию.';
   }
 
   function renderHome(){
     const d=state.data;
-    const active=d.subscription.active;
+    const active=Boolean(d.subscription.active);
     const used=d.vpn.devices?.length||0;
     const limit=Math.max(1,Number(d.subscription.max_devices||1));
-    const pct=Math.min(100,Math.round(used/limit*100));
+    const pct=Math.min(100,Math.round((used/limit)*100));
 
     $('#headerName').textContent=d.user.first_name||'MGN VPN';
     $('#headerStatus').textContent=active?(d.subscription.plan||'подписка активна'):'нет подписки';
 
-    const pill=$('#subscriptionStatus');
-    pill.classList.toggle('active',active);
-    $('b',pill).textContent=active?'Активна':'Не активна';
+    const status=$('#subscriptionStatus');
+    status.classList.toggle('active',active);
+    $('b',status).textContent=active?'Активна':'Не активна';
 
     $('#homePlan').textContent=active?(d.subscription.plan||'MGN VPN'):'Нет подписки';
     $('#homePlanNote').textContent=subscriptionNote(d);
@@ -141,18 +155,20 @@
     $('#homeDeviceUsage').textContent=used+' / '+limit;
     $('#deviceProgress').style.width=pct+'%';
 
-    const action=$('#homeSubscriptionAction');
-    $('b',action).textContent=active?'Продлить подписку':'Выбрать подписку';
+    $('b',$('#homeSubscriptionAction')).textContent=active?'Продлить подписку':'Выбрать подписку';
 
-    $('#devicesActionNote').textContent=active?(used+' из '+limit+' подключено'):'Список появится после активации';
-    $('#devicePriceHome').textContent='+1 слот · '+d.shop.extra_device_cost+' 💎';
-    $('#referralActionNote').textContent='Приглашено: '+d.user.referrals+' · баланс '+d.user.diamonds+' 💎';
+    $('#devicesActionNote').textContent=active?(used+' из '+limit+' подключено'):'Нет активной подписки';
+    $('#referralActionNote').textContent='Приглашено: '+Number(d.user.referrals||0);
+    $('#bonusActionNote').textContent=Number(d.user.diamonds||0).toLocaleString('ru-RU')+' алмазов';
 
-    const copy=$('#copySubscriptionHome');
-    copy.disabled=!d.vpn.subscription_url;
-    $('#linkActionNote').textContent=d.vpn.subscription_url
-      ? 'Скопировать персональную ссылку'
-      : (active?'Ссылка появится после запуска сервера':'Доступна с активной подпиской');
+    const hasLink=Boolean(d.vpn.subscription_url);
+    $('#copySubscriptionHome').disabled=!hasLink;
+    $('#linkCardTitle').textContent=hasLink?'Ссылка готова':'Персональная VPN-ссылка';
+    $('#linkCardNote').textContent=hasLink
+      ? 'Нажми, чтобы скопировать'
+      : (active
+        ? (d.vpn.ready?'Ссылка временно недоступна':'Появится после запуска VPN-сервера')
+        : 'Появится после активации подписки');
 
     $('#trialCard').hidden=!d.subscription.trial_available;
     $('#serverWaitCard').hidden=!(active&&!d.vpn.ready);
@@ -160,19 +176,20 @@
 
   function renderPlans(){
     const d=state.data;
-    const active=d.subscription.active;
+    const active=Boolean(d.subscription.active);
+
     $('#planCurrentName').textContent=active?(d.subscription.plan||'MGN VPN'):'Нет подписки';
     $('#planCurrentUntil').textContent=active
       ? (d.subscription.plan==='Навсегда'?'Без ограничения по сроку':'до '+fmtDate(d.subscription.until))
-      : 'Выбери новый тариф';
+      : 'Выбери тариф ниже';
 
     const status=$('#planMiniStatus');
     status.classList.toggle('active',active);
     status.textContent=active?'Активна':'Не активна';
 
     const root=$('#plans');
-    root.innerHTML=d.plans.map(plan=>{
-      const featured=plan.code==='30';
+    root.innerHTML=(d.plans||[]).map(plan=>{
+      const featured=String(plan.code)==='30';
       return '<article class="plan-card '+(featured?'featured':'')+'">'+
         (featured?'<span class="plan-label">ПОПУЛЯРНЫЙ</span>':'')+
         '<div class="plan-info">'+
@@ -193,13 +210,12 @@
     });
 
     $('#copySubscriptionPlans').disabled=!d.vpn.subscription_url;
-    icons();
   }
 
   function deviceIcon(item){
-    const text=((item?.platform||'')+' '+(item?.name||'')).toLowerCase();
-    if(text.includes('iphone')||text.includes('ios')||text.includes('android')||text.includes('phone'))return 'smartphone';
-    if(text.includes('mac')||text.includes('windows')||text.includes('linux')||text.includes('pc')||text.includes('laptop'))return 'laptop';
+    const value=((item?.platform||'')+' '+(item?.name||'')).toLowerCase();
+    if(value.includes('iphone')||value.includes('ios')||value.includes('android')||value.includes('phone'))return 'smartphone';
+    if(value.includes('mac')||value.includes('windows')||value.includes('linux')||value.includes('pc')||value.includes('laptop'))return 'laptop';
     return 'monitor-smartphone';
   }
 
@@ -208,32 +224,31 @@
     const list=d.vpn.devices||[];
     const limit=Math.max(1,Number(d.subscription.max_devices||1));
     const used=list.length;
+
     $('#deviceCount').textContent=used;
     $('#deviceLimit').textContent=limit;
-    $('#deviceCapacityBar').style.width=Math.min(100,used/limit*100)+'%';
-    $('#buyDevicePrice').textContent='+1 постоянный слот · '+d.shop.extra_device_cost+' 💎';
+    $('#deviceCapacityBar').style.width=Math.min(100,(used/limit)*100)+'%';
+    $('#buyDevicePrice').textContent='+1 постоянный слот · '+Number(d.shop.extra_device_cost||0)+' 💎';
 
     const root=$('#deviceList');
+
     if(!d.subscription.active){
       root.innerHTML='<div class="empty">Активной подписки нет. После покупки тарифа здесь появятся подключённые устройства.</div>';
-      icons();
       return;
     }
     if(!d.vpn.ready){
       root.innerHTML='<div class="empty">VPN-сервер ещё не подключён. Лимит устройств уже сохранён и появится здесь после запуска.</div>';
-      icons();
       return;
     }
     if(!list.length){
-      root.innerHTML='<div class="empty">Подключённых устройств пока нет. Они появятся автоматически после первого подключения к VPN.</div>';
-      icons();
+      root.innerHTML='<div class="empty">Подключённых устройств пока нет. Они появятся автоматически после первого подключения.</div>';
       return;
     }
 
     root.innerHTML=list.map((item,index)=>{
       const id=String(item.id||item.device_id||'');
       const name=esc(item.name||item.device_name||('Устройство '+(index+1)));
-      const platform=esc(item.platform||item.os||'Подключено к MGN VPN');
+      const platform=esc(item.platform||item.os||'MGN VPN');
       return '<article class="device">'+
         '<span class="device-symbol"><i data-lucide="'+deviceIcon(item)+'"></i></span>'+
         '<span class="device-copy"><b>'+name+'</b><small>'+platform+'</small></span>'+
@@ -244,7 +259,57 @@
     $$('[data-remove]',root).forEach(button=>{
       button.onclick=()=>removeDevice(decodeURIComponent(button.dataset.remove));
     });
-    icons();
+  }
+
+  function renderReferrals(){
+    const d=state.data;
+    $('#referralsCount').textContent=Number(d.user.referrals||0).toLocaleString('ru-RU');
+    $('#referralsDiamonds').textContent=Number(d.user.diamonds||0).toLocaleString('ru-RU')+' 💎';
+    $('#referralLink').textContent=d.user.referral_url||'—';
+    $('#trialReferralReward').textContent='+'+Number(d.referral_rewards?.trial||0)+' 💎';
+    $('#paidReferralReward').textContent='+'+Number(d.referral_rewards?.first_paid||0)+' 💎';
+  }
+
+  function renderBonuses(){
+    const d=state.data;
+    $('#bonusBalance').textContent=Number(d.user.diamonds||0).toLocaleString('ru-RU');
+
+    const shop=$('#bonusShop');
+    const dayItems=(d.shop?.days||[]).map(item=>{
+      return '<article class="bonus-item">'+
+        '<span><i data-lucide="calendar-plus"></i></span>'+
+        '<div><b>+'+Number(item.days)+' дней VPN</b><small>'+Number(item.cost)+' 💎</small></div>'+
+        '<button data-buy-days="'+esc(item.code)+'">Получить</button>'+
+      '</article>';
+    }).join('');
+
+    const deviceItem='<article class="bonus-item">'+
+      '<span><i data-lucide="monitor-smartphone"></i></span>'+
+      '<div><b>+1 устройство</b><small>'+Number(d.shop?.extra_device_cost||0)+' 💎 · постоянный слот</small></div>'+
+      '<button id="buyDeviceBonus">Получить</button>'+
+    '</article>';
+
+    shop.innerHTML=dayItems+deviceItem;
+    $$('[data-buy-days]',shop).forEach(button=>{
+      button.onclick=()=>buyBonusDays(button.dataset.buyDays);
+    });
+    $('#buyDeviceBonus').onclick=openDeviceSheet;
+
+    const history=$('#diamondHistory');
+    const rows=d.diamond_history||[];
+    if(!rows.length){
+      history.innerHTML='<div class="empty">Операций с алмазами пока нет.</div>';
+    }else{
+      history.innerHTML=rows.map(item=>{
+        const amount=Number(item.amount||0);
+        const sign=amount>0?'+':'';
+        return '<div class="history-row">'+
+          '<span><i data-lucide="gem"></i></span>'+
+          '<div><b>'+esc(item.reason||'Операция')+'</b><small>'+esc(fmtDateTime(item.created_at))+'</small></div>'+
+          '<strong class="'+(amount>=0?'plus':'minus')+'">'+sign+amount+' 💎</strong>'+
+        '</div>';
+      }).join('');
+    }
   }
 
   function renderProfile(){
@@ -254,6 +319,7 @@
     $('#profileUsername').textContent=d.user.username?('@'+d.user.username):'Telegram';
     $('#profileDiamonds').textContent=Number(d.user.diamonds||0).toLocaleString('ru-RU');
     $('#profileRefs').textContent=Number(d.user.referrals||0).toLocaleString('ru-RU');
+    $('#profileDeviceLimit').textContent=Number(d.subscription.max_devices||1);
     $('#profilePlan').textContent=d.subscription.active
       ? (d.subscription.plan+' · '+fmtRemain(d.subscription.remaining_seconds))
       : 'Нет активной подписки';
@@ -267,20 +333,45 @@
     renderHome();
     renderPlans();
     renderDevices();
+    renderReferrals();
+    renderBonuses();
     renderProfile();
     icons();
     $('#loader').classList.add('hidden');
   }
 
-  function go(page){
-    if(!['home','plans','devices','profile'].includes(page))page='home';
-    state.page=page;
-    $$('.page').forEach(el=>el.classList.toggle('active',el.dataset.page===page));
-    $$('#bottomNav button').forEach(el=>el.classList.toggle('active',el.dataset.nav===page));
+  function updateNav(){
+    $$('.page').forEach(page=>page.classList.toggle('active',page.dataset.page===state.page));
+    $$('#bottomNav button').forEach(button=>{
+      button.classList.toggle('active',button.dataset.nav===state.page);
+    });
+    try{
+      if(state.page==='home')tg?.BackButton?.hide();
+      else tg?.BackButton?.show();
+    }catch(_){}
     window.scrollTo({top:0,behavior:'auto'});
-    haptic();
-    try{page==='home'?tg?.BackButton?.hide():tg?.BackButton?.show()}catch(_){}
     icons();
+  }
+
+  function go(page,{reset=false,push=true}={}){
+    if(!$('.page[data-page="'+page+'"]'))page='home';
+    if(reset){
+      state.stack=[page];
+    }else if(push&&state.stack[state.stack.length-1]!==page){
+      state.stack.push(page);
+    }
+    state.page=page;
+    updateNav();
+  }
+
+  function goBack(){
+    if(!$('#paymentSheet').hidden||!$('#deviceSheet').hidden){
+      closeSheets();
+      return;
+    }
+    if(state.stack.length>1)state.stack.pop();
+    state.page=state.stack[state.stack.length-1]||'home';
+    updateNav();
   }
 
   async function load(silent=false){
@@ -298,21 +389,20 @@
     document.body.style.overflow='hidden';
   }
 
-  function hideBackdropIfUnused(){
-    if($('#paymentSheet').hidden&&$('#deviceSheet').hidden){
+  function closePayment(){
+    $('#paymentSheet').hidden=true;
+    if($('#deviceSheet').hidden){
       $('#sheetBackdrop').hidden=true;
       document.body.style.overflow='';
     }
   }
 
-  function closePayment(){
-    $('#paymentSheet').hidden=true;
-    hideBackdropIfUnused();
-  }
-
   function closeDeviceSheet(){
     $('#deviceSheet').hidden=true;
-    hideBackdropIfUnused();
+    if($('#paymentSheet').hidden){
+      $('#sheetBackdrop').hidden=true;
+      document.body.style.overflow='';
+    }
   }
 
   function closeSheets(){
@@ -323,8 +413,9 @@
   }
 
   function openPayment(code){
-    const plan=state.data?.plans?.find(item=>item.code===code);
+    const plan=state.data?.plans?.find(item=>String(item.code)===String(code));
     if(!plan)return;
+
     closeDeviceSheet();
     state.selectedPlan=plan;
     state.sbpPayment=null;
@@ -344,9 +435,13 @@
   function openDeviceSheet(){
     const d=state.data;
     if(!d)return;
+
     closePayment();
-    const atCap=Number(d.subscription.max_devices||1)>=Number(d.shop.max_devices||10);
-    $('#deviceSheetPrice').textContent=Number(d.shop.extra_device_cost||0).toLocaleString('ru-RU')+' алмазов';
+    const current=Number(d.subscription.max_devices||1);
+    const max=Number(d.shop?.max_devices||10);
+    const atCap=current>=max;
+
+    $('#deviceSheetPrice').textContent=Number(d.shop?.extra_device_cost||0).toLocaleString('ru-RU')+' алмазов';
     $('#deviceSheetBalance').textContent='Баланс: '+Number(d.user.diamonds||0).toLocaleString('ru-RU')+' 💎';
     $('#confirmDevicePurchase').disabled=atCap;
     $('#confirmDevicePurchase').textContent=atCap?'Лимит устройств достигнут':'Купить дополнительный слот';
@@ -365,13 +460,14 @@
         method:'POST',
         body:JSON.stringify({plan_code:state.selectedPlan.code}),
       });
+
       if(tg?.openInvoice){
         tg.openInvoice(result.invoice_url,async status=>{
           if(status==='paid'){
             notify();
             toast('Подписка оплачена');
             closePayment();
-            setTimeout(()=>load(true),850);
+            setTimeout(()=>load(true),800);
           }else if(status==='failed'){
             notify('error');
             toast('Оплата не прошла');
@@ -420,7 +516,7 @@
         toast('Оплата получена');
         closePayment();
         await load(true);
-        go('home');
+        go('home',{reset:true});
       }else{
         toast('Оплата пока не подтверждена');
       }
@@ -433,6 +529,7 @@
 
   async function removeDevice(id){
     if(!id)return;
+
     let confirmed=true;
     if(tg?.showConfirm){
       confirmed=await new Promise(resolve=>tg.showConfirm('Отключить это устройство?',resolve));
@@ -457,17 +554,14 @@
     state.busy=true;
     const button=$('#confirmDevicePurchase');
     button.disabled=true;
+
     try{
-      const result=await request('/api/miniapp/shop/device',{
-        method:'POST',
-        body:'{}',
-      });
+      await request('/api/miniapp/shop/device',{method:'POST',body:'{}'});
       notify();
       toast('+1 устройство добавлено');
       closeDeviceSheet();
       await load(true);
-      go('devices');
-      if(result?.max_devices)$('#deviceLimit').textContent=result.max_devices;
+      go('devices',{reset:true});
     }catch(error){
       notify('error');
       toast(error.message);
@@ -477,9 +571,38 @@
     }
   }
 
+  async function buyBonusDays(code){
+    if(state.busy)return;
+    const item=state.data?.shop?.days?.find(x=>String(x.code)===String(code));
+    if(!item)return;
+
+    let confirmed=true;
+    const text='Обменять '+item.cost+' 💎 на '+item.days+' дней VPN?';
+    if(tg?.showConfirm){
+      confirmed=await new Promise(resolve=>tg.showConfirm(text,resolve));
+    }else{
+      confirmed=window.confirm(text);
+    }
+    if(!confirmed)return;
+
+    state.busy=true;
+    try{
+      await request('/api/miniapp/shop/days/'+encodeURIComponent(code),{method:'POST',body:'{}'});
+      notify();
+      toast('+'+item.days+' дней добавлено');
+      await load(true);
+    }catch(error){
+      notify('error');
+      toast(error.message);
+    }finally{
+      state.busy=false;
+    }
+  }
+
   async function activateTrial(){
     const d=state.data;
     if(!d)return;
+
     if(d.trial_channel_url){
       try{
         if(tg?.openTelegramLink)tg.openTelegramLink(d.trial_channel_url);
@@ -499,37 +622,54 @@
     },800);
   }
 
-  async function copyText(text,success='Скопировано'){
-    if(!text)return false;
+  async function copyText(value,success='Скопировано'){
+    if(!value)return false;
+
     try{
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(value);
       notify();
       toast(success);
       return true;
     }catch(_){
       try{
         const area=document.createElement('textarea');
-        area.value=text;
+        area.value=value;
         area.style.position='fixed';
         area.style.opacity='0';
         document.body.appendChild(area);
         area.select();
         const ok=document.execCommand('copy');
         area.remove();
-        if(ok){notify();toast(success);return true}
+        if(ok){
+          notify();
+          toast(success);
+          return true;
+        }
       }catch(__){}
     }
+
     toast('Не удалось скопировать');
     return false;
   }
 
-  function copySubscription(){
+  async function copySubscription(){
     const url=state.data?.vpn?.subscription_url;
     if(!url){
       toast(state.data?.subscription?.active?'Ссылка пока недоступна':'Сначала активируй подписку');
       return;
     }
-    copyText(url,'Ссылка подключения скопирована');
+
+    const button=$('#copySubscriptionHome');
+    await copyText(url,'Ссылка VPN скопирована');
+    if(button){
+      const old=button.innerHTML;
+      button.innerHTML='<i data-lucide="check"></i>';
+      icons();
+      setTimeout(()=>{
+        button.innerHTML=old;
+        icons();
+      },1200);
+    }
   }
 
   function shareReferral(){
@@ -556,17 +696,22 @@
   }
 
   $$('[data-nav]').forEach(button=>{
-    button.addEventListener('click',()=>go(button.dataset.nav));
+    button.addEventListener('click',()=>{
+      const page=button.dataset.nav;
+      const fromBottom=button.closest('#bottomNav');
+      go(page,{reset:Boolean(fromBottom)});
+      if(fromBottom)haptic();
+    });
   });
 
-  $('#buyDeviceHome').onclick=openDeviceSheet;
-  $('#buyDevicePage').onclick=openDeviceSheet;
   $('#copySubscriptionHome').onclick=copySubscription;
   $('#copySubscriptionPlans').onclick=copySubscription;
-  $('#shareHome').onclick=shareReferral;
-  $('#shareProfile').onclick=shareReferral;
-  $('#supportBtn').onclick=openSupport;
+  $('#buyDevicePage').onclick=openDeviceSheet;
   $('#trialBtn').onclick=activateTrial;
+
+  $('#copyReferral').onclick=()=>copyText(state.data?.user?.referral_url||'','Реферальная ссылка скопирована');
+  $('#shareReferral').onclick=shareReferral;
+  $('#supportChatBtn').onclick=openSupport;
 
   $('#sheetClose').onclick=closePayment;
   $('#deviceSheetClose').onclick=closeDeviceSheet;
@@ -575,20 +720,20 @@
   $('#paySbp').onclick=paySbp;
   $('#checkPayment').onclick=checkSbp;
   $('#confirmDevicePurchase').onclick=buyExtraDevice;
-  $('#copyId').onclick=()=>copyText(state.data?.user?.id?String(state.data.user.id):'','Telegram ID скопирован');
 
-  try{
-    tg?.BackButton?.onClick(()=>{
-      if(!$('#paymentSheet').hidden||!$('#deviceSheet').hidden)closeSheets();
-      else if(state.page!=='home')go('home');
-    });
-  }catch(_){}
+  $('#copyId').onclick=()=>copyText(
+    state.data?.user?.id?String(state.data.user.id):'',
+    'Telegram ID скопирован'
+  );
+
+  try{tg?.BackButton?.onClick(goBack)}catch(_){}
 
   document.addEventListener('visibilitychange',()=>{
     if(!document.hidden&&state.data)load(true);
   });
 
   icons();
+
   if(!tg?.initData){
     $('#loader').classList.add('hidden');
     toast('Открой Mini App внутри Telegram');
