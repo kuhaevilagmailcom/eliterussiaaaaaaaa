@@ -1748,6 +1748,30 @@ def build_router(
             ),
         )
 
+    async def sync_device_limit(user: dict[str, Any]) -> None:
+        try:
+            await asyncio.wait_for(
+                provider.provision(user),
+                timeout=15.0,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Device limit provisioning deferred for user %s: %s",
+                user.get("telegram_id"),
+                str(exc).strip() or type(exc).__name__,
+            )
+
+    async def grant_paid_device_slot(
+        telegram_id: int,
+    ) -> dict[str, Any] | None:
+        updated = await db.grant_extra_device(
+            telegram_id=telegram_id,
+            max_total_devices=MAX_DEVICES,
+        )
+        if updated:
+            await sync_device_limit(updated)
+        return updated
+
     async def begin_sbp_checkout(
         callback: CallbackQuery,
         code: str,
@@ -1860,6 +1884,75 @@ def build_router(
             return
         await begin_sbp_checkout(callback, parts[1], int(parts[2]))
 
+    @router.callback_query(F.data == "device:sbp")
+    async def buy_device_sbp(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        user = await ensure_actor(callback.from_user)
+        if not is_active(user):
+            await callback.answer(
+                "Сначала активируйте VPN-подписку.",
+                show_alert=True,
+            )
+            return
+        if int(user.get("max_devices") or BASE_DEVICES) >= MAX_DEVICES:
+            await callback.answer(
+                "У вас уже максимум: 5 устройств.",
+                show_alert=True,
+            )
+            return
+        if not config.rollypay_enabled:
+            await callback.answer(
+                "СБП пока не настроена.",
+                show_alert=True,
+            )
+            return
+
+        await callback.answer()
+        order_id = f"device-{callback.from_user.id}-{uuid4().hex[:12]}"
+        try:
+            payment = await create_payment(
+                config,
+                order_id=order_id,
+                amount=Decimal(EXTRA_DEVICE_PRICE_RUB),
+                description="MGN VPN · +1 устройство",
+                user_id=callback.from_user.id,
+            )
+            payment_id = str(payment["payment_id"])
+            pay_url = str(payment["pay_url"])
+            await db.create_sbp_payment(
+                payment_id=payment_id,
+                order_id=order_id,
+                telegram_id=callback.from_user.id,
+                target_telegram_id=callback.from_user.id,
+                plan_code=DEVICE_PRODUCT_CODE,
+                amount_rub=EXTRA_DEVICE_PRICE_RUB,
+            )
+        except (RollyPayError, KeyError):
+            await callback.answer(
+                "Не удалось создать платёж.",
+                show_alert=True,
+            )
+            return
+
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("🏦 Оплатить 100 ₽", url=pay_url))
+        kb.row(
+            blue_inline_button(
+                "✅ Проверить оплату",
+                callback_data=f"checksbp:{payment_id}",
+            )
+        )
+        add_nav_buttons(kb, back_data="menu:devices")
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "🏦 <b>+1 устройство</b>\n\n"
+            f"Стоимость — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>.\n"
+            "После подтверждения оплаты лимит увеличится автоматически.",
+            reply_markup=kb.as_markup(),
+        )
+
     async def begin_stars_checkout(
         callback: CallbackQuery,
         code: str,
@@ -1962,6 +2055,69 @@ def build_router(
             return
         await begin_stars_checkout(callback, parts[1], int(parts[2]))
 
+    @router.callback_query(F.data == "device:stars")
+    async def buy_device_stars(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        user = await ensure_actor(callback.from_user)
+        if not is_active(user):
+            await callback.answer(
+                "Сначала активируйте VPN-подписку.",
+                show_alert=True,
+            )
+            return
+        if int(user.get("max_devices") or BASE_DEVICES) >= MAX_DEVICES:
+            await callback.answer(
+                "У вас уже максимум: 5 устройств.",
+                show_alert=True,
+            )
+            return
+
+        stars = extra_device_price_stars()
+        payload = (
+            f"xtr|{DEVICE_PRODUCT_CODE}|{callback.from_user.id}|"
+            f"{callback.from_user.id}|{uuid4().hex[:12]}"
+        )
+        try:
+            invoice_url = await callback.message.bot.create_invoice_link(
+                title="MGN VPN · +1 устройство",
+                description="Постоянный дополнительный слот устройства",
+                payload=payload,
+                currency="XTR",
+                prices=[
+                    LabeledPrice(
+                        label="MGN VPN · +1 устройство",
+                        amount=stars,
+                    )
+                ],
+            )
+        except Exception as exc:
+            logger.exception("Device Stars invoice failed: %s", exc)
+            await callback.answer(
+                "Не удалось создать оплату Stars.",
+                show_alert=True,
+            )
+            return
+
+        await callback.answer()
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                f"⭐ Оплатить {stars} Stars",
+                url=invoice_url,
+            )
+        )
+        add_nav_buttons(kb, back_data="menu:devices")
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "⭐ <b>+1 устройство</b>\n\n"
+            f"Стоимость — <b>{stars} Stars</b> "
+            f"(эквивалент {EXTRA_DEVICE_PRICE_RUB} ₽).\n"
+            "После оплаты лимит увеличится автоматически.",
+            reply_markup=kb.as_markup(),
+        )
+
     @router.pre_checkout_query()
     async def pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
         payload = pre_checkout_query.invoice_payload or ""
@@ -1975,27 +2131,65 @@ def build_router(
 
         _, code, buyer_raw, target_raw, _nonce = parts
         if (
-            code not in PLANS
-            or not buyer_raw.isdigit()
+            not buyer_raw.isdigit()
             or not target_raw.isdigit()
             or int(buyer_raw) != pre_checkout_query.from_user.id
             or pre_checkout_query.currency != "XTR"
-            or pre_checkout_query.total_amount != plan_price_stars(config, code)
         ):
             await pre_checkout_query.answer(
                 ok=False,
-                error_message="Параметры оплаты изменились. Откройте тариф заново.",
+                error_message="Параметры оплаты изменились.",
             )
             return
 
-        try:
-            await db.get_user(int(target_raw))
-        except KeyError:
-            await pre_checkout_query.answer(
-                ok=False,
-                error_message="Получатель не найден.",
-            )
-            return
+        buyer_id = int(buyer_raw)
+        target_id = int(target_raw)
+
+        if code == DEVICE_PRODUCT_CODE:
+            if (
+                target_id != buyer_id
+                or pre_checkout_query.total_amount != extra_device_price_stars()
+            ):
+                await pre_checkout_query.answer(
+                    ok=False,
+                    error_message="Параметры покупки устройства изменились.",
+                )
+                return
+            try:
+                user = await db.get_user(buyer_id)
+            except KeyError:
+                user = None
+            if not user or not is_active(user):
+                await pre_checkout_query.answer(
+                    ok=False,
+                    error_message="Сначала активируйте VPN-подписку.",
+                )
+                return
+            if int(user.get("max_devices") or BASE_DEVICES) >= MAX_DEVICES:
+                await pre_checkout_query.answer(
+                    ok=False,
+                    error_message="У вас уже максимум устройств.",
+                )
+                return
+        else:
+            if (
+                code not in PLANS
+                or pre_checkout_query.total_amount
+                != plan_price_stars(config, code)
+            ):
+                await pre_checkout_query.answer(
+                    ok=False,
+                    error_message="Параметры оплаты изменились. Откройте тариф заново.",
+                )
+                return
+            try:
+                await db.get_user(target_id)
+            except KeyError:
+                await pre_checkout_query.answer(
+                    ok=False,
+                    error_message="Получатель не найден.",
+                )
+                return
 
         await pre_checkout_query.answer(ok=True)
 
@@ -2011,19 +2205,69 @@ def build_router(
 
         _, code, buyer_raw, target_raw, _nonce = parts
         if (
-            code not in PLANS
-            or not buyer_raw.isdigit()
+            not buyer_raw.isdigit()
             or not target_raw.isdigit()
             or int(buyer_raw) != message.from_user.id
-            or payment.total_amount != plan_price_stars(config, code)
         ):
-            logger.error("Rejected malformed Stars success payload: %s", payment.invoice_payload)
+            logger.error(
+                "Rejected malformed Stars success payload: %s",
+                payment.invoice_payload,
+            )
             return
 
         buyer_id = int(buyer_raw)
         target_id = int(target_raw)
-        charge_id = payment.telegram_payment_charge_id
 
+        if code == DEVICE_PRODUCT_CODE:
+            if (
+                target_id != buyer_id
+                or payment.total_amount != extra_device_price_stars()
+            ):
+                logger.error(
+                    "Rejected malformed device Stars payment: %s",
+                    payment.invoice_payload,
+                )
+                return
+
+            charge_id = payment.telegram_payment_charge_id
+            fresh = await db.record_star_payment(
+                telegram_payment_charge_id=charge_id,
+                buyer_telegram_id=buyer_id,
+                target_telegram_id=buyer_id,
+                plan_code=DEVICE_PRODUCT_CODE,
+                stars=int(payment.total_amount),
+            )
+            if fresh:
+                updated = await grant_paid_device_slot(buyer_id)
+                if updated is None:
+                    await send_screen(
+                        message,
+                        message.from_user,
+                        "⚠️ <b>Оплата получена</b>\n\n"
+                        "Слот не удалось добавить автоматически. "
+                        "Обратитесь в поддержку — платёж сохранён.",
+                        reply_markup=section_nav_keyboard(back_data="home"),
+                    )
+                    return
+
+            await show_devices_panel(
+                message,
+                message.from_user,
+                back_data="home",
+            )
+            return
+
+        if (
+            code not in PLANS
+            or payment.total_amount != plan_price_stars(config, code)
+        ):
+            logger.error(
+                "Rejected malformed Stars success payload: %s",
+                payment.invoice_payload,
+            )
+            return
+
+        charge_id = payment.telegram_payment_charge_id
         fresh = await db.record_star_payment(
             telegram_payment_charge_id=charge_id,
             buyer_telegram_id=buyer_id,
@@ -2117,22 +2361,44 @@ def build_router(
 
         if status == "paid":
             fresh = await db.mark_sbp_paid(payment_id)
-            reward_amount = 0
+            code = str(local["plan_code"])
             target_id = int(
                 local.get("target_telegram_id")
                 or callback.from_user.id
             )
 
+            if code == DEVICE_PRODUCT_CODE:
+                if fresh:
+                    updated = await grant_paid_device_slot(
+                        callback.from_user.id
+                    )
+                    if updated is None:
+                        await callback.answer(
+                            "Оплата получена, но слот не добавлен. Напишите в поддержку.",
+                            show_alert=True,
+                        )
+                        return
+                await callback.answer("Оплата получена · +1 устройство")
+                await show_devices_panel(
+                    callback.message,
+                    callback.from_user,
+                    back_data="home",
+                )
+                return
+
+            reward_amount = 0
             if fresh:
                 _target_user, reward_amount = await apply_paid_purchase(
                     buyer_telegram_id=callback.from_user.id,
                     target_telegram_id=target_id,
-                    code=str(local["plan_code"]),
+                    code=code,
                     payment_event_key=f"sbp:{payment_id}",
                 )
 
             if reward_amount:
-                await callback.answer(f"Оплата получена · +{reward_amount} 💎")
+                await callback.answer(
+                    f"Оплата получена · +{reward_amount} 💎"
+                )
             else:
                 await callback.answer("Оплата получена")
 
@@ -2155,7 +2421,7 @@ def build_router(
                 callback.from_user,
                 "✅ <b>Подарок активирован</b>\n\n"
                 f"Получатель — <b>{html.escape(target_label)}</b>\n"
-                f"Тариф — <b>{PLANS[str(local['plan_code'])]['name']}</b>\n"
+                f"Тариф — <b>{PLANS[code]['name']}</b>\n"
                 f"Оплачено — <b>{int(local['amount_rub'])} ₽</b>",
                 reply_markup=section_nav_keyboard(back_data="home"),
             )
