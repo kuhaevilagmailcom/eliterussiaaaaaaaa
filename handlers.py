@@ -18,6 +18,7 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery,
     BufferedInputFile,
+    CopyTextButton,
     InlineKeyboardButton,
     InputMediaPhoto,
     KeyboardButton,
@@ -31,14 +32,19 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from PIL import Image
 
 from catalog import (
+    BASE_DEVICES,
+    DEVICE_PRODUCT_CODE,
     DIAMOND_REWARDS,
     DIAMOND_SHOP_DAYS,
-    EXTRA_DEVICE_COST,
+    EXTRA_DEVICE_PRICE_RUB,
+    MAX_DEVICES,
     PLANS,
     REFERRAL_FIRST_PAID_REWARD,
     REFERRAL_TRIAL_REWARD,
+    extra_device_price_stars,
     plan_price_rub,
     plan_price_stars,
+    plan_savings_rub,
 )
 from config import Config
 from db import Database, from_iso, utcnow
@@ -50,6 +56,7 @@ from vpn import VpnProvider, VpnState
 PACK_CRYPTO = "CryptoGIFTPODARKI"
 PACK_UI = "TgAndroidIcons"
 PACK_PROGRESS = "progressBarEmoji"
+PACK_NEWS = "NewsEmoji"
 
 logger = logging.getLogger(__name__)
 
