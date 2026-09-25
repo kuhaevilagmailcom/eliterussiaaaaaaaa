@@ -6,11 +6,13 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import MenuButtonWebApp, WebAppInfo
 
 from config import Config
 from db import Database
 from emoji import EmojiBank
 from handlers import build_router
+from miniapp import MiniAppServer
 from vpn import (
     DemoVpnProvider,
     VpnProvider,
@@ -58,14 +60,32 @@ async def main() -> None:
     )
     emoji = EmojiBank(config.emoji_packs)
     provider = make_provider(config)
+    miniapp = MiniAppServer(bot, config, db, provider)
 
     try:
         await emoji.load(bot)
+        await miniapp.start()
+
+        if config.miniapp_url:
+            try:
+                await bot.set_chat_menu_button(
+                    menu_button=MenuButtonWebApp(
+                        text="MGN VPN",
+                        web_app=WebAppInfo(url=config.miniapp_url),
+                    )
+                )
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Could not set Telegram Mini App menu button: %s",
+                    exc,
+                )
+
         dp = Dispatcher()
         dp.include_router(build_router(config, db, emoji, provider))
         await bot.delete_webhook(drop_pending_updates=False)
         await dp.start_polling(bot)
     finally:
+        await miniapp.close()
         await provider.close()
         await bot.session.close()
 
