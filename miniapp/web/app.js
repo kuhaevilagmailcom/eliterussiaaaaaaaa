@@ -122,15 +122,17 @@
     $('b',$('#homeSubscriptionAction')).textContent=active?'Продлить подписку':'Выбрать подписку';
 
     $('#devicesActionNote').textContent=active?(used+' из '+limit+' активны'):'Нет активной подписки';
-    $('#referralActionNote').textContent='Приглашено '+Number(d.user.referrals||0);
+
     $('#bonusActionNote').textContent='Получайте привилегии';
 
     const hasLink=!!d.vpn.subscription_url;
     $('#copySubscriptionHome').disabled=!hasLink;
-    $('#linkTitle').textContent=hasLink?'Готова к использованию':'Ссылка подключения';
+    $('#linkTitle').textContent=hasLink?'Ваш VPN готов':'Ссылка подключения';
     $('#linkActionNote').textContent=hasLink
-      ? 'Нажми, чтобы скопировать'
+      ? 'Скопируйте ссылку и подключитесь на любом устройстве'
       : (active?'Появится после подключения VPN-сервера':'Доступна с активной подпиской');
+    $('#linkMasked').textContent=hasLink?'vpn.mgn••••••••':'ссылка пока недоступна';
+    $('#vpnLinkCard').classList.toggle('unavailable',!hasLink);
 
     $('#trialCard').hidden=!d.subscription.trial_available;
     $('#serverWaitCard').hidden=!(active&&!d.vpn.ready);
