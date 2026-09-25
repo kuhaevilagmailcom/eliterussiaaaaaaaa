@@ -4,8 +4,8 @@
     try{
       tg.ready();
       tg.expand();
-      tg.setHeaderColor?.('#b9b9bb');
-      tg.setBackgroundColor?.('#b9b9bb');
+      tg.setHeaderColor?.('#595a5e');
+      tg.setBackgroundColor?.('#595a5e');
     }catch(_){}
   }
 
