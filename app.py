@@ -15,6 +15,7 @@ from handlers import build_router
 from miniapp import MiniAppServer
 from vpn import (
     DemoVpnProvider,
+    H1CloudVpnProvider,
     VpnProvider,
     WebhookVpnProvider,
     XuiVpnProvider,
@@ -22,6 +23,15 @@ from vpn import (
 
 
 def make_provider(config: Config) -> VpnProvider:
+    if config.vpn_mode == "h1cloud":
+        return H1CloudVpnProvider(
+            api_url=config.h1_api_url,
+            api_token=config.h1_api_token,
+            subscription_template=config.h1_subscription_template,
+            server_name=config.vpn_server_name,
+            verify_ssl=config.h1_verify_ssl,
+        )
+
     if config.vpn_mode == "3xui":
         return XuiVpnProvider(
             panel_url=config.xui_url,
