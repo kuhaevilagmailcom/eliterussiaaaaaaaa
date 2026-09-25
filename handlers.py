@@ -1339,56 +1339,118 @@ def build_router(
             reply_markup=kb.as_markup(),
         )
 
-    @router.callback_query(F.data == "menu:devices")
-    async def menu_devices(callback: CallbackQuery) -> None:
-        await callback.answer()
-        if not callback.message:
-            return
-        user = await ensure_actor(callback.from_user)
+    async def show_devices_panel(
+        message: Message,
+        actor,
+        *,
+        back_data: str = "home",
+    ) -> None:
+        user = await ensure_actor(actor)
+        e = emoji.icon(3, pack=PACK_NEWS)
+
         if not is_active(user):
             await send_screen(
-                callback.message,
-                callback.from_user,
-                "<b>Устройства</b>\n\n"
-                "Список появится после активации подписки.",
-                reply_markup=section_nav_keyboard(),
+                message,
+                actor,
+                f"{e} <b>Устройства</b>\n\n"
+                "Сначала активируйте VPN-подписку.\n"
+                "В любой тариф входит <b>1 устройство</b>.",
+                reply_markup=section_nav_keyboard(back_data=back_data),
             )
             return
 
         state, ok = await load_state(user, provider, config)
-        e = emoji.icon(7, pack=PACK_UI)
+        limit = min(
+            MAX_DEVICES,
+            max(BASE_DEVICES, int(user.get("max_devices") or BASE_DEVICES)),
+        )
+        bonus = max(0, limit - BASE_DEVICES)
+
         lines = [
             f"{e} <b>Устройства</b>",
             "",
-            f"Подключено — <b>{len(state.devices)} из {int(user.get('max_devices') or 1)}</b>",
+            f"Лимит — <b>{limit} из {MAX_DEVICES}</b>",
+            f"├ В тарифе — <b>{BASE_DEVICES}</b>",
+            f"└ Дополнительных слотов — <b>{bonus}</b>",
         ]
-        kb = InlineKeyboardBuilder()
+
         if state.devices:
-            lines.append("")
-            for i, item in enumerate(state.devices[:10], start=1):
-                name = html.escape(str(item.get("name") or item.get("device_name") or f"Устройство {i}"))
-                platform = html.escape(str(item.get("platform") or item.get("os") or ""))
-                suffix = f" — {platform}" if platform else ""
-                lines.append(f"{i}. {name}{suffix}")
-                device_id = str(item.get("id") or item.get("device_id") or "")
-                if device_id and len(device_id.encode("utf-8")) <= 36:
-                    kb.row(blue_inline_button(
-                        f"❌ Отключить устройство {i}",
-                        callback_data=f"deldev:{device_id}",
-                    ))
-        else:
-            lines += ["", "<i>Подключённых устройств пока нет.</i>"]
+            lines += [
+                "",
+                f"Активных подключений по данным панели — <b>{len(state.devices)}</b>",
+            ]
+
+        lines += [
+            "",
+            f"+1 устройство — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>.",
+            "Купленный слот сохраняется при продлении тарифа.",
+        ]
+
         if not ok:
-            if getattr(provider, "service_ready", True):
-                lines += ["", "<i>Сервер устройств временно не ответил.</i>"]
-            else:
-                lines += ["", "<i>Устройства появятся после подключения VPN-серверов.</i>"]
-        add_nav_buttons(kb, back_data="home")
+            lines += [
+                "",
+                "<i>Панель устройств временно отвечает медленно, "
+                "но ваш лимит сохранён.</i>",
+            ]
+
+        kb = InlineKeyboardBuilder()
+        if limit < MAX_DEVICES:
+            kb.row(
+                blue_inline_button(
+                    f"➕ +1 устройство · {EXTRA_DEVICE_PRICE_RUB} ₽",
+                    callback_data="device:buy",
+                )
+            )
+        else:
+            lines += ["", "<b>Достигнут максимум: 5 устройств.</b>"]
+
+        add_nav_buttons(kb, back_data=back_data)
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
+        )
+
+    @router.callback_query(F.data == "menu:devices")
+    async def menu_devices(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if callback.message:
+            await show_devices_panel(
+                callback.message,
+                callback.from_user,
+                back_data="home",
+            )
+
+    @router.callback_query(F.data == "device:buy")
+    async def device_buy(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        user = await ensure_actor(callback.from_user)
+        if not is_active(user):
+            await callback.answer(
+                "Сначала активируйте подписку.",
+                show_alert=True,
+            )
+            return
+        if int(user.get("max_devices") or BASE_DEVICES) >= MAX_DEVICES:
+            await callback.answer(
+                "У вас уже максимум: 5 устройств.",
+                show_alert=True,
+            )
+            return
+
+        await callback.answer()
+        e = emoji.icon(4, pack=PACK_NEWS)
         await send_screen(
             callback.message,
             callback.from_user,
-            "\n".join(lines),
-            reply_markup=kb.as_markup(),
+            f"{e} <b>Дополнительное устройство</b>\n\n"
+            f"+1 слот к текущему лимиту — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>.\n"
+            f"Слот остаётся на аккаунте при продлении VPN.\n"
+            f"Максимум — <b>{MAX_DEVICES}</b> устройств.\n\n"
+            "Выберите способ оплаты.",
+            reply_markup=device_payment_keyboard(),
         )
 
     @router.callback_query(F.data == "diamonds")
@@ -2245,133 +2307,10 @@ def build_router(
 
     @router.message(F.text.in_({"📱 Устройства", "Устройства"}))
     async def devices(message: Message) -> None:
-        user = await ensure_actor(message.from_user)
-        if not is_active(user):
-            await send_screen(
-                message,
-                message.from_user,
-                "<b>Устройства</b>\n\n"
-                "Список появится после активации подписки.",
-                reply_markup=section_nav_keyboard(),
-            )
-            return
-
-        state, ok = await load_state(user, provider, config)
-        e = emoji.icon(7, pack=PACK_UI)
-        lines = [
-            f"{e} <b>Устройства</b>",
-            "",
-            f"Подключено — <b>{len(state.devices)} из {int(user.get('max_devices') or 1)}</b>",
-        ]
-        kb = InlineKeyboardBuilder()
-
-        if state.devices:
-            lines.append("")
-            for i, item in enumerate(state.devices[:10], start=1):
-                name = html.escape(
-                    str(item.get("name") or item.get("device_name") or f"Устройство {i}")
-                )
-                platform = html.escape(
-                    str(item.get("platform") or item.get("os") or "")
-                )
-                suffix = f" — {platform}" if platform else ""
-                lines.append(f"{i}. {name}{suffix}")
-                device_id = str(item.get("id") or item.get("device_id") or "")
-                if device_id and len(device_id.encode("utf-8")) <= 36:
-                    kb.row(
-                        blue_inline_button(
-                            f"❌ Отключить устройство {i}",
-                            callback_data=f"deldev:{device_id}",
-                        )
-                    )
-        else:
-            lines += [
-                "",
-                "<i>Подключённых устройств пока нет. Они появятся здесь после первого подключения.</i>",
-            ]
-
-        if not ok:
-            if getattr(provider, "service_ready", True):
-                lines += ["", "<i>Сервер устройств временно не ответил.</i>"]
-            else:
-                lines += ["", "<i>Устройства появятся после подключения VPN-серверов.</i>"]
-
-        add_nav_buttons(kb, back_data="home")
-        await send_screen(
+        await show_devices_panel(
             message,
             message.from_user,
-            "\n".join(lines),
-            reply_markup=kb.as_markup(),
-        )
-
-    @router.callback_query(F.data.startswith("deldev:"))
-    async def delete_device(callback: CallbackQuery) -> None:
-        if not callback.message:
-            return
-        device_id = callback.data.split(":", 1)[1]
-        user = await ensure_actor(callback.from_user)
-        if not getattr(provider, "service_ready", True):
-            await callback.answer(
-                "VPN-серверы пока не подключены.",
-                show_alert=True,
-            )
-            return
-
-        try:
-            await provider.delete_device(user, device_id)
-            await callback.answer("Устройство отключено")
-        except Exception as exc:
-            logger.warning(
-                "Device delete failed for user %s, device %s: %s",
-                callback.from_user.id,
-                device_id,
-                exc,
-            )
-            await callback.answer(
-                "Не удалось отключить устройство.",
-                show_alert=True,
-            )
-            return
-
-        # Refresh device list in the same persistent UI message.
-        state, ok = await load_state(user, provider, config)
-        e = emoji.icon(7, pack=PACK_UI)
-        lines = [
-            f"{e} <b>Устройства</b>",
-            "",
-            f"Подключено — <b>{len(state.devices)} из {int(user.get('max_devices') or 1)}</b>",
-        ]
-        kb = InlineKeyboardBuilder()
-        if state.devices:
-            lines.append("")
-            for i, item in enumerate(state.devices[:10], start=1):
-                name = html.escape(
-                    str(item.get("name") or item.get("device_name") or f"Устройство {i}")
-                )
-                platform = html.escape(str(item.get("platform") or item.get("os") or ""))
-                suffix = f" — {platform}" if platform else ""
-                lines.append(f"{i}. {name}{suffix}")
-                item_id = str(item.get("id") or item.get("device_id") or "")
-                if item_id and len(item_id.encode("utf-8")) <= 36:
-                    kb.row(
-                        blue_inline_button(
-                            f"❌ Отключить устройство {i}",
-                            callback_data=f"deldev:{item_id}",
-                        )
-                    )
-        else:
-            lines += ["", "<i>Подключённых устройств пока нет.</i>"]
-        if not ok:
-            if getattr(provider, "service_ready", True):
-                lines += ["", "<i>VPN-сервер временно не ответил.</i>"]
-            else:
-                lines += ["", "<i>Устройства появятся после подключения VPN-серверов.</i>"]
-        add_nav_buttons(kb, back_data="home")
-        await send_screen(
-            callback.message,
-            callback.from_user,
-            "\n".join(lines),
-            reply_markup=kb.as_markup(),
+            back_data="home",
         )
 
     @router.message(F.text.in_({"👥 Друзья", "👥 Пригласить друга", "Пригласить друга", "Друзья"}))
