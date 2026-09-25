@@ -262,6 +262,15 @@ class H1CloudVpnProvider(VpnProvider):
                 "Content-Type": "application/json",
             },
         )
+        # Never reuse the API session for public subscription URLs:
+        # its Authorization header must not leak to another host.
+        self.public_session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=20),
+            headers={
+                "Accept": "text/plain,*/*",
+                "User-Agent": "MGN-VPN/1.0",
+            },
+        )
 
     @staticmethod
     def _name(user: dict[str, Any]) -> str:
@@ -355,72 +364,69 @@ class H1CloudVpnProvider(VpnProvider):
                     raw = nested.get("inbounds")
                     break
 
-        result: list[str] = []
+        candidates: list[tuple[str, str]] = []
         seen: set[str] = set()
 
-        def add(value: Any) -> None:
-            text = str(value or "").strip()
-            if text and text not in seen:
-                seen.add(text)
-                result.append(text)
+        def add(value: Any, label: str = "") -> None:
+            inbound_id = str(value or "").strip()
+            if inbound_id and inbound_id not in seen:
+                seen.add(inbound_id)
+                candidates.append((inbound_id, str(label or "")))
 
         if isinstance(raw, dict):
-            entries = list(raw.items())
-            for map_key, item in entries:
+            for map_key, item in raw.items():
                 if isinstance(item, dict):
-                    value = (
+                    inbound_id = (
                         item.get("id")
                         or item.get("inbound_id")
                         or item.get("inboundId")
                         or map_key
                     )
-                    add(value)
+                    label = str(
+                        item.get("remark")
+                        or item.get("name")
+                        or item.get("tag")
+                        or ""
+                    )
+                    add(inbound_id, label)
+                elif isinstance(item, (list, tuple)) and item:
+                    label = " ".join(str(value) for value in item[1:] if value is not None)
+                    add(item[0], label)
                 elif isinstance(item, (str, int)):
                     add(item if str(item).strip() else map_key)
-                elif isinstance(item, (list, tuple)) and item:
-                    add(item[0])
                 else:
                     add(map_key)
 
         elif isinstance(raw, list):
             for item in raw:
                 if isinstance(item, dict):
-                    value = (
+                    inbound_id = (
                         item.get("id")
                         or item.get("inbound_id")
                         or item.get("inboundId")
                     )
-                    if value is not None:
-                        add(value)
+                    label = str(
+                        item.get("remark")
+                        or item.get("name")
+                        or item.get("tag")
+                        or ""
+                    )
+                    if inbound_id is not None:
+                        add(inbound_id, label)
+                elif isinstance(item, (list, tuple)) and item:
+                    label = " ".join(str(value) for value in item[1:] if value is not None)
+                    add(item[0], label)
                 elif isinstance(item, (str, int)):
                     add(item)
-                elif isinstance(item, (list, tuple)) and item:
-                    # Some H1 builds serialize an inbound as a positional row.
-                    # The first column is the inbound ID; do not treat the
-                    # remaining columns (port, remark, protocol, etc.) as IDs.
-                    add(item[0])
 
-        if not result:
+        if not candidates:
             item_shape = "none"
             if isinstance(raw, list):
-                if raw:
-                    first = raw[0]
-                    if isinstance(first, dict):
-                        item_shape = f"dict(keys={list(first.keys())[:12]})"
-                    elif isinstance(first, (list, tuple)):
-                        item_shape = (
-                            f"row(len={len(first)}, "
-                            f"types={[type(v).__name__ for v in first[:8]]})"
-                        )
-                    else:
-                        item_shape = type(first).__name__
-                else:
-                    item_shape = "list(empty)"
+                item_shape = "list(empty)" if not raw else type(raw[0]).__name__
             elif isinstance(raw, dict):
                 item_shape = f"map(keys={list(raw.keys())[:12]})"
             else:
                 item_shape = type(raw).__name__
-
             logger.warning(
                 "H1Cloud /inbounds unsupported response for %s; item_shape=%s",
                 prefix or "main",
@@ -430,7 +436,21 @@ class H1CloudVpnProvider(VpnProvider):
                 f"H1Cloud panel returned no usable inbounds for {prefix or 'main'}"
             )
 
-        return result
+        preferred = [
+            inbound_id
+            for inbound_id, label in candidates
+            if "MGN-" in label.upper()
+        ]
+        selected = preferred or [inbound_id for inbound_id, _label in candidates]
+
+        if len(selected) > 1 and preferred:
+            logger.warning(
+                "H1Cloud location %s has %s MGN inbounds; using all selected IDs=%s",
+                prefix or "main",
+                len(selected),
+                selected,
+            )
+        return selected
 
     async def _federated_nodes(self) -> list[dict[str, Any]]:
         data = await self._request("GET", "/fed/lagg")
@@ -610,8 +630,13 @@ class H1CloudVpnProvider(VpnProvider):
                 errors.append(f"{node_id}: {exc}")
 
         if errors:
-            raise RuntimeError(
-                "H1Cloud federation incomplete: " + "; ".join(errors)
+            # A single remote node must never make the whole subscription
+            # unavailable. Keep healthy locations working and retry the failed
+            # replica on the next reconciliation.
+            logger.warning(
+                "H1Cloud federation partial for %s: %s",
+                name,
+                "; ".join(errors),
             )
 
         return await self.get_state(user)
@@ -678,8 +703,34 @@ class H1CloudVpnProvider(VpnProvider):
         data = await self._request("GET", "/health")
         return dict(data or {})
 
+    async def fetch_subscription(
+        self,
+        user: dict[str, Any],
+    ) -> tuple[bytes, dict[str, str]]:
+        state = await self.get_state(user)
+        url = state.subscription_url
+        if not url.startswith(("http://", "https://")):
+            raise RuntimeError("H1Cloud subscription URL is not HTTP(S)")
+
+        async with self.public_session.get(
+            url,
+            allow_redirects=True,
+            ssl=self.verify_ssl,
+        ) as response:
+            body = await response.read()
+            if response.status >= 400:
+                raise RuntimeError(
+                    f"H1Cloud subscription HTTP {response.status}"
+                )
+            headers = {
+                str(key).lower(): str(value)
+                for key, value in response.headers.items()
+            }
+            return body, headers
+
     async def close(self) -> None:
         await self.session.close()
+        await self.public_session.close()
 
 
 class XuiVpnProvider(VpnProvider):
