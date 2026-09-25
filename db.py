@@ -166,6 +166,28 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_users_referrer_id "
                 "ON users(referrer_id)"
             )
+
+            # One device is included in every plan. Preserve only explicit
+            # bonus slots and keep the total within 1..5.
+            await db.execute(
+                """
+                UPDATE users
+                SET bonus_devices=MIN(
+                        4,
+                        MAX(0, COALESCE(bonus_devices, 0))
+                    ),
+                    max_devices=MIN(
+                        5,
+                        MAX(
+                            1,
+                            1 + MIN(
+                                4,
+                                MAX(0, COALESCE(bonus_devices, 0))
+                            )
+                        )
+                    )
+                """
+            )
             await db.commit()
 
     async def ensure_user(
@@ -321,8 +343,11 @@ class Database:
         start = max(utcnow(), current) if current else utcnow()
         until = start + timedelta(days=days)
 
-        bonus_devices = int(user.get("bonus_devices") or 0)
-        effective_devices = max(1, int(max_devices) + bonus_devices)
+        bonus_devices = min(
+            4,
+            max(0, int(user.get("bonus_devices") or 0)),
+        )
+        effective_devices = min(5, 1 + bonus_devices)
 
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
@@ -521,10 +546,10 @@ class Database:
         telegram_id: int,
         cost: int,
         event_key: str,
-        max_total_devices: int = 10,
+        max_total_devices: int = 5,
     ) -> dict[str, Any] | None:
         cost = max(1, int(cost))
-        max_total_devices = max(2, int(max_total_devices))
+        max_total_devices = min(5, max(2, int(max_total_devices)))
 
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
@@ -586,6 +611,74 @@ class Database:
             await db.commit()
 
         return await self.get_user(telegram_id)
+
+    async def change_device_slots(
+        self,
+        telegram_id: int,
+        delta: int,
+        max_total_devices: int = 5,
+    ) -> dict[str, Any] | None:
+        delta = int(delta)
+        max_total_devices = min(5, max(1, int(max_total_devices)))
+
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    """
+                    SELECT bonus_devices, max_devices
+                    FROM users
+                    WHERE telegram_id=?
+                    """,
+                    (telegram_id,),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                return None
+
+            bonus = max(0, int(row["bonus_devices"] or 0))
+            new_bonus = bonus + delta
+            new_total = 1 + new_bonus
+
+            if new_bonus < 0 or new_total < 1 or new_total > max_total_devices:
+                await db.rollback()
+                return None
+
+            await db.execute(
+                """
+                UPDATE users
+                SET bonus_devices=?,
+                    max_devices=?
+                WHERE telegram_id=?
+                """,
+                (new_bonus, new_total, telegram_id),
+            )
+            await db.commit()
+
+        return await self.get_user(telegram_id)
+
+    async def grant_extra_device(
+        self,
+        telegram_id: int,
+        max_total_devices: int = 5,
+    ) -> dict[str, Any] | None:
+        return await self.change_device_slots(
+            telegram_id=telegram_id,
+            delta=1,
+            max_total_devices=max_total_devices,
+        )
+
+    async def revoke_extra_device(
+        self,
+        telegram_id: int,
+    ) -> dict[str, Any] | None:
+        return await self.change_device_slots(
+            telegram_id=telegram_id,
+            delta=-1,
+            max_total_devices=5,
+        )
 
     async def create_promo_product(
         self,
