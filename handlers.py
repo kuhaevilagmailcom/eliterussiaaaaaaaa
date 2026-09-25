@@ -155,19 +155,35 @@ async def load_state(
     if not getattr(provider, "service_ready", True):
         return fallback_state(user, config), False
     try:
-        state = await asyncio.wait_for(
-            provider.get_state(user),
-            timeout=4.0,
-        )
+        if getattr(provider, "mode_name", "") == "h1cloud":
+            state = await asyncio.wait_for(
+                provider.provision(user),
+                timeout=20.0,
+            )
+        else:
+            state = await asyncio.wait_for(
+                provider.get_state(user),
+                timeout=6.0,
+            )
         return state, True
-    except Exception:
+    except Exception as first_exc:
+        logger.warning(
+            "VPN state refresh failed for user %s: %s",
+            user.get("telegram_id"),
+            first_exc,
+        )
         try:
             state = await asyncio.wait_for(
                 provider.provision(user),
-                timeout=6.0,
+                timeout=20.0,
             )
             return state, True
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "VPN provisioning failed for user %s: %s",
+                user.get("telegram_id"),
+                exc,
+            )
             return fallback_state(user, config), False
 
 
