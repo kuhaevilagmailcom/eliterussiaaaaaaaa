@@ -17,6 +17,7 @@ from aiogram.types import LabeledPrice
 
 from catalog import (
     DIAMOND_REWARDS,
+    DIAMOND_SHOP_DAYS,
     EXTRA_DEVICE_COST,
     PLANS,
     REFERRAL_FIRST_PAID_REWARD,
@@ -211,6 +212,7 @@ class MiniAppServer:
         state, vpn_ok = await self._load_state(row)
         referrals = await self.db.referral_count(uid)
         diamonds = await self.db.diamond_balance(uid)
+        diamond_history = await self.db.diamond_history(uid, 10)
         username = await self._username()
 
         until = from_iso(row.get("subscription_until"))
@@ -263,6 +265,19 @@ class MiniAppServer:
                 "shop": {
                     "extra_device_cost": int(EXTRA_DEVICE_COST),
                     "max_devices": 10,
+                    "days": [
+                        {
+                            "code": code,
+                            "days": int(item["days"]),
+                            "cost": int(item["cost"]),
+                        }
+                        for code, item in DIAMOND_SHOP_DAYS.items()
+                    ],
+                },
+                "diamond_history": diamond_history,
+                "referral_rewards": {
+                    "trial": int(REFERRAL_TRIAL_REWARD),
+                    "first_paid": int(REFERRAL_FIRST_PAID_REWARD),
                 },
                 "trial_channel_url": self.config.trial_channel_url,
                 "bot_url": f"https://t.me/{username}",
@@ -430,6 +445,46 @@ class MiniAppServer:
         await self.db.set_sbp_status(payment_id, status or "processing")
         return web.json_response({"status": status or "processing"})
 
+    async def buy_bonus_days(self, request: web.Request) -> web.Response:
+        uid, _tg_user, row = await self._auth(request)
+        code = str(request.match_info.get("code") or "")
+        item = DIAMOND_SHOP_DAYS.get(code)
+        if not item:
+            raise _json_error(404, "Награда не найдена")
+
+        cost = int(item["cost"])
+        balance = int(row.get("diamonds") or 0)
+        if balance < cost:
+            raise _json_error(409, f"Не хватает {cost - balance} алмазов")
+
+        updated = await self.db.purchase_vpn_days(
+            telegram_id=uid,
+            days=int(item["days"]),
+            cost=cost,
+            event_key=f"mini-days:{uid}:{code}:{uuid4().hex}",
+        )
+        if not updated:
+            raise _json_error(409, "Не удалось выполнить покупку")
+
+        if getattr(self.provider, "service_ready", True):
+            try:
+                await asyncio.wait_for(self.provider.provision(updated), 7.0)
+            except Exception as exc:
+                logger.warning(
+                    "Mini App bonus-days provisioning deferred for %s: %s",
+                    uid,
+                    exc,
+                )
+
+        return web.json_response(
+            {
+                "ok": True,
+                "days": int(item["days"]),
+                "diamonds": int(updated.get("diamonds") or 0),
+                "subscription_until": updated.get("subscription_until"),
+            }
+        )
+
     async def buy_extra_device(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
         current_limit = int(row.get("max_devices") or 1)
@@ -499,6 +554,7 @@ class MiniAppServer:
         app.router.add_post("/api/miniapp/payment/stars", self.stars_invoice)
         app.router.add_post("/api/miniapp/payment/sbp", self.sbp_create)
         app.router.add_get("/api/miniapp/payment/sbp/{payment_id}", self.sbp_check)
+        app.router.add_post("/api/miniapp/shop/days/{code}", self.buy_bonus_days)
         app.router.add_post("/api/miniapp/shop/device", self.buy_extra_device)
         app.router.add_delete("/api/miniapp/devices/{device_id}", self.delete_device)
         app.router.add_static("/static/", str(self.web_dir), show_index=False)
