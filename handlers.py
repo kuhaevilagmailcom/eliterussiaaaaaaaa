@@ -422,8 +422,8 @@ def profile_text(
     devices_count = len(state.devices)
     plan = html.escape(user.get("plan_name") or "—")
 
-    e_profile = emoji.icon(0, pack=PACK_UI)
-    e_sub = emoji.icon(1, pack=PACK_CRYPTO)
+    e_profile = emoji.icon(0, pack=PACK_NEWS)
+    e_sub = emoji.icon(1, pack=PACK_NEWS)
 
     lines = [
         f"{e_profile} <b>Ваш ID:</b> <code>{user_id}</code>",
@@ -485,7 +485,7 @@ def connection_text(
     state: VpnState,
     emoji: EmojiBank,
 ) -> str:
-    e_link = emoji.icon(10, pack=PACK_UI)
+    e_link = emoji.icon(2, pack=PACK_NEWS)
     server = html.escape(state.server or "MGN VPN")
     return (
         f"{e_link} <b>Подключение</b>\n\n"
@@ -1297,7 +1297,7 @@ def build_router(
             callback.from_user,
             f"{e} <b>Информация</b>\n\n"
             "🔐 Доступ выдаётся по персональной ссылке.\n"
-            "📱 Платная подписка — до <b>5 устройств</b>.\n"
+            f"📱 В тариф входит <b>1 устройство</b>, можно докупить до <b>{MAX_DEVICES}</b>.\n"
             "🎁 Пробный доступ можно активировать один раз после подписки на наш Telegram-канал.\n"
             "⚙️ Управление подпиской и устройствами находится прямо в боте.",
             reply_markup=kb.as_markup(),
@@ -1315,7 +1315,7 @@ def build_router(
                 "1. Активируйте пробный доступ или купите подписку.\n"
                 "2. Нажмите <b>«🔗 Подключить VPN»</b>.\n"
                 "3. Откройте персональную ссылку на нужном устройстве.\n\n"
-                "Подключённые устройства можно отключить в разделе <b>«📱 Устройства»</b>.",
+                "Лимит устройств и дополнительные слоты находятся в разделе <b>«📱 Устройства»</b>.",
                 reply_markup=section_nav_keyboard(),
             )
 
@@ -1570,12 +1570,13 @@ def build_router(
     @router.message(F.text.in_({"💎 Купить VPN", "💳 Купить VPN", "Купить VPN"}))
     async def plans_message(message: Message) -> None:
         await ensure_actor(message.from_user)
-        e = emoji.icon(0, pack=PACK_CRYPTO)
+        e = emoji.icon(0, pack=PACK_NEWS)
         await send_screen(
             message,
             message.from_user,
             f"{e} <b>Выберите подписку</b>\n\n"
-            "До <b>5 устройств</b> на каждом тарифе.\n"
+            "В каждый тариф входит <b>1 устройство</b>.\n"
+            f"Дополнительный слот — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>, максимум <b>{MAX_DEVICES}</b>.\n"
             "Оплата через СБП или Telegram Stars.",
             reply_markup=plans_keyboard(config),
         )
@@ -1585,12 +1586,13 @@ def build_router(
         await callback.answer()
         if not callback.message:
             return
-        e = emoji.icon(0, pack=PACK_CRYPTO)
+        e = emoji.icon(0, pack=PACK_NEWS)
         await send_screen(
             callback.message,
             callback.from_user,
             f"{e} <b>Выберите подписку</b>\n\n"
-            "До <b>5 устройств</b> на каждом тарифе.\n"
+            "В каждый тариф входит <b>1 устройство</b>.\n"
+            f"Дополнительный слот — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>, максимум <b>{MAX_DEVICES}</b>.\n"
             "Оплата через СБП или Telegram Stars.",
             reply_markup=plans_keyboard(config),
         )
@@ -1606,16 +1608,23 @@ def build_router(
             return
 
         await callback.answer()
-        e = emoji.icon(2, pack=PACK_CRYPTO)
+        e = emoji.icon(1, pack=PACK_NEWS)
         await send_screen(
             callback.message,
             callback.from_user,
             f"{e} <b>{plan['name']}</b>\n\n"
-            f"До {plan['devices']} устройств\n"
+            f"📱 Включено устройств — <b>1</b>\n"
             f"🏦 <b>{plan_price_rub(config, code)} ₽</b> · СБП\n"
             f"⭐ <b>{plan_price_stars(config, code)} Stars</b>\n"
-            f"💎 После оплаты: <b>+{DIAMOND_REWARDS.get(code, 0)} 💎</b>\n\n"
-            f"<i>Курс для тарифов: {STAR_RATE_XTR} ⭐ = {STAR_RATE_RUB} ₽.</i>",
+            + (
+                f"🔥 Выгода — <b>{plan_savings_rub(code)} ₽</b>\n"
+                if plan_savings_rub(code)
+                else ""
+            )
+            + f"💎 После оплаты: <b>+{DIAMOND_REWARDS.get(code, 0)} 💎</b>\n\n"
+            + f"Дополнительное устройство — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>. "
+            f"Максимум — <b>{MAX_DEVICES}</b>.\n"
+            + f"<i>Курс для тарифов: {STAR_RATE_XTR} ⭐ = {STAR_RATE_RUB} ₽.</i>",
             reply_markup=payment_methods_keyboard(config, code),
         )
 
