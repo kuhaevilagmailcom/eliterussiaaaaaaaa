@@ -4,12 +4,21 @@ from typing import Any
 
 
 PLANS: dict[str, dict[str, Any]] = {
+    "7": {
+        "days": 7,
+        "months": 0,
+        "name": "7 дней",
+        "devices": 1,
+        "price_rub": 59,
+        "display_savings": 0,
+    },
     "30": {
         "days": 30,
         "months": 1,
         "name": "1 месяц",
         "devices": 1,
         "price_rub": 149,
+        "display_savings": 0,
     },
     "90": {
         "days": 90,
@@ -17,6 +26,7 @@ PLANS: dict[str, dict[str, Any]] = {
         "name": "3 месяца",
         "devices": 1,
         "price_rub": 349,
+        "display_savings": 98,
     },
     "180": {
         "days": 180,
@@ -24,6 +34,7 @@ PLANS: dict[str, dict[str, Any]] = {
         "name": "6 месяцев",
         "devices": 1,
         "price_rub": 599,
+        "display_savings": 295,
     },
     "365": {
         "days": 365,
@@ -31,10 +42,12 @@ PLANS: dict[str, dict[str, Any]] = {
         "name": "1 год",
         "devices": 1,
         "price_rub": 1200,
+        "display_savings": 789,
     },
 }
 
 DIAMOND_REWARDS: dict[str, int] = {
+    "7": 5,
     "30": 25,
     "90": 75,
     "180": 150,
@@ -71,10 +84,7 @@ def plan_price_stars(config, code: str) -> int:
 
 
 def plan_savings_rub(code: str) -> int:
-    plan = PLANS[code]
-    months = max(1, int(plan.get("months") or 1))
-    monthly = int(PLANS["30"]["price_rub"])
-    return max(0, monthly * months - int(plan["price_rub"]))
+    return max(0, int(PLANS[code].get("display_savings") or 0))
 
 
 def extra_device_price_stars() -> int:
