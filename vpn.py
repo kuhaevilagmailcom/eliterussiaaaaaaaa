@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from uuid import uuid4
 from typing import Any
 from urllib.parse import quote
 
@@ -143,7 +144,7 @@ class WebhookVpnProvider(VpnProvider):
 
 
 class H1CloudVpnProvider(VpnProvider):
-    """Native provider for the H1Cloud VLESS node HTTP API."""
+    """Native provider for H1/VLESS Panel, including federated locations."""
 
     service_ready = True
     mode_name = "h1cloud"
@@ -189,14 +190,6 @@ class H1CloudVpnProvider(VpnProvider):
         except (TypeError, ValueError):
             return 0
 
-    @staticmethod
-    def _days_until(timestamp: int, *, from_timestamp: int | None = None) -> int:
-        if timestamp <= 0:
-            return 1
-        base = int(from_timestamp or datetime.now().timestamp())
-        seconds = max(1, timestamp - base)
-        return max(1, (seconds + 86399) // 86400)
-
     async def _request(
         self,
         method: str,
@@ -222,7 +215,16 @@ class H1CloudVpnProvider(VpnProvider):
             ):
                 return None
 
-            response.raise_for_status()
+            if response.status >= 400:
+                message = (
+                    str(data.get("error") or data.get("message") or "")
+                    if isinstance(data, dict)
+                    else ""
+                )
+                raise RuntimeError(
+                    f"H1Cloud API HTTP {response.status}: {message or path}"
+                )
+
             if not isinstance(data, dict):
                 raise RuntimeError("H1Cloud returned invalid JSON")
             if data.get("ok") is False:
@@ -231,18 +233,82 @@ class H1CloudVpnProvider(VpnProvider):
                 )
             return data
 
-    async def _get_client(self, name: str) -> dict[str, Any] | None:
-        data = await self._request(
-            "GET",
-            f"/clients/{quote(name, safe='')}",
-            allow_missing=True,
-        )
+    @staticmethod
+    def _extract_client(data: dict[str, Any] | None) -> dict[str, Any] | None:
         if not data:
             return None
         client = data.get("client")
         if isinstance(client, dict):
             return dict(client)
-        return dict(data)
+        if data.get("name") or data.get("uuid"):
+            return dict(data)
+        return None
+
+    async def _get_client(
+        self,
+        name: str,
+        *,
+        prefix: str = "",
+    ) -> dict[str, Any] | None:
+        data = await self._request(
+            "GET",
+            f"{prefix}/clients/{quote(name, safe='')}",
+            allow_missing=True,
+        )
+        return self._extract_client(data)
+
+    async def _inbound_ids(self, *, prefix: str = "") -> list[str]:
+        data = await self._request("GET", f"{prefix}/inbounds")
+        raw = []
+        if isinstance(data, dict):
+            for key in ("inbounds", "items", "data"):
+                if isinstance(data.get(key), list):
+                    raw = data[key]
+                    break
+
+        result: list[str] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            inbound_id = item.get("id")
+            if inbound_id is None:
+                inbound_id = item.get("inbound_id")
+            if inbound_id is None:
+                continue
+
+            # H1 /api/inbounds is intended for user-facing inbounds, but
+            # skip clearly internal/API entries if the panel exposes them.
+            protocol = str(item.get("protocol") or "").lower()
+            remark = str(item.get("remark") or item.get("name") or "").lower()
+            if protocol in {"dokodemo-door", "api"} or remark == "api":
+                continue
+
+            result.append(str(inbound_id))
+
+        if not result:
+            raise RuntimeError(
+                f"H1Cloud panel returned no usable inbounds for {prefix or 'main'}"
+            )
+        return result
+
+    async def _federated_nodes(self) -> list[dict[str, Any]]:
+        data = await self._request("GET", "/fed/lagg")
+        if not isinstance(data, dict):
+            return []
+        raw = data.get("nodes")
+        if not isinstance(raw, list):
+            raw = data.get("items")
+        if not isinstance(raw, list):
+            return []
+        return [dict(item) for item in raw if isinstance(item, dict)]
+
+    @staticmethod
+    def _node_id(node: dict[str, Any]) -> str:
+        for key in ("node_id", "id", "server_id"):
+            value = node.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return ""
 
     @staticmethod
     def _first_vless(client: dict[str, Any]) -> str:
@@ -273,53 +339,110 @@ class H1CloudVpnProvider(VpnProvider):
                 quote(client_uuid, safe=""),
             )
 
-        # H1Cloud panel mode may not run a separate subscription server.
-        # A direct VLESS link is still a valid importable access key.
         return self._first_vless(client)
+
+    async def _upsert_location(
+        self,
+        *,
+        name: str,
+        client_uuid: str,
+        expires_at: int,
+        traffic_limit: int,
+        device_limit: int,
+        prefix: str = "",
+    ) -> dict[str, Any]:
+        inbound_ids = await self._inbound_ids(prefix=prefix)
+        existing = await self._get_client(name, prefix=prefix)
+
+        payload: dict[str, Any] = {
+            "expires_at": expires_at,
+            "traffic_limit_gb": traffic_limit,
+            "device_limit": device_limit,
+            "manual": True,
+            "channels": [],
+            "inbound_ids": inbound_ids,
+        }
+
+        if existing is None:
+            payload.update(
+                {
+                    "name": name,
+                    "uuid": client_uuid,
+                }
+            )
+            data = await self._request(
+                "POST",
+                f"{prefix}/create",
+                json=payload,
+            )
+        else:
+            existing_uuid = str(existing.get("uuid") or "").strip()
+            if existing_uuid and existing_uuid != client_uuid:
+                raise RuntimeError(
+                    f"H1Cloud UUID mismatch for {name} at {prefix or 'main'}"
+                )
+            data = await self._request(
+                "PATCH",
+                f"{prefix}/clients/{quote(name, safe='')}",
+                json=payload,
+            )
+
+        client = self._extract_client(data)
+        if client is None:
+            client = await self._get_client(name, prefix=prefix)
+        if client is None:
+            raise RuntimeError(
+                f"H1Cloud client {name} missing after upsert at {prefix or 'main'}"
+            )
+        return client
 
     async def provision(self, user: dict[str, Any]) -> VpnState:
         name = self._name(user)
         desired_expiry = self._desired_expiry(user)
+        if desired_expiry <= int(datetime.now().timestamp()):
+            desired_expiry = int(datetime.now().timestamp()) + 86400
+
         traffic_limit = max(0, int(user.get("traffic_limit_gb") or 0))
         device_limit = max(1, int(user.get("max_devices") or 1))
-        existing = await self._get_client(name)
 
-        if existing is None:
-            await self._request(
-                "POST",
-                "/create",
-                json={
-                    "name": name,
-                    "days": self._days_until(desired_expiry),
-                    "traffic_limit_gb": traffic_limit,
-                    "device_limit": device_limit,
-                },
-            )
-        else:
-            raw_expiry = existing.get("expires_at") or existing.get("expiry")
+        main_existing = await self._get_client(name)
+        client_uuid = (
+            str(main_existing.get("uuid") or "").strip()
+            if main_existing
+            else ""
+        ) or str(uuid4())
+
+        # Main NL panel.
+        await self._upsert_location(
+            name=name,
+            client_uuid=client_uuid,
+            expires_at=desired_expiry,
+            traffic_limit=traffic_limit,
+            device_limit=device_limit,
+        )
+
+        # Every panel connected in H1 "Servers" gets the same UUID.
+        nodes = await self._federated_nodes()
+        errors: list[str] = []
+        for node in nodes:
+            node_id = self._node_id(node)
+            if not node_id:
+                continue
             try:
-                node_expiry = int(raw_expiry or 0)
-            except (TypeError, ValueError):
-                node_expiry = 0
+                await self._upsert_location(
+                    name=name,
+                    client_uuid=client_uuid,
+                    expires_at=desired_expiry,
+                    traffic_limit=traffic_limit,
+                    device_limit=device_limit,
+                    prefix=f"/fed/lproxy/{quote(node_id, safe='')}",
+                )
+            except Exception as exc:
+                errors.append(f"{node_id}: {exc}")
 
-            if desired_expiry > 0:
-                base = node_expiry if node_expiry > int(datetime.now().timestamp()) else None
-                if not base or desired_expiry > base + 60:
-                    add_days = self._days_until(desired_expiry, from_timestamp=base)
-                    await self._request(
-                        "PATCH",
-                        "/edit",
-                        json={"name": name, "days": add_days},
-                    )
-
-            await self._request(
-                "PATCH",
-                "/edit",
-                json={
-                    "name": name,
-                    "traffic_limit_gb": traffic_limit,
-                    "device_limit": device_limit,
-                },
+        if errors:
+            raise RuntimeError(
+                "H1Cloud federation incomplete: " + "; ".join(errors)
             )
 
         return await self.get_state(user)
@@ -328,6 +451,10 @@ class H1CloudVpnProvider(VpnProvider):
         client = await self._get_client(self._name(user))
         if client is None:
             raise RuntimeError("H1Cloud client does not exist yet")
+
+        subscription_url = self._subscription_url(client)
+        if not subscription_url:
+            raise RuntimeError("H1Cloud client has no subscription URL")
 
         devices: list[dict[str, Any]] = []
         raw_devices = client.get("devices") or []
@@ -358,12 +485,7 @@ class H1CloudVpnProvider(VpnProvider):
                     }
                 )
 
-        used_bytes = int(
-            client.get("traffic_used")
-            or client.get("used_bytes")
-            or client.get("used")
-            or 0
-        )
+        used_gb = float(client.get("traffic_used_gb") or 0)
         limit_gb = float(
             client.get("traffic_limit_gb")
             or user.get("traffic_limit_gb")
@@ -371,17 +493,14 @@ class H1CloudVpnProvider(VpnProvider):
         )
 
         return VpnState(
-            subscription_url=self._subscription_url(client),
+            subscription_url=subscription_url,
             server=self.server_name,
-            traffic_used_gb=used_bytes / GB,
+            traffic_used_gb=used_gb,
             traffic_limit_gb=limit_gb,
             devices=devices,
         )
 
     async def delete_device(self, user: dict[str, Any], device_id: str) -> None:
-        # The public H1Cloud node API documents client-level device limits,
-        # but no stable per-device removal endpoint. Keep this explicit
-        # instead of guessing an unsafe panel-private route.
         raise RuntimeError(
             "H1Cloud does not expose a documented per-device removal endpoint"
         )
