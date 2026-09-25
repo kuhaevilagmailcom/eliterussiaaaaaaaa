@@ -8,7 +8,7 @@
   <title>MGN VPN</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=7">
+  <link rel="stylesheet" href="/static/styles.css?v=8">
 </head>
 <body>
   <div class="app-shell">
@@ -86,62 +86,102 @@
         </article>
       </section>
 
-      <section class="page" data-page="plans">
-        <div class="page-intro">
+      <section class="page premium-page" data-page="plans">
+        <div class="page-intro premium-intro">
           <span class="eyebrow">ПОДПИСКА</span>
-          <h1>Тариф и продление</h1>
-          <p>Выбери срок и оплати удобным способом.</p>
+          <h1>MGN Plus</h1>
+          <p>Продлевай доступ и управляй тарифом без лишних экранов.</p>
         </div>
-        <article class="current-card">
-          <span class="icon-box"><i data-lucide="crown"></i></span>
-          <div><small>Текущий тариф</small><b id="planCurrentName">Нет подписки</b><span id="planCurrentUntil">—</span></div>
+
+        <article class="current-card plan-overview">
+          <div class="current-main">
+            <span class="icon-box plan-overview-icon"><i data-lucide="crown"></i></span>
+            <div>
+              <small>Текущий тариф</small>
+              <b id="planCurrentName">Нет подписки</b>
+              <span id="planCurrentUntil">—</span>
+            </div>
+          </div>
           <em class="mini-status" id="planMiniStatus">Не активна</em>
         </article>
-        <div class="section-title"><h3>Продлить</h3><span>актуальные тарифы</span></div>
+
+        <div class="page-section-head">
+          <div><small>ТАРИФЫ</small><h3>Выбери период</h3></div>
+          <span>Stars или СБП</span>
+        </div>
         <div class="plans" id="plans"></div>
-        <button class="secondary-row" id="copySubscriptionPlans">
+
+        <button class="secondary-row link-row" id="copySubscriptionPlans">
           <span class="icon-box"><i data-lucide="link-2"></i></span>
-          <span><b>Ссылка подключения</b><small>Скопировать персональную ссылку</small></span>
+          <span><b>Ссылка подключения</b><small>Скопировать персональную VPN-ссылку</small></span>
           <i data-lucide="copy"></i>
         </button>
       </section>
 
-      <section class="page" data-page="devices">
-        <div class="page-intro">
+      <section class="page premium-page" data-page="devices">
+        <div class="page-intro premium-intro">
           <span class="eyebrow">УСТРОЙСТВА</span>
-          <h1>Подключения</h1>
-          <p>Смотри активные устройства и освобождай слоты.</p>
+          <h1>Мои подключения</h1>
+          <p>Здесь видны устройства, которые сейчас используют MGN VPN.</p>
         </div>
+
         <article class="capacity-card">
-          <div><span class="icon-box"><i data-lucide="monitor-smartphone"></i></span><div><small>Использовано</small><b><span id="deviceCount">0</span> из <span id="deviceLimit">1</span></b></div></div>
-          <div class="progress"><span id="deviceCapacityBar"></span></div>
+          <div class="capacity-top">
+            <span class="icon-box capacity-icon"><i data-lucide="monitor-smartphone"></i></span>
+            <div class="capacity-copy">
+              <small>Подключено</small>
+              <b><span id="deviceCount">0</span> из <span id="deviceLimit">1</span></b>
+            </div>
+            <em>лимит устройств</em>
+          </div>
+          <div class="progress capacity-progress"><span id="deviceCapacityBar"></span></div>
+          <p>Устройства появляются автоматически после подключения к VPN.</p>
         </article>
+
+        <div class="page-section-head compact-head">
+          <div><small>АКТИВНЫЕ</small><h3>Устройства</h3></div>
+        </div>
         <div class="device-list" id="deviceList"></div>
-        <button class="secondary-row accent-row" id="buyDevicePage">
+
+        <button class="secondary-row accent-row device-buy-row" id="buyDevicePage">
           <span class="icon-box"><i data-lucide="plus"></i></span>
-          <span><b>Дополнительное устройство</b><small id="buyDevicePrice">+1 постоянный слот</small></span>
+          <span><b>Добавить ещё устройство</b><small id="buyDevicePrice">+1 постоянный слот</small></span>
           <i data-lucide="chevron-right"></i>
         </button>
       </section>
 
-      <section class="page" data-page="profile">
-        <div class="profile-head">
+      <section class="page premium-page profile-page" data-page="profile">
+        <article class="profile-hero">
           <div class="profile-avatar"><span id="profileAvatarText">U</span><img id="profileAvatarImg" alt=""></div>
-          <div><span class="eyebrow">ПРОФИЛЬ</span><h1 id="profileName">Пользователь</h1><p id="profileUsername">Telegram</p></div>
-        </div>
-        <div class="stats-grid">
+          <div class="profile-meta">
+            <span class="eyebrow">ПРОФИЛЬ</span>
+            <h1 id="profileName">Пользователь</h1>
+            <p id="profileUsername">Telegram</p>
+            <span class="profile-plan-chip"><i data-lucide="crown"></i><b id="profilePlan">Нет подписки</b></span>
+          </div>
+        </article>
+
+        <div class="stats-grid profile-stats">
           <article><i data-lucide="gem"></i><small>Алмазы</small><b id="profileDiamonds">0</b></article>
-          <article><i data-lucide="users-round"></i><small>Приглашено</small><b id="profileRefs">0</b></article>
-          <article><i data-lucide="monitor-smartphone"></i><small>Лимит</small><b id="profileDevices">1</b></article>
+          <article><i data-lucide="users-round"></i><small>Друзья</small><b id="profileRefs">0</b></article>
+          <article><i data-lucide="monitor-smartphone"></i><small>Устройства</small><b id="profileDevices">1</b></article>
         </div>
-        <div class="menu-list">
-          <button data-nav="plans"><span class="icon-box"><i data-lucide="crown"></i></span><span><b>Подписка</b><small id="profilePlan">Нет подписки</small></span><i data-lucide="chevron-right"></i></button>
-          <button data-nav="devices"><span class="icon-box"><i data-lucide="monitor-smartphone"></i></span><span><b>Устройства</b><small>Управление подключениями</small></span><i data-lucide="chevron-right"></i></button>
-          <button data-nav="referrals"><span class="icon-box"><i data-lucide="user-plus"></i></span><span><b>Рефералы</b><small>Приглашай и получай бонусы</small></span><i data-lucide="chevron-right"></i></button>
-          <button data-nav="bonuses"><span class="icon-box"><i data-lucide="gem"></i></span><span><b>Бонусы</b><small>Обменять алмазы</small></span><i data-lucide="chevron-right"></i></button>
-          <button data-nav="support"><span class="icon-box"><i data-lucide="headphones"></i></span><span><b>Поддержка</b><small>Связаться с MGN VPN</small></span><i data-lucide="chevron-right"></i></button>
+
+        <div class="page-section-head compact-head">
+          <div><small>УПРАВЛЕНИЕ</small><h3>Аккаунт</h3></div>
         </div>
-        <div class="profile-id"><span>Telegram ID</span><button id="copyId"><code id="profileId">—</code><i data-lucide="copy"></i></button></div>
+        <div class="menu-list profile-menu">
+          <button data-nav="plans"><span class="icon-box"><i data-lucide="crown"></i></span><span><b>Подписка</b><small>Тариф, продление и оплата</small></span><i data-lucide="chevron-right"></i></button>
+          <button data-nav="devices"><span class="icon-box"><i data-lucide="monitor-smartphone"></i></span><span><b>Устройства</b><small>Подключения и свободные слоты</small></span><i data-lucide="chevron-right"></i></button>
+          <button data-nav="referrals"><span class="icon-box"><i data-lucide="user-plus"></i></span><span><b>Пригласить друзей</b><small>Получать бонусы за приглашения</small></span><i data-lucide="chevron-right"></i></button>
+          <button data-nav="bonuses"><span class="icon-box"><i data-lucide="gift"></i></span><span><b>Бонусы</b><small>Баланс и обмен алмазов</small></span><i data-lucide="chevron-right"></i></button>
+          <button data-nav="support"><span class="icon-box"><i data-lucide="headphones"></i></span><span><b>Поддержка</b><small>Поможем с подключением</small></span><i data-lucide="chevron-right"></i></button>
+        </div>
+
+        <div class="profile-id">
+          <span>Telegram ID</span>
+          <button id="copyId"><code id="profileId">—</code><i data-lucide="copy"></i></button>
+        </div>
       </section>
 
       <section class="page inner-page" data-page="referrals">
@@ -237,6 +277,6 @@
   <div class="toast" id="toast"></div>
   <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp" alt="MGN VPN"><span><i></i></span></div>
 
-  <script src="/static/app.js?v=7"></script>
+  <script src="/static/app.js?v=8"></script>
 </body>
 </html>
