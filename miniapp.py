@@ -17,6 +17,7 @@ from aiogram.types import LabeledPrice
 
 from catalog import (
     DIAMOND_REWARDS,
+    EXTRA_DEVICE_COST,
     PLANS,
     REFERRAL_FIRST_PAID_REWARD,
     REFERRAL_TRIAL_REWARD,
@@ -259,7 +260,12 @@ class MiniAppServer:
                     for code, plan in PLANS.items()
                 ],
                 "payments": {"sbp_enabled": bool(self.config.rollypay_enabled)},
+                "shop": {
+                    "extra_device_cost": int(EXTRA_DEVICE_COST),
+                    "max_devices": 10,
+                },
                 "trial_channel_url": self.config.trial_channel_url,
+                "bot_url": f"https://t.me/{username}",
             }
         )
 
@@ -424,6 +430,44 @@ class MiniAppServer:
         await self.db.set_sbp_status(payment_id, status or "processing")
         return web.json_response({"status": status or "processing"})
 
+    async def buy_extra_device(self, request: web.Request) -> web.Response:
+        uid, _tg_user, row = await self._auth(request)
+        current_limit = int(row.get("max_devices") or 1)
+        if current_limit >= 10:
+            raise _json_error(409, "Уже доступно максимальное количество устройств")
+
+        balance = int(row.get("diamonds") or 0)
+        if balance < int(EXTRA_DEVICE_COST):
+            missing = int(EXTRA_DEVICE_COST) - balance
+            raise _json_error(409, f"Не хватает {missing} алмазов")
+
+        updated = await self.db.purchase_extra_device(
+            telegram_id=uid,
+            cost=int(EXTRA_DEVICE_COST),
+            event_key=f"mini-device:{uid}:{uuid4().hex}",
+            max_total_devices=10,
+        )
+        if not updated:
+            raise _json_error(409, "Не удалось добавить устройство")
+
+        if getattr(self.provider, "service_ready", True) and _active(updated):
+            try:
+                await asyncio.wait_for(self.provider.provision(updated), 7.0)
+            except Exception as exc:
+                logger.warning(
+                    "Mini App device limit provisioning deferred for %s: %s",
+                    uid,
+                    exc,
+                )
+
+        return web.json_response(
+            {
+                "ok": True,
+                "max_devices": int(updated.get("max_devices") or current_limit + 1),
+                "diamonds": int(updated.get("diamonds") or 0),
+            }
+        )
+
     async def delete_device(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
         if not _active(row):
@@ -455,6 +499,7 @@ class MiniAppServer:
         app.router.add_post("/api/miniapp/payment/stars", self.stars_invoice)
         app.router.add_post("/api/miniapp/payment/sbp", self.sbp_create)
         app.router.add_get("/api/miniapp/payment/sbp/{payment_id}", self.sbp_check)
+        app.router.add_post("/api/miniapp/shop/device", self.buy_extra_device)
         app.router.add_delete("/api/miniapp/devices/{device_id}", self.delete_device)
         app.router.add_static("/static/", str(self.web_dir), show_index=False)
 
