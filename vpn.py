@@ -261,33 +261,71 @@ class H1CloudVpnProvider(VpnProvider):
 
     async def _inbound_ids(self, *, prefix: str = "") -> list[str]:
         data = await self._request("GET", f"{prefix}/inbounds")
-        raw = []
+
+        containers: list[Any] = []
         if isinstance(data, dict):
-            for key in ("inbounds", "items", "data"):
-                if isinstance(data.get(key), list):
-                    raw = data[key]
-                    break
+            for key in ("inbounds", "items"):
+                if data.get(key) is not None:
+                    containers.append(data[key])
+            for key in ("data", "result"):
+                nested = data.get(key)
+                if isinstance(nested, dict):
+                    for nested_key in ("inbounds", "items"):
+                        if nested.get(nested_key) is not None:
+                            containers.append(nested[nested_key])
+                elif isinstance(nested, list):
+                    containers.append(nested)
 
         result: list[str] = []
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            inbound_id = item.get("id")
-            if inbound_id is None:
-                inbound_id = item.get("inbound_id")
-            if inbound_id is None:
-                continue
+        seen: set[str] = set()
 
-            # H1 /api/inbounds is intended for user-facing inbounds, but
-            # skip clearly internal/API entries if the panel exposes them.
-            protocol = str(item.get("protocol") or "").lower()
-            remark = str(item.get("remark") or item.get("name") or "").lower()
-            if protocol in {"dokodemo-door", "api"} or remark == "api":
-                continue
+        for container in containers:
+            if isinstance(container, list):
+                entries = [(None, item) for item in container]
+            elif isinstance(container, dict):
+                entries = [(str(key), item) for key, item in container.items()]
+            else:
+                entries = []
 
-            result.append(str(inbound_id))
+            for map_key, item in entries:
+                inbound_id = ""
+                protocol = ""
+                label = ""
+
+                if isinstance(item, (str, int)):
+                    inbound_id = str(item).strip()
+                elif isinstance(item, dict):
+                    for key in ("id", "inbound_id", "inboundId"):
+                        value = item.get(key)
+                        if value is not None and str(value).strip():
+                            inbound_id = str(value).strip()
+                            break
+                    if not inbound_id and map_key:
+                        inbound_id = map_key.strip()
+
+                    protocol = str(item.get("protocol") or "").lower()
+                    label = str(
+                        item.get("remark")
+                        or item.get("name")
+                        or item.get("tag")
+                        or ""
+                    ).lower()
+
+                if not inbound_id:
+                    continue
+                if protocol in {"api", "dokodemo-door"} or label == "api":
+                    continue
+                if inbound_id not in seen:
+                    seen.add(inbound_id)
+                    result.append(inbound_id)
 
         if not result:
+            top_keys = list(data.keys())[:12] if isinstance(data, dict) else []
+            logger.warning(
+                "H1Cloud /inbounds unsupported response for %s; keys=%s",
+                prefix or "main",
+                top_keys,
+            )
             raise RuntimeError(
                 f"H1Cloud panel returned no usable inbounds for {prefix or 'main'}"
             )
