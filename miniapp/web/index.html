@@ -8,7 +8,7 @@
   <title>MGN VPN</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=3">
+  <link rel="stylesheet" href="/static/styles.css?v=6">
 </head>
 <body>
   <div class="app-shell">
@@ -38,7 +38,7 @@
             <button class="ghost-icon" data-nav="plans" aria-label="Подписка"><i data-lucide="chevron-right"></i></button>
           </div>
           <div class="hero-copy">
-            <small>Текущая подписка</small>
+            <small>Текущий тариф</small>
             <h2 id="homePlan">Нет подписки</h2>
             <p id="homePlanNote">Выбери тариф и управляй подпиской здесь.</p>
           </div>
@@ -67,8 +67,8 @@
         <div class="quick-grid">
           <button data-nav="devices"><span><i data-lucide="monitor-smartphone"></i></span><b>Устройства</b><small id="devicesActionNote">0 подключено</small></button>
           <button data-nav="referrals"><span><i data-lucide="users-round"></i></span><b>Рефералы</b><small id="referralActionNote">Приглашено 0</small></button>
-          <button data-nav="bonuses"><span><i data-lucide="gem"></i></span><b>Бонусы</b><small id="bonusActionNote">0 алмазов</small></button>
-          <button data-nav="support"><span><i data-lucide="headphones"></i></span><b>Поддержка</b><small>Поможем разобраться</small></button>
+          <button data-nav="bonuses"><span><i data-lucide="gift"></i></span><b>Бонусы</b><small id="bonusActionNote">Получайте привилегии</small></button>
+          <button data-nav="support"><span><i data-lucide="headphones"></i></span><b>Поддержка</b><small>Мы всегда на связи</small></button>
         </div>
 
         <article class="notice" id="trialCard" hidden>
@@ -234,6 +234,6 @@
   <div class="toast" id="toast"></div>
   <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp" alt="MGN VPN"><span><i></i></span></div>
 
-  <script src="/static/app.js?v=3"></script>
+  <script src="/static/app.js?v=6"></script>
 </body>
 </html>
