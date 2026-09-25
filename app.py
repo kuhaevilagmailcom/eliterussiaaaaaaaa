@@ -61,6 +61,10 @@ async def main() -> None:
     )
 
     config = Config.from_env()
+    logging.getLogger(__name__).info(
+        "MGN VPN build: h1cloud-v2 | vpn_mode=%s",
+        config.vpn_mode,
+    )
     db = Database(config.db_path)
     await db.init()
 
