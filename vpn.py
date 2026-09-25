@@ -142,6 +142,258 @@ class WebhookVpnProvider(VpnProvider):
         await self.session.close()
 
 
+class H1CloudVpnProvider(VpnProvider):
+    """Native provider for the H1Cloud VLESS node HTTP API."""
+
+    service_ready = True
+    mode_name = "h1cloud"
+
+    def __init__(
+        self,
+        api_url: str,
+        api_token: str,
+        subscription_template: str,
+        server_name: str,
+        verify_ssl: bool = False,
+    ):
+        if not api_url:
+            raise RuntimeError("H1_API_URL is required for VPN_MODE=h1cloud")
+        if not api_token:
+            raise RuntimeError("H1_API_TOKEN is required for VPN_MODE=h1cloud")
+
+        self.api_url = api_url.rstrip("/")
+        self.api_token = api_token
+        self.subscription_template = subscription_template.strip()
+        self.server_name = server_name
+        self.verify_ssl = verify_ssl
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=20),
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {api_token}",
+                "Content-Type": "application/json",
+            },
+        )
+
+    @staticmethod
+    def _name(user: dict[str, Any]) -> str:
+        return f'mgn_{int(user["telegram_id"])}'
+
+    @staticmethod
+    def _desired_expiry(user: dict[str, Any]) -> int:
+        value = user.get("subscription_until")
+        if not value:
+            return 0
+        try:
+            return int(datetime.fromisoformat(str(value)).timestamp())
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _days_until(timestamp: int, *, from_timestamp: int | None = None) -> int:
+        if timestamp <= 0:
+            return 1
+        base = int(from_timestamp or datetime.now().timestamp())
+        seconds = max(1, timestamp - base)
+        return max(1, (seconds + 86399) // 86400)
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+        allow_missing: bool = False,
+    ) -> dict[str, Any] | None:
+        async with self.session.request(
+            method,
+            f"{self.api_url}{path}",
+            json=json,
+            ssl=self.verify_ssl,
+        ) as response:
+            data = await response.json(content_type=None)
+            if allow_missing and (
+                response.status == 404
+                or (
+                    isinstance(data, dict)
+                    and data.get("ok") is False
+                    and str(data.get("error") or "") == "user_not_found"
+                )
+            ):
+                return None
+
+            response.raise_for_status()
+            if not isinstance(data, dict):
+                raise RuntimeError("H1Cloud returned invalid JSON")
+            if data.get("ok") is False:
+                raise RuntimeError(
+                    f'H1Cloud API error: {data.get("error") or "unknown"}'
+                )
+            return data
+
+    async def _get_client(self, name: str) -> dict[str, Any] | None:
+        data = await self._request(
+            "GET",
+            f"/clients/{quote(name, safe='')}",
+            allow_missing=True,
+        )
+        if not data:
+            return None
+        client = data.get("client")
+        if isinstance(client, dict):
+            return dict(client)
+        return dict(data)
+
+    @staticmethod
+    def _first_vless(client: dict[str, Any]) -> str:
+        links = client.get("links")
+        if isinstance(links, dict):
+            for value in links.values():
+                if isinstance(value, str) and value.startswith("vless://"):
+                    return value
+        if isinstance(links, list):
+            for value in links:
+                if isinstance(value, str) and value.startswith("vless://"):
+                    return value
+        link = client.get("link")
+        if isinstance(link, str) and link.startswith("vless://"):
+            return link
+        return ""
+
+    def _subscription_url(self, client: dict[str, Any]) -> str:
+        for key in ("subscription_url", "sub_url", "subscription"):
+            value = client.get(key)
+            if isinstance(value, str) and value.startswith(("http://", "https://")):
+                return value
+
+        client_uuid = str(client.get("uuid") or "").strip()
+        if self.subscription_template and client_uuid:
+            return self.subscription_template.replace(
+                "{uuid}",
+                quote(client_uuid, safe=""),
+            )
+
+        # H1Cloud panel mode may not run a separate subscription server.
+        # A direct VLESS link is still a valid importable access key.
+        return self._first_vless(client)
+
+    async def provision(self, user: dict[str, Any]) -> VpnState:
+        name = self._name(user)
+        desired_expiry = self._desired_expiry(user)
+        traffic_limit = max(0, int(user.get("traffic_limit_gb") or 0))
+        device_limit = max(1, int(user.get("max_devices") or 1))
+        existing = await self._get_client(name)
+
+        if existing is None:
+            await self._request(
+                "POST",
+                "/create",
+                json={
+                    "name": name,
+                    "days": self._days_until(desired_expiry),
+                    "traffic_limit_gb": traffic_limit,
+                    "device_limit": device_limit,
+                },
+            )
+        else:
+            raw_expiry = existing.get("expires_at") or existing.get("expiry")
+            try:
+                node_expiry = int(raw_expiry or 0)
+            except (TypeError, ValueError):
+                node_expiry = 0
+
+            if desired_expiry > 0:
+                base = node_expiry if node_expiry > int(datetime.now().timestamp()) else None
+                if not base or desired_expiry > base + 60:
+                    add_days = self._days_until(desired_expiry, from_timestamp=base)
+                    await self._request(
+                        "PATCH",
+                        "/edit",
+                        json={"name": name, "days": add_days},
+                    )
+
+            await self._request(
+                "PATCH",
+                "/edit",
+                json={
+                    "name": name,
+                    "traffic_limit_gb": traffic_limit,
+                    "device_limit": device_limit,
+                },
+            )
+
+        return await self.get_state(user)
+
+    async def get_state(self, user: dict[str, Any]) -> VpnState:
+        client = await self._get_client(self._name(user))
+        if client is None:
+            raise RuntimeError("H1Cloud client does not exist yet")
+
+        devices: list[dict[str, Any]] = []
+        raw_devices = client.get("devices") or []
+        if isinstance(raw_devices, list):
+            for index, item in enumerate(raw_devices):
+                if not isinstance(item, dict):
+                    continue
+                devices.append(
+                    {
+                        "id": str(item.get("id") or item.get("hwid") or index),
+                        "name": str(
+                            item.get("name")
+                            or item.get("device_name")
+                            or item.get("model")
+                            or "Устройство"
+                        ),
+                        "platform": str(
+                            item.get("platform")
+                            or item.get("os")
+                            or ""
+                        ),
+                        "fingerprint": str(
+                            item.get("fingerprint")
+                            or item.get("hwid")
+                            or ""
+                        ),
+                        "last_seen": item.get("last_seen") or item.get("lastSeen"),
+                    }
+                )
+
+        used_bytes = int(
+            client.get("traffic_used")
+            or client.get("used_bytes")
+            or client.get("used")
+            or 0
+        )
+        limit_gb = float(
+            client.get("traffic_limit_gb")
+            or user.get("traffic_limit_gb")
+            or 0
+        )
+
+        return VpnState(
+            subscription_url=self._subscription_url(client),
+            server=self.server_name,
+            traffic_used_gb=used_bytes / GB,
+            traffic_limit_gb=limit_gb,
+            devices=devices,
+        )
+
+    async def delete_device(self, user: dict[str, Any], device_id: str) -> None:
+        # The public H1Cloud node API documents client-level device limits,
+        # but no stable per-device removal endpoint. Keep this explicit
+        # instead of guessing an unsafe panel-private route.
+        raise RuntimeError(
+            "H1Cloud does not expose a documented per-device removal endpoint"
+        )
+
+    async def health(self) -> dict[str, Any]:
+        data = await self._request("GET", "/health")
+        return dict(data or {})
+
+    async def close(self) -> None:
+        await self.session.close()
+
+
 class XuiVpnProvider(VpnProvider):
     """Native provider for the configured 3x-ui client API."""
 
