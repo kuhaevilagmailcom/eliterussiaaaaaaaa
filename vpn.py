@@ -1,17 +1,96 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 import logging
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import aiohttp
 
 
 GB = 1024 ** 3
 logger = logging.getLogger(__name__)
+
+
+LOCATION_LABELS = {
+    "MGN-NL": "🇳🇱 Нидерланды",
+    "MGN-DE": "🇩🇪 Германия",
+    "MGN-FI": "🇫🇮 Финляндия",
+    "MGN-LT": "🇱🇹 Литва",
+    "MGN-US": "🇺🇸 США",
+}
+
+
+def _location_label(value: str) -> str:
+    decoded = unquote(value or "").upper()
+    for marker, label in LOCATION_LABELS.items():
+        if marker in decoded:
+            return label
+
+    host_markers = (
+        ("NL1.H1CLOUD.NET", "🇳🇱 Нидерланды"),
+        ("GERMANY-D5.H1CLOUD.NET", "🇩🇪 Германия"),
+        ("DE5.H1CLOUD.NET", "🇩🇪 Германия"),
+        ("FI5.H1CLOUD.NET", "🇫🇮 Финляндия"),
+        ("LT3.H1CLOUD.NET", "🇱🇹 Литва"),
+        ("US3.H1CLOUD.NET", "🇺🇸 США"),
+    )
+    for marker, label in host_markers:
+        if marker in decoded:
+            return label
+    return ""
+
+
+def prettify_subscription_payload(payload: bytes) -> tuple[bytes, int]:
+    """Normalize H1 subscription node names while preserving its format."""
+
+    raw_text = payload.decode("utf-8", errors="ignore").strip()
+    if not raw_text:
+        return payload, 0
+
+    decoded_text = raw_text
+    encoded = False
+    if "vless://" not in raw_text.lower():
+        compact = "".join(raw_text.split())
+        if compact:
+            padded = compact + "=" * (-len(compact) % 4)
+            for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+                try:
+                    candidate = decoder(padded.encode()).decode("utf-8")
+                except Exception:
+                    continue
+                if "vless://" in candidate.lower():
+                    decoded_text = candidate
+                    encoded = True
+                    break
+
+    count = 0
+    output: list[str] = []
+    used_labels: dict[str, int] = {}
+
+    for raw_line in decoded_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if line.lower().startswith("vless://"):
+            label = _location_label(line)
+            if label:
+                used_labels[label] = used_labels.get(label, 0) + 1
+                suffix = used_labels[label]
+                if suffix > 1:
+                    label = f"{label} · {suffix}"
+                line = line.split("#", 1)[0] + "#" + quote(label, safe="")
+            count += 1
+        output.append(line)
+
+    rendered = "\n".join(output).encode("utf-8")
+    if encoded:
+        rendered = base64.b64encode(rendered)
+    return rendered, count
 
 
 @dataclass
@@ -35,6 +114,12 @@ class VpnProvider:
 
     async def delete_device(self, user: dict[str, Any], device_id: str) -> None:
         raise NotImplementedError
+
+    async def fetch_subscription(
+        self,
+        user: dict[str, Any],
+    ) -> tuple[bytes, dict[str, str]]:
+        raise RuntimeError("Provider does not expose subscription payloads")
 
     async def close(self) -> None:
         return None
