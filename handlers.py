@@ -247,6 +247,36 @@ def blue_inline_button(
     )
 
 
+def copy_inline_button(text: str, value: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(
+        text=text,
+        copy_text=CopyTextButton(text=value),
+        style="primary",
+    )
+
+
+def connection_keyboard(
+    subscription_url: str,
+    *,
+    back_data: str = "home",
+) -> Any:
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        blue_inline_button(
+            "🚀 Открыть VPN",
+            url=subscription_url,
+        )
+    )
+    kb.row(
+        copy_inline_button(
+            "📋 Скопировать ссылку",
+            subscription_url,
+        )
+    )
+    add_nav_buttons(kb, back_data=back_data)
+    return kb.as_markup()
+
+
 def add_nav_buttons(
     kb: InlineKeyboardBuilder,
     *,
@@ -301,15 +331,33 @@ def main_menu_inline_keyboard(
 def plans_keyboard(config: Config) -> Any:
     kb = InlineKeyboardBuilder()
     for code, plan in PLANS.items():
+        savings = plan_savings_rub(code)
+        suffix = f" · выгода {savings} ₽" if savings else ""
         kb.row(
             blue_inline_button(
-                "💳 "
-                + f'{plan["name"]} · {plan_price_rub(config, code)} ₽ · '
-                + f'+{DIAMOND_REWARDS.get(code, 0)} 💎',
+                f"💳 {plan['name']} · {plan_price_rub(config, code)} ₽{suffix}",
                 callback_data=f"plan:{code}",
             )
         )
     add_nav_buttons(kb, back_data="home")
+    return kb.as_markup()
+
+
+def device_payment_keyboard() -> Any:
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        blue_inline_button(
+            f"🏦 СБП · {EXTRA_DEVICE_PRICE_RUB} ₽",
+            callback_data="device:sbp",
+        )
+    )
+    kb.row(
+        blue_inline_button(
+            f"⭐ Telegram Stars · {extra_device_price_stars()} ⭐",
+            callback_data="device:stars",
+        )
+    )
+    add_nav_buttons(kb, back_data="menu:devices")
     return kb.as_markup()
 
 
