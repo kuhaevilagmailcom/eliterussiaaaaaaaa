@@ -108,7 +108,7 @@
     const pct=Math.min(100,Math.round((used/limit)*100));
 
     $('#headerName').textContent=d.user.first_name||'MGN VPN';
-    $('#headerStatus').textContent=active?(d.subscription.plan||'подписка активна'):'нет подписки';
+    $('#headerStatus').textContent=active?'Подписка активна':'Нет подписки';
 
     const status=$('#subscriptionStatus');
     status.classList.toggle('active',active);
@@ -121,9 +121,9 @@
     $('#deviceProgress').style.width=pct+'%';
     $('b',$('#homeSubscriptionAction')).textContent=active?'Продлить подписку':'Выбрать подписку';
 
-    $('#devicesActionNote').textContent=active?(used+' из '+limit+' подключено'):'Нет активной подписки';
+    $('#devicesActionNote').textContent=active?(used+' из '+limit+' активны'):'Нет активной подписки';
     $('#referralActionNote').textContent='Приглашено '+Number(d.user.referrals||0);
-    $('#bonusActionNote').textContent=Number(d.user.diamonds||0).toLocaleString('ru-RU')+' алмазов';
+    $('#bonusActionNote').textContent='Получайте привилегии';
 
     const hasLink=!!d.vpn.subscription_url;
     $('#copySubscriptionHome').disabled=!hasLink;
@@ -228,7 +228,7 @@
     $('#bonusDevicePrice').textContent=Number(d.shop.extra_device_cost||0)+' 💎 · постоянный слот';
 
     const shop=$('#bonusShop');
-    shop.innerHTML=(d.shop.vpn_days||[]).map(item=>
+    shop.innerHTML=(d.shop.days||[]).map(item=>
       '<button data-bonus-day="'+esc(item.code)+'"><b>+'+Number(item.days)+' дн.</b><small>VPN-доступ</small><em>'+Number(item.cost)+' 💎</em></button>'
     ).join('');
     $$('[data-bonus-day]',shop).forEach(btn=>btn.onclick=()=>buyBonusDays(btn.dataset.bonusDay));
