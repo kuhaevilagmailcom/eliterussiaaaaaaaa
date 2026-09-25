@@ -43,8 +43,8 @@
             <p id="homePlanNote">Выбери тариф и управляй подпиской здесь.</p>
           </div>
           <div class="hero-stats">
-            <div><i data-lucide="clock-3"></i><span><small>Осталось</small><b id="homeRemaining">—</b></span></div>
-            <div><i data-lucide="monitor-smartphone"></i><span><small>Устройства</small><b id="homeDeviceUsage">0 / 1</b></span></div>
+            <div><span class="stat-icon"><i data-lucide="calendar-days"></i></span><span><small>Осталось</small><b id="homeRemaining">—</b></span></div>
+            <div><span class="stat-icon"><i data-lucide="monitor-smartphone"></i></span><span><small>Устройства</small><b id="homeDeviceUsage">0 / 1</b></span></div>
           </div>
           <div class="progress"><span id="deviceProgress"></span></div>
           <button class="primary" id="homeSubscriptionAction" data-nav="plans">
@@ -53,20 +53,23 @@
           </button>
         </article>
 
-        <article class="link-card">
-          <div class="link-icon"><i data-lucide="link-2"></i></div>
-          <div class="link-copy">
-            <small>Персональная ссылка VPN</small>
-            <b id="linkTitle">Ссылка подключения</b>
-            <span id="linkActionNote">Проверяем доступность</span>
+        <article class="link-card" id="vpnLinkCard">
+          <div class="link-heading">
+            <span class="link-icon"><i data-lucide="link-2"></i></span>
+            <div class="link-copy">
+              <b id="linkTitle">Ваш VPN готов</b>
+              <span id="linkActionNote">Скопируйте ссылку и подключитесь на любом устройстве</span>
+            </div>
           </div>
-          <button class="copy-button" id="copySubscriptionHome" aria-label="Скопировать ссылку"><i data-lucide="copy"></i><span>Скопировать</span></button>
+          <div class="link-value"><code id="linkMasked">vpn.mgn••••••••</code><i data-lucide="copy"></i></div>
+          <button class="copy-button" id="copySubscriptionHome"><i data-lucide="copy"></i><span>Скопировать ссылку</span></button>
+          <button class="link-help" data-nav="support"><i data-lucide="circle-help"></i><span>Как подключить</span></button>
         </article>
 
-        <div class="section-title"><h3>Разделы</h3><span>быстрый доступ</span></div>
+        <div class="section-title"><h3>Быстрый доступ</h3></div>
         <div class="quick-grid">
           <button data-nav="devices"><span><i data-lucide="monitor-smartphone"></i></span><b>Устройства</b><small id="devicesActionNote">0 подключено</small></button>
-          <button data-nav="referrals"><span><i data-lucide="users-round"></i></span><b>Рефералы</b><small id="referralActionNote">Приглашено 0</small></button>
+          <button data-nav="plans"><span><i data-lucide="crown"></i></span><b>Тарифы</b><small>Продлить или изменить</small></button>
           <button data-nav="bonuses"><span><i data-lucide="gift"></i></span><b>Бонусы</b><small id="bonusActionNote">Получайте привилегии</small></button>
           <button data-nav="support"><span><i data-lucide="headphones"></i></span><b>Поддержка</b><small>Мы всегда на связи</small></button>
         </div>
