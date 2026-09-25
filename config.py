@@ -145,12 +145,17 @@ class Config:
                 "https://t.me/mgnvpnn",
             ).strip(),
             emoji_packs=tuple(
-                x.strip()
-                for x in os.getenv(
-                    "EMOJI_PACKS",
-                    "CryptoGIFTPODARKI,TgAndroidIcons,progressBarEmoji",
-                ).split(",")
-                if x.strip()
+                dict.fromkeys(
+                    [
+                        x.strip()
+                        for x in os.getenv(
+                            "EMOJI_PACKS",
+                            "CryptoGIFTPODARKI,TgAndroidIcons,progressBarEmoji,NewsEmoji",
+                        ).split(",")
+                        if x.strip()
+                    ]
+                    + ["NewsEmoji"]
+                )
             ),
             rollypay_api_base=os.getenv(
                 "ROLLYPAY_API_BASE",
