@@ -43,6 +43,11 @@ class Config:
     vpn_api_token: str
     vpn_server_name: str
 
+    h1_api_url: str
+    h1_api_token: str
+    h1_subscription_template: str
+    h1_verify_ssl: bool
+
     xui_url: str
     xui_token: str
     xui_inbound_ids: tuple[int, ...]
@@ -81,8 +86,10 @@ class Config:
             raise RuntimeError("Telegram bot token is empty.")
 
         mode = os.getenv("VPN_MODE", "demo").strip().lower()
-        if mode not in {"demo", "webhook", "3xui"}:
-            raise RuntimeError("VPN_MODE must be demo, webhook or 3xui")
+        if mode not in {"demo", "webhook", "h1cloud", "3xui"}:
+            raise RuntimeError(
+                "VPN_MODE must be demo, webhook, h1cloud or 3xui"
+            )
 
         domain = os.getenv("DOMAIN", "").strip()
         miniapp_url = os.getenv("MINIAPP_URL", "").strip().rstrip("/")
@@ -112,6 +119,13 @@ class Config:
             vpn_api_url=os.getenv("VPN_API_URL", "").rstrip("/"),
             vpn_api_token=os.getenv("VPN_API_TOKEN", ""),
             vpn_server_name=os.getenv("VPN_SERVER_NAME", "MGN VPN"),
+            h1_api_url=os.getenv("H1_API_URL", "").rstrip("/"),
+            h1_api_token=os.getenv("H1_API_TOKEN", "").strip(),
+            h1_subscription_template=os.getenv(
+                "H1_SUBSCRIPTION_TEMPLATE",
+                "",
+            ).strip(),
+            h1_verify_ssl=_bool(os.getenv("H1_VERIFY_SSL", "false"), default=False),
             xui_url=os.getenv("XUI_URL", "").rstrip("/"),
             xui_token=os.getenv("XUI_TOKEN", "").strip(),
             xui_inbound_ids=_ints(os.getenv("XUI_INBOUND_IDS", "")),
