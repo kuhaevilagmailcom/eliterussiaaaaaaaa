@@ -113,7 +113,9 @@
     const pct=Math.min(100,Math.round((used/limit)*100));
 
     $('#headerName').textContent=d.user.first_name||'MGN VPN';
-    $('#headerStatus').textContent=active?'Подписка активна':'Нет подписки';
+    const headerStatus=$('#headerStatus');
+    headerStatus.textContent=active?'Подписка активна':'Нет подписки';
+    headerStatus.classList.toggle('active',active);
 
     const status=$('#subscriptionStatus');
     status.classList.toggle('active',active);
@@ -133,9 +135,9 @@
     const hasLink=!!d.vpn.subscription_url;
     $('#copySubscriptionHome').disabled=!hasLink;
     $('#openHappHome').disabled=!hasLink;
-    $('#linkTitle').textContent=hasLink?'Персональная ссылка':'Ссылка подключения';
+    $('#linkTitle').textContent=hasLink?'Ваш VPN готов':'Ссылка подключения';
     $('#linkActionNote').textContent=hasLink
-      ? 'Только для вашего аккаунта'
+      ? 'Персональная ссылка только для вашего аккаунта'
       : (active?'Появится после подключения VPN-сервера':'Доступна с активной подпиской');
     let masked='mgnvpn.ru/••••••••';
     if(hasLink){
