@@ -12,6 +12,17 @@
   const $=(selector,root=document)=>root.querySelector(selector);
   const $$=(selector,root=document)=>[...root.querySelectorAll(selector)];
   const ROOT_PAGES=new Set(['home','plans','devices','profile']);
+  const PREVIEW_MODE=['localhost','127.0.0.1'].includes(location.hostname)&&new URLSearchParams(location.search).has('preview');
+  const PREVIEW_DATA={
+    user:{id:104928113,first_name:'Алексей',username:'alexey',photo_url:'',diamonds:320,referrals:7,referral_url:'https://t.me/mgnvpnbot?start=ref_104928113'},
+    subscription:{active:true,plan:'MGN Plus',until:'2026-10-23T18:00:00+05:00',remaining_seconds:2419200,max_devices:5,trial_used:true,trial_available:false},
+    vpn:{ready:true,ok:true,server:'MGN Russia',subscription_url:'https://vpn.mgn.example/sub/preview-access',traffic_used_gb:0,traffic_limit_gb:0,devices:[{id:'phone',name:'iPhone 16',platform:'iOS'},{id:'laptop',name:'MacBook Air',platform:'macOS'}]},
+    plans:[{code:'15',name:'15 дней',days:15,devices:5,rub:49,stars:50,diamonds:10},{code:'30',name:'1 месяц',days:30,devices:5,rub:99,stars:100,diamonds:25},{code:'365',name:'1 год',days:365,devices:5,rub:2000,stars:2000,diamonds:250},{code:'forever',name:'Навсегда',days:36500,devices:5,rub:3333,stars:3333,diamonds:500}],
+    payments:{sbp_enabled:true},
+    shop:{extra_device_cost:250,max_devices:10,days:[{code:'3d',days:3,cost:50},{code:'7d',days:7,cost:100},{code:'30d',days:30,cost:350}]},
+    diamond_history:[{reason:'Покупка VPN: 1 месяц',amount:25,created_at:'2026-09-24T12:00:00+05:00'}],
+    referral_rewards:{trial:15,first_paid:30},trial_channel_url:'https://t.me/mgnvpnn',bot_url:'https://t.me/mgnvpnbot'
+  };
   const state={
     data:null,
     page:'home',
@@ -122,15 +133,16 @@
     $('b',$('#homeSubscriptionAction')).textContent=active?'Продлить подписку':'Выбрать подписку';
 
     $('#devicesActionNote').textContent=active?(used+' из '+limit+' подключено'):'Нет активной подписки';
-    $('#referralActionNote').textContent='Приглашено '+Number(d.user.referrals||0);
     $('#bonusActionNote').textContent=Number(d.user.diamonds||0).toLocaleString('ru-RU')+' алмазов';
 
     const hasLink=!!d.vpn.subscription_url;
     $('#copySubscriptionHome').disabled=!hasLink;
-    $('#linkTitle').textContent=hasLink?'Готова к использованию':'Ссылка подключения';
+    $('#linkTitle').textContent=hasLink?'Ваш VPN готов':'Ссылка подключения';
     $('#linkActionNote').textContent=hasLink
-      ? 'Нажми, чтобы скопировать'
+      ? 'Скопируйте ссылку и подключитесь на любом устройстве'
       : (active?'Появится после подключения VPN-сервера':'Доступна с активной подпиской');
+    $('#linkMasked').textContent=hasLink?'vpn.mgn••••••••':'ссылка пока недоступна';
+    $('#vpnLinkCard').classList.toggle('unavailable',!hasLink);
 
     $('#trialCard').hidden=!d.subscription.trial_available;
     $('#serverWaitCard').hidden=!(active&&!d.vpn.ready);
@@ -228,7 +240,7 @@
     $('#bonusDevicePrice').textContent=Number(d.shop.extra_device_cost||0)+' 💎 · постоянный слот';
 
     const shop=$('#bonusShop');
-    shop.innerHTML=(d.shop.vpn_days||[]).map(item=>
+    shop.innerHTML=(d.shop.days||[]).map(item=>
       '<button data-bonus-day="'+esc(item.code)+'"><b>+'+Number(item.days)+' дн.</b><small>VPN-доступ</small><em>'+Number(item.cost)+' 💎</em></button>'
     ).join('');
     $$('[data-bonus-day]',shop).forEach(btn=>btn.onclick=()=>buyBonusDays(btn.dataset.bonusDay));
@@ -274,7 +286,7 @@
 
   async function load(silent=false){
     try{
-      state.data=await request('/api/miniapp/me?_='+Date.now());
+      state.data=PREVIEW_MODE?structuredClone(PREVIEW_DATA):await request('/api/miniapp/me?_='+Date.now());
       render();
     }catch(error){
       $('#loader').classList.add('hidden');
@@ -467,7 +479,9 @@
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state.data)load(true)});
 
   icons();
-  if(!tg?.initData){
+  if(PREVIEW_MODE){
+    load();
+  }else if(!tg?.initData){
     $('#loader').classList.add('hidden');
     toast('Открой Mini App внутри Telegram');
   }else{

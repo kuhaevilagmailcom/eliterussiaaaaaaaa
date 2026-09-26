@@ -8,13 +8,13 @@
   <title>MGN VPN</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=3">
+  <link rel="stylesheet" href="/static/styles.css?v=4">
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
       <button class="brand" data-nav="home" aria-label="MGN VPN">
-        <img src="/static/assets/mgn-vpn-logo.webp" alt="MGN VPN">
+        <img src="/static/assets/mgn-vpn-logo.png" alt="MGN VPN">
       </button>
       <button class="user-chip" data-nav="profile" aria-label="Профиль">
         <span>
@@ -27,11 +27,6 @@
 
     <main>
       <section class="page active" data-page="home">
-        <div class="page-intro compact">
-          <span class="eyebrow">МОЙ MGN VPN</span>
-          <h1>Всё под контролем</h1>
-        </div>
-
         <article class="hero-card">
           <div class="hero-head">
             <span class="status" id="subscriptionStatus"><i></i><b>Проверяем</b></span>
@@ -43,8 +38,8 @@
             <p id="homePlanNote">Выбери тариф и управляй подпиской здесь.</p>
           </div>
           <div class="hero-stats">
-            <div><i data-lucide="clock-3"></i><span><small>Осталось</small><b id="homeRemaining">—</b></span></div>
-            <div><i data-lucide="monitor-smartphone"></i><span><small>Устройства</small><b id="homeDeviceUsage">0 / 1</b></span></div>
+            <div><span class="stat-icon"><i data-lucide="calendar-days"></i></span><span><small>Осталось</small><b id="homeRemaining">—</b></span></div>
+            <div><span class="stat-icon"><i data-lucide="monitor-smartphone"></i></span><span><small>Устройства</small><b id="homeDeviceUsage">0 / 1</b></span></div>
           </div>
           <div class="progress"><span id="deviceProgress"></span></div>
           <button class="primary" id="homeSubscriptionAction" data-nav="plans">
@@ -53,20 +48,23 @@
           </button>
         </article>
 
-        <article class="link-card">
-          <div class="link-icon"><i data-lucide="link-2"></i></div>
-          <div class="link-copy">
-            <small>Персональная ссылка VPN</small>
-            <b id="linkTitle">Ссылка подключения</b>
-            <span id="linkActionNote">Проверяем доступность</span>
+        <article class="link-card" id="vpnLinkCard">
+          <div class="link-heading">
+            <span class="link-icon"><i data-lucide="link-2"></i></span>
+            <div class="link-copy">
+              <b id="linkTitle">Ваш VPN готов</b>
+              <span id="linkActionNote">Скопируйте ссылку и подключитесь на любом устройстве</span>
+            </div>
           </div>
-          <button class="copy-button" id="copySubscriptionHome" aria-label="Скопировать ссылку"><i data-lucide="copy"></i><span>Скопировать</span></button>
+          <div class="link-value"><code id="linkMasked">vpn.mgn••••••••</code><i data-lucide="copy"></i></div>
+          <button class="copy-button" id="copySubscriptionHome"><i data-lucide="copy"></i><span>Скопировать ссылку</span></button>
+          <button class="link-help" data-nav="support"><i data-lucide="circle-help"></i><span>Как подключить</span></button>
         </article>
 
-        <div class="section-title"><h3>Разделы</h3><span>быстрый доступ</span></div>
+        <div class="section-title"><h3>Быстрый доступ</h3></div>
         <div class="quick-grid">
           <button data-nav="devices"><span><i data-lucide="monitor-smartphone"></i></span><b>Устройства</b><small id="devicesActionNote">0 подключено</small></button>
-          <button data-nav="referrals"><span><i data-lucide="users-round"></i></span><b>Рефералы</b><small id="referralActionNote">Приглашено 0</small></button>
+          <button data-nav="plans"><span><i data-lucide="crown"></i></span><b>Тарифы</b><small>Продлить или изменить</small></button>
           <button data-nav="bonuses"><span><i data-lucide="gem"></i></span><b>Бонусы</b><small id="bonusActionNote">0 алмазов</small></button>
           <button data-nav="support"><span><i data-lucide="headphones"></i></span><b>Поддержка</b><small>Поможем разобраться</small></button>
         </div>
@@ -232,8 +230,8 @@
   </section>
 
   <div class="toast" id="toast"></div>
-  <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp" alt="MGN VPN"><span><i></i></span></div>
+  <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.png" alt="MGN VPN"><span><i></i></span></div>
 
-  <script src="/static/app.js?v=3"></script>
+  <script src="/static/app.js?v=4"></script>
 </body>
 </html>

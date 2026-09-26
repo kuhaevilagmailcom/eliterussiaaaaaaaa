@@ -445,7 +445,7 @@ class MiniAppServer:
         await self.db.set_sbp_status(payment_id, status or "processing")
         return web.json_response({"status": status or "processing"})
 
-    async def buy_bonus_days(self, request: web.Request) -> web.Response:
+    async def buy_bonus_days_by_code(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
         code = str(request.match_info.get("code") or "")
         item = DIAMOND_SHOP_DAYS.get(code)
@@ -595,7 +595,7 @@ class MiniAppServer:
         app.router.add_post("/api/miniapp/payment/stars", self.stars_invoice)
         app.router.add_post("/api/miniapp/payment/sbp", self.sbp_create)
         app.router.add_get("/api/miniapp/payment/sbp/{payment_id}", self.sbp_check)
-        app.router.add_post("/api/miniapp/shop/days/{code}", self.buy_bonus_days)
+        app.router.add_post("/api/miniapp/shop/days/{code}", self.buy_bonus_days_by_code)
         app.router.add_post("/api/miniapp/shop/device", self.buy_extra_device)
         app.router.add_post("/api/miniapp/shop/days", self.buy_bonus_days)
         app.router.add_delete("/api/miniapp/devices/{device_id}", self.delete_device)
