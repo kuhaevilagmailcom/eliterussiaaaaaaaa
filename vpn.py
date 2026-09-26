@@ -766,7 +766,7 @@ class H1CloudVpnProvider(VpnProvider):
                         device_limit=device_limit,
                         prefix=prefix,
                     ),
-                    timeout=9.0,
+                    timeout=20.0,
                 )
                 logger.info(
                     "H1Cloud federation node %s synced for %s",
