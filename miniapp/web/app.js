@@ -4,14 +4,14 @@
     try{
       tg.ready();
       tg.expand();
-      tg.setHeaderColor?.('#595a5e');
-      tg.setBackgroundColor?.('#595a5e');
+      tg.setHeaderColor?.('#000000');
+      tg.setBackgroundColor?.('#000000');
     }catch(_){}
   }
 
   const $=(selector,root=document)=>root.querySelector(selector);
   const $$=(selector,root=document)=>[...root.querySelectorAll(selector)];
-  const ROOT_PAGES=new Set(['home','plans','devices','profile']);
+  const ROOT_PAGES=new Set(['home','plans','profile']);
   const state={
     data:null,
     page:'home',
@@ -124,22 +124,30 @@
     $('#homeRemaining').textContent=active?fmtRemain(d.subscription.remaining_seconds):'—';
     $('#homeDeviceUsage').textContent=used+' из '+limit;
     $('#deviceProgress').style.width=pct+'%';
-    $('b',$('#homeSubscriptionAction')).textContent=active?'Продлить подписку':'Выбрать подписку';
+    $('b',$('#homeSubscriptionAction')).textContent=active?'Продлить VPN':'Купить VPN';
 
-    $('#devicesActionNote').textContent=active?(used+' из '+limit+' активны'):'Нет активной подписки';
+    $('#devicesActionNote').textContent=active?(used+' из '+limit+' устройств'):'Профиль и настройки';
 
-    $('#bonusActionNote').textContent='Скидка или бесплатные дни';
+    $('#bonusActionNote').textContent=active?'Промокод и скидка':'Скидка или бесплатные дни';
 
     const hasLink=!!d.vpn.subscription_url;
     $('#copySubscriptionHome').disabled=!hasLink;
-    $('#linkTitle').textContent=hasLink?'Ваш VPN готов':'Ссылка подключения';
+    $('#openHappHome').disabled=!hasLink;
+    $('#linkTitle').textContent=hasLink?'Персональная ссылка':'Ссылка подключения';
     $('#linkActionNote').textContent=hasLink
-      ? 'Скопируйте ссылку и подключитесь на любом устройстве'
+      ? 'Только для вашего аккаунта'
       : (active?'Появится после подключения VPN-сервера':'Доступна с активной подпиской');
-    $('#linkMasked').textContent=hasLink?'vpn.mgn••••••••':'ссылка пока недоступна';
+    let masked='mgnvpn.ru/••••••••';
+    if(hasLink){
+      try{
+        const parsed=new URL(d.vpn.subscription_url);
+        masked=parsed.hostname+'/••••••••';
+      }catch(_){}
+    }else masked='ссылка пока недоступна';
+    $('#linkMasked').textContent=masked;
     $('#vpnLinkCard').classList.toggle('unavailable',!hasLink);
 
-    const trialAvailable=!!d.subscription.trial_available;
+    const trialAvailable=!active&&!!d.subscription.trial_available;
     const trialMember=!!d.subscription.trial_channel_member;
     $('#trialCard').hidden=!trialAvailable;
     if(trialAvailable){
@@ -191,9 +199,9 @@
     const list=d.vpn.devices||[];
     const limit=Math.max(1,Number(d.subscription.max_devices||1));
     const used=list.length;
-    $('#deviceCount').textContent=used;
-    $('#deviceLimit').textContent=limit;
-    $('#deviceCapacityBar').style.width=Math.min(100,(used/limit)*100)+'%';
+    if($('#deviceCount'))$('#deviceCount').textContent=used;
+    if($('#deviceLimit'))$('#deviceLimit').textContent=limit;
+    if($('#deviceCapacityBar'))$('#deviceCapacityBar').style.width=Math.min(100,(used/limit)*100)+'%';
     $('#buyDevicePrice').textContent='+1 постоянный слот · '+Number(d.shop.extra_device_price_rub||100)+' ₽';
 
     const root=$('#deviceList');
@@ -229,7 +237,9 @@
     $('#profileUsername').textContent=d.user.username?('@'+d.user.username):'Telegram';
     $('#profileRewards').textContent='+'+Number(d.user.referral_rewards||0);
     $('#profileRefs').textContent=Number(d.user.referrals||0).toLocaleString('ru-RU');
-    $('#profileDevices').textContent=Number(d.subscription.max_devices||1);
+    const used=(d.vpn.devices||[]).length;
+    const limit=Math.max(1,Number(d.subscription.max_devices||1));
+    $('#profileDevices').textContent=used+' / '+limit;
     $('#profilePlan').textContent=d.subscription.active
       ? (d.subscription.plan+' · '+fmtRemain(d.subscription.remaining_seconds))
       : 'Нет активной подписки';
@@ -249,16 +259,30 @@
 
   function renderClients(){
     const root=$('#clientList');
-    root.innerHTML=(state.data.clients||[]).map(client=>
-      '<button type="button" data-client="'+esc(client.import_url||client.download_url)+'">'+
-      '<span class="icon-box">'+esc(client.icon||'📱')+'</span><span><b>'+esc(client.name)+'</b><small>'+esc(client.platform)+'</small></span>'+
-      '<span>'+(client.supports_subscription_import?'Добавить':'Скачать')+'</span></button>'
-    ).join('')||'<div class="empty">Сначала активируйте подписку.</div>';
-    $$('[data-client]',root).forEach(btn=>btn.onclick=()=>{
-      const url=btn.dataset.client;if(!url)return;
-      try{tg?.openLink?tg.openLink(url):window.location.href=url}catch(_){window.location.href=url}
-    });
+    if(!root)return;
+    const client=(state.data.clients||[]).find(item=>String(item.name||'').toLowerCase()==='happ');
+    if(!client){
+      root.innerHTML='<div class="empty">Happ станет доступен после активации подписки.</div>';
+      return;
+    }
+    const target=client.import_url||client.download_url||'';
+    root.innerHTML=
+      '<button type="button" data-client="'+esc(target)+'">'+
+      '<span class="icon-box"><i data-lucide="shield-check"></i></span>'+
+      '<span><b>Happ</b><small>'+esc(client.platform||'VPN-клиент')+'</small></span>'+
+      '<span>'+(client.supports_subscription_import?'Добавить':'Установить')+'</span></button>';
+    const button=$('[data-client]',root);
+    if(button)button.onclick=()=>openClientUrl(button.dataset.client||'');
   }
+
+  function openClientUrl(url){
+    if(!url)return;
+    try{
+      if(/^https?:/i.test(url)&&tg?.openLink)tg.openLink(url);
+      else window.location.href=url;
+    }catch(_){window.location.href=url}
+  }
+
 
   function render(){
     if(!state.data)return;
@@ -485,7 +509,7 @@
 
   let trialRefreshTimer=0;
   function refreshTrialState(){
-    if(!state.data?.subscription?.trial_available)return;
+    if(state.data?.subscription?.active||!state.data?.subscription?.trial_available)return;
     clearTimeout(trialRefreshTimer);
     trialRefreshTimer=setTimeout(()=>load(true),250);
   }
@@ -509,25 +533,62 @@
     if(!url){toast(state.data?.subscription?.active?'Ссылка пока недоступна':'Сначала активируй подписку');return}
     copyText(url,'Ссылка VPN скопирована');
   }
+  function openHapp(){
+    const client=(state.data?.clients||[]).find(item=>String(item.name||'').toLowerCase()==='happ');
+    const url=client?.import_url||client?.download_url||'';
+    if(!url){
+      toast(state.data?.subscription?.active?'Happ пока недоступен':'Сначала активируй подписку');
+      return;
+    }
+    openClientUrl(url);
+  }
+
+  async function submitSupport(){
+    if(state.busy)return;
+    const field=$('#supportMessage');
+    const resultEl=$('#supportResult');
+    const message=String(field?.value||'').trim();
+    if(!message){
+      if(resultEl)resultEl.textContent='Напишите сообщение';
+      field?.focus();
+      return;
+    }
+    state.busy=true;
+    const button=$('#supportSubmit');
+    if(button)button.disabled=true;
+    try{
+      const result=await request('/api/miniapp/support',{
+        method:'POST',
+        body:JSON.stringify({message})
+      });
+      if(field)field.value='';
+      const counter=$('#supportCounter');if(counter)counter.textContent='0';
+      if(resultEl)resultEl.textContent='Обращение #'+Number(result.ticket?.id||0)+' отправлено. Ответ придёт в Telegram.';
+      notify();
+      toast('Обращение отправлено');
+    }catch(error){
+      if(resultEl)resultEl.textContent=error.message||'Не удалось отправить обращение';
+      notify('error');
+    }finally{
+      state.busy=false;
+      if(button)button.disabled=false;
+    }
+  }
+
   function shareReferral(){
     const url=state.data?.user?.referral_url;if(!url)return;
     const share='https://t.me/share/url?url='+encodeURIComponent(url)+'&text='+encodeURIComponent('Подключай MGN VPN');
     try{tg?.openTelegramLink?tg.openTelegramLink(share):window.open(share,'_blank')}catch(_){window.open(share,'_blank')}
   }
-  function openSupport(){
-    const url=state.data?.bot_url;if(!url)return;
-    try{tg?.openTelegramLink?tg.openTelegramLink(url):window.open(url,'_blank')}catch(_){window.open(url,'_blank')}
-  }
-
   $$('[data-nav]').forEach(btn=>btn.addEventListener('click',()=>go(btn.dataset.nav)));
   $('#copySubscriptionHome').onclick=copySubscription;
+  $('#openHappHome').onclick=openHapp;
   $('#copySubscriptionPlans').onclick=copySubscription;
   $('#trialBtn').onclick=activateTrial;
   $('#buyDevicePage').onclick=openDeviceSheet;
   $('#resetDevicesPage').onclick=resetDevices;
   $('#copyReferral').onclick=()=>copyText(state.data?.user?.referral_url||'','Реферальная ссылка скопирована');
   $('#shareReferral').onclick=shareReferral;
-  $('#supportChat').onclick=openSupport;
   $('#copyId').onclick=()=>copyText(state.data?.user?.id||'','Telegram ID скопирован');
 
   $('#sheetClose').onclick=closeSheets;
@@ -539,6 +600,13 @@
   $('#confirmDevicePurchase').onclick=buyExtraDevice;
   $('#applyPaymentPromo').onclick=applyPaymentPromo;
   $('#redeemPromo').onclick=redeemPromo;
+  $('#supportSubmit').onclick=submitSupport;
+  $('#supportMessage').addEventListener('input',event=>{
+    const counter=$('#supportCounter');
+    if(counter)counter.textContent=String(event.target.value.length);
+    const result=$('#supportResult');
+    if(result)result.textContent='';
+  });
 
   window.addEventListener('focus',refreshTrialState);
   document.addEventListener('visibilitychange',()=>{
