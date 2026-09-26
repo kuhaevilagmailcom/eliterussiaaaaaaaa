@@ -188,6 +188,10 @@
     $('#buyDevicePrice').textContent='+1 постоянный слот · '+Number(d.shop.extra_device_price_rub||100)+' ₽';
 
     const root=$('#deviceList');
+    const canRemove=Boolean(d.capabilities?.device_removal);
+    const canReset=Boolean(d.capabilities?.device_reset);
+    const resetButton=$('#resetDevicesPage');
+    if(resetButton)resetButton.hidden=!(d.subscription.active&&canReset&&list.length);
     if(!d.subscription.active){
       root.innerHTML='<div class="empty">После активации подписки здесь появятся подключённые устройства.</div>';
     }else if(!d.vpn.ready){
@@ -202,7 +206,7 @@
         return '<article class="device">'+
           '<span class="device-symbol"><i data-lucide="'+deviceIcon(item)+'"></i></span>'+
           '<span class="device-copy"><b>'+name+'</b><small>'+platform+'</small></span>'+
-          (id?'<button type="button" class="device-remove" aria-label="Отключить устройство" data-remove="'+encodeURIComponent(id)+'"><i data-lucide="trash-2"></i></button>':'')+
+          (id&&canRemove?'<button type="button" class="device-remove" aria-label="Отключить устройство" data-remove="'+encodeURIComponent(id)+'"><i data-lucide="trash-2"></i></button>':'')+
         '</article>';
       }).join('');
       $$('[data-remove]',root).forEach(btn=>btn.onclick=()=>removeDevice(decodeURIComponent(btn.dataset.remove)));
@@ -385,6 +389,18 @@
     }catch(error){notify('error');toast(error.message)}
   }
 
+  async function resetDevices(){
+    let ok=true;
+    const message='Сбросить все устройства? Старые VPN-конфигурации перестанут работать. Персональная ссылка MGN VPN останется прежней.';
+    if(tg?.showConfirm)ok=await new Promise(resolve=>tg.showConfirm(message,resolve));
+    else ok=window.confirm(message);
+    if(!ok)return;
+    try{
+      await request('/api/miniapp/devices/reset',{method:'POST',body:'{}'});
+      notify();toast('Все устройства сброшены');await load(true);
+    }catch(error){notify('error');toast(error.message)}
+  }
+
   async function buyExtraDevice(){
     if(state.busy)return;
     state.busy=true; $('#confirmDevicePurchase').disabled=true;
@@ -470,6 +486,7 @@
   $('#copySubscriptionPlans').onclick=copySubscription;
   $('#trialBtn').onclick=activateTrial;
   $('#buyDevicePage').onclick=openDeviceSheet;
+  $('#resetDevicesPage').onclick=resetDevices;
   $('#copyReferral').onclick=()=>copyText(state.data?.user?.referral_url||'','Реферальная ссылка скопирована');
   $('#shareReferral').onclick=shareReferral;
   $('#supportChat').onclick=openSupport;
