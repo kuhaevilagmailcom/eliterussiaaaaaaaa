@@ -529,41 +529,46 @@ class H1CloudVpnProvider(VpnProvider):
         return selected
 
     async def _federated_nodes(self) -> list[dict[str, Any]]:
-        # /fed/registry is the lightweight source of linked node IDs. /fed/lagg
-        # performs remote status/inbound/client requests for every node and is
-        # far too slow for a VPN subscription refresh.
-        data: dict[str, Any] | None = None
+        # IMPORTANT: /fed/lproxy/<sid>/... works with BILLING-LINKED server IDs
+        # stored by /fed/link. /fed/registry is a different, manual federation
+        # store with its own node IDs/tokens and those IDs are NOT valid for
+        # lproxy. Mixing the two made subscriptions contain only the main NL
+        # node.
         try:
             data = await asyncio.wait_for(
-                self._request("GET", "/fed/registry"),
-                timeout=1.2,
+                self._request("GET", "/fed/link"),
+                timeout=1.5,
             )
+            if isinstance(data, dict):
+                raw_links = data.get("links")
+                if isinstance(raw_links, list):
+                    nodes: list[dict[str, Any]] = []
+                    seen: set[str] = set()
+                    for value in raw_links:
+                        sid = str(value or "").strip()
+                        if sid and sid not in seen:
+                            seen.add(sid)
+                            nodes.append({"id": sid})
+                    return nodes
         except Exception as exc:
             logger.warning(
-                "H1Cloud /fed/registry unavailable, trying aggregate fallback: %s",
+                "H1Cloud /fed/link unavailable, trying lagg fallback: %s",
                 str(exc).strip() or type(exc).__name__,
             )
-            try:
-                data = await asyncio.wait_for(
-                    self._request("GET", "/fed/lagg"),
-                    timeout=2.0,
-                )
-            except Exception:
-                return []
+
+        # Fallback for older H1 builds: lagg returns the same linked billing
+        # server IDs, but is heavier because it also probes the remote nodes.
+        try:
+            data = await asyncio.wait_for(
+                self._request("GET", "/fed/lagg"),
+                timeout=3.0,
+            )
+        except Exception:
+            return []
 
         if not isinstance(data, dict):
             return []
         raw = data.get("nodes")
-        if not isinstance(raw, list):
-            raw = data.get("items")
-        if not isinstance(raw, list):
-            for key in ("data", "result"):
-                nested = data.get(key)
-                if isinstance(nested, dict):
-                    candidate = nested.get("nodes")
-                    if isinstance(candidate, list):
-                        raw = candidate
-                        break
         if not isinstance(raw, list):
             return []
         return [dict(item) for item in raw if isinstance(item, dict)]
