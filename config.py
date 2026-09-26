@@ -9,6 +9,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Canonical BotHost public endpoint. This is not a secret and is used as the
+# safe fallback for Telegram Mini App and public subscription URLs.
+DEFAULT_PUBLIC_BASE_URL = "https://bot-1790078948-4568-furadev.bothost.tech"
+LEGACY_PUBLIC_BASE_URLS = {
+    "https://bot-1789383103-4489-furadev.bothost.tech",
+    "http://bot-1789383103-4489-furadev.bothost.tech",
+}
+
+
 
 def _ints(value: str) -> tuple[int, ...]:
     result: list[int] = []
@@ -129,11 +138,17 @@ class Config:
             return "https://" + value.lstrip("/")
 
         # Telegram Mini Apps and public subscription links must always be HTTPS.
-        # Reverse proxies may expose the app to Python as HTTP internally; that
-        # internal scheme must never leak into links sent to users.
-        if not public_base_url and domain:
-            public_base_url = domain
-        miniapp_url = _https_public_url(public_base_url or explicit_miniapp_url)
+        # A custom DOMAIN/PUBLIC_BASE_URL still wins. Known stale BotHost URLs
+        # are migrated automatically so an old hosting env does not keep
+        # generating dead Mini App or /sub links after a BotHost redeploy.
+        configured_public = _https_public_url(
+            public_base_url or domain or explicit_miniapp_url
+        )
+        if configured_public in {
+            _https_public_url(value) for value in LEGACY_PUBLIC_BASE_URLS
+        }:
+            configured_public = DEFAULT_PUBLIC_BASE_URL
+        miniapp_url = configured_public or DEFAULT_PUBLIC_BASE_URL
 
         return cls(
             bot_token=token,
