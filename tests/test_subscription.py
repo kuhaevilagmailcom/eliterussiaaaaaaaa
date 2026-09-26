@@ -24,6 +24,9 @@ def test_h1_capabilities_are_explicit():
 
 
 def test_h1_converts_absolute_expiry_to_panel_days():
+    assert H1CloudVpnProvider._desired_expiry(
+        {"subscription_until": "1970-01-02T00:00:00+00:00"}
+    ) == 86400
     assert H1CloudVpnProvider._days_until(100 + 86400, since=100) == 1
     assert H1CloudVpnProvider._days_until(100 + 86401, since=100) == 2
     assert H1CloudVpnProvider._expiry_timestamp({"expires_at": "1970-01-02T00:00:00+00:00"}) == 86400

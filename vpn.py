@@ -307,6 +307,10 @@ class H1CloudVpnProvider(VpnProvider):
         value = user.get("subscription_until")
         if not value:
             return 0
+        try:
+            return int(datetime.fromisoformat(str(value)).timestamp())
+        except (TypeError, ValueError):
+            return 0
 
     @staticmethod
     def _expiry_timestamp(client: dict[str, Any] | None) -> int:
@@ -335,10 +339,6 @@ class H1CloudVpnProvider(VpnProvider):
     def _days_until(expires_at: int, *, since: int | None = None) -> int:
         start = int(datetime.now().timestamp()) if since is None else int(since)
         return max(1, math.ceil((int(expires_at) - start) / 86400))
-        try:
-            return int(datetime.fromisoformat(str(value)).timestamp())
-        except (TypeError, ValueError):
-            return 0
 
     async def _request(
         self,
