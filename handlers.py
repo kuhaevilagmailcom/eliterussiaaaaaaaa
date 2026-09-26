@@ -516,6 +516,8 @@ def build_router(
     banner_file_id_path = Path(config.db_path).with_name("main_menu_banner_file_id.txt")
 
     def current_main_menu_banner():
+        # A Telegram file_id is the preferred source: no decoding, no image
+        # processing and no quality loss. /setbanner persists it next to DB.
         try:
             file_id = banner_file_id_path.read_text(encoding="utf-8").strip()
             if file_id:
@@ -524,6 +526,10 @@ def build_router(
             pass
         except Exception:
             logger.exception("Could not read saved main-menu banner file_id")
+
+        if config.main_menu_banner_file_id:
+            return config.main_menu_banner_file_id
+
         return main_menu_banner()
 
     def save_main_menu_banner_file_id(file_id: str) -> None:
@@ -1043,18 +1049,26 @@ def build_router(
             return
 
         source_message = message.reply_to_message or message
-        if not source_message.photo:
+        file_id = ""
+
+        if source_message.photo:
+            file_id = source_message.photo[-1].file_id
+        else:
+            parts = (message.text or "").split(maxsplit=1)
+            if len(parts) == 2:
+                file_id = parts[1].strip()
+
+        if not file_id:
             await message.answer(
-                "Пришли нужную картинку как фото с подписью /setbanner "
-                "или ответь командой /setbanner на фото."
+                "Пришли нужную картинку как фото с подписью /setbanner, "
+                "ответь /setbanner на фото или передай Telegram file_id после команды."
             )
             return
 
-        photo = source_message.photo[-1]
-        save_main_menu_banner_file_id(photo.file_id)
+        save_main_menu_banner_file_id(file_id)
 
-        # Update the existing main-menu message in place. No delete, no new
-        # confirmation message, no duplicate banner.
+        # Refresh the tracked menu immediately. Telegram keeps using its own
+        # file_id afterwards, so the image is not re-uploaded on every screen.
         await show_home(message, message.from_user)
 
     @router.message(CommandStart())
