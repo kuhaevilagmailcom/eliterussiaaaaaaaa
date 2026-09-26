@@ -118,16 +118,22 @@ class Config:
         explicit_miniapp_url = os.getenv("MINIAPP_URL", "").strip().rstrip("/")
         public_base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
 
-        # BotHost exposes DOMAIN automatically. Prefer the actually deployed
-        # public host over a stale MINIAPP_URL so the bot and Mini App always
-        # return the same stable /sub/<token> URL.
+        def _https_public_url(value: str) -> str:
+            value = str(value or "").strip().rstrip("/")
+            if not value:
+                return ""
+            if value.startswith("http://"):
+                return "https://" + value[len("http://"):]
+            if value.startswith("https://"):
+                return value
+            return "https://" + value.lstrip("/")
+
+        # Telegram Mini Apps and public subscription links must always be HTTPS.
+        # Reverse proxies may expose the app to Python as HTTP internally; that
+        # internal scheme must never leak into links sent to users.
         if not public_base_url and domain:
-            public_base_url = (
-                domain.rstrip("/")
-                if domain.startswith(("http://", "https://"))
-                else f"https://{domain.rstrip('/')}"
-            )
-        miniapp_url = public_base_url or explicit_miniapp_url
+            public_base_url = domain
+        miniapp_url = _https_public_url(public_base_url or explicit_miniapp_url)
 
         return cls(
             bot_token=token,
