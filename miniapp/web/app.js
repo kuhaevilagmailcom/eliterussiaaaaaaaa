@@ -139,7 +139,16 @@
     $('#linkMasked').textContent=hasLink?'vpn.mgn••••••••':'ссылка пока недоступна';
     $('#vpnLinkCard').classList.toggle('unavailable',!hasLink);
 
-    $('#trialCard').hidden=!d.subscription.trial_available;
+    const trialAvailable=!!d.subscription.trial_available;
+    const trialMember=!!d.subscription.trial_channel_member;
+    $('#trialCard').hidden=!trialAvailable;
+    if(trialAvailable){
+      $('#trialTitle').textContent=trialMember?'1 день готов':'Бесплатный день';
+      $('#trialText').textContent=trialMember
+        ? 'Подписка на канал подтверждена. Забери бесплатный день VPN.'
+        : 'Подпишись на канал MGN VPN, затем вернись сюда.';
+      $('#trialBtn').textContent=trialMember?'Забрать 1 день':'Подписаться';
+    }
     $('#serverWaitCard').hidden=!(active&&!d.vpn.ready);
   }
 
@@ -442,14 +451,43 @@
   }
 
   async function activateTrial(){
-    const d=state.data;if(!d)return;
-    if(d.trial_channel_url){
-      try{tg?.openTelegramLink?tg.openTelegramLink(d.trial_channel_url):window.open(d.trial_channel_url,'_blank')}catch(_){}
+    const d=state.data;if(!d||!d.subscription.trial_available)return;
+
+    if(!d.subscription.trial_channel_member){
+      if(d.trial_channel_url){
+        try{
+          tg?.openTelegramLink
+            ? tg.openTelegramLink(d.trial_channel_url)
+            : window.open(d.trial_channel_url,'_blank');
+        }catch(_){}
+      }
+      toast('Подпишись на канал и вернись сюда');
+      return;
     }
-    setTimeout(async()=>{
-      try{await request('/api/miniapp/trial',{method:'POST',body:'{}'});notify();toast('Бесплатный день активирован');await load(true)}
-      catch(error){toast(error.message)}
-    },700);
+
+    if(state.busy)return;
+    state.busy=true;
+    $('#trialBtn').disabled=true;
+    try{
+      await request('/api/miniapp/trial',{method:'POST',body:'{}'});
+      notify();
+      toast('1 день VPN активирован');
+      await load(true);
+    }catch(error){
+      notify('error');
+      toast(error.message);
+      await load(true);
+    }finally{
+      state.busy=false;
+      $('#trialBtn').disabled=false;
+    }
+  }
+
+  let trialRefreshTimer=0;
+  function refreshTrialState(){
+    if(!state.data?.subscription?.trial_available)return;
+    clearTimeout(trialRefreshTimer);
+    trialRefreshTimer=setTimeout(()=>load(true),250);
   }
 
   async function copyText(text,success){
@@ -501,6 +539,11 @@
   $('#confirmDevicePurchase').onclick=buyExtraDevice;
   $('#applyPaymentPromo').onclick=applyPaymentPromo;
   $('#redeemPromo').onclick=redeemPromo;
+
+  window.addEventListener('focus',refreshTrialState);
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState==='visible')refreshTrialState();
+  });
 
   try{
     tg?.BackButton?.onClick(()=>{
