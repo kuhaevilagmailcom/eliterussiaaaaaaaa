@@ -193,6 +193,37 @@ def test_admin_users_screen_fits_telegram_caption_and_search_does_not_collide(tm
     asyncio.run(run())
 
 
+def test_admin_grant_notifies_recipient_with_devices_and_connect_button(tmp_path, monkeypatch):
+    monkeypatch.setenv('BOT_TOKEN', TOKEN)
+
+    async def run():
+        config = replace(Config.from_env(), admin_ids=(1,), db_path=str(tmp_path/'grant.db'))
+        db = Database(config.db_path)
+        await db.init()
+        await db.ensure_user(1, 'owner', 'Owner')
+        await db.ensure_user(42, 'recipient', 'Recipient')
+        bot = SimpleNamespace(
+            send_message=AsyncMock(),
+            send_photo=AsyncMock(return_value=SimpleNamespace(message_id=88)),
+        )
+        message = SimpleNamespace(bot=bot, chat=SimpleNamespace(id=1))
+        callback = SimpleNamespace(
+            from_user=SimpleNamespace(id=1, username='owner', first_name='Owner'),
+            answer=AsyncMock(), message=message, data='admin:grant:42:30',
+        )
+        provider = SimpleNamespace(service_ready=False, provision=AsyncMock())
+        router = build_router(config, db, EmojiBank(()), provider)
+        handler = next(item for item in router.callback_query.handlers if item.callback.__name__ == 'admin_grant_callback')
+        await handler.callback(callback)
+        notice = bot.send_message.await_args.kwargs
+        assert notice['chat_id'] == 42
+        assert 'на 30 дней' in notice['text']
+        assert 'до 1' in notice['text']
+        assert notice['reply_markup'].inline_keyboard[0][0].callback_data == 'menu:connect'
+
+    asyncio.run(run())
+
+
 def test_secret_logging_redacts_urls_and_values():
     formatter = SecretSafeFormatter(SimpleNamespace(bot_token='private-value', h1_api_token='secret-provider'))
     record = logging.LogRecord('test', logging.WARNING, '', 1, 'private-value secret-provider https://mgnvpn.ru/sub/private-token /client/happ/another-token', (), None)

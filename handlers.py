@@ -1937,6 +1937,46 @@ def build_router(
                 str(exc).strip() or type(exc).__name__,
             )
 
+    def days_label(days: int) -> str:
+        value = abs(int(days))
+        if value % 10 == 1 and value % 100 != 11:
+            word = "день"
+        elif value % 10 in {2, 3, 4} and value % 100 not in {12, 13, 14}:
+            word = "дня"
+        else:
+            word = "дней"
+        return f"{value} {word}"
+
+    async def notify_subscription_granted(bot, user: dict[str, Any], days: int) -> None:
+        telegram_id = int(user["telegram_id"])
+        device_limit = max(1, min(MAX_DEVICES, int(user.get("max_devices") or BASE_DEVICES)))
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "Подключить VPN",
+                callback_data="menu:connect",
+                icon_index=2,
+            )
+        )
+        try:
+            await bot.send_message(
+                chat_id=telegram_id,
+                text=(
+                    "🎁 <b>Вам подарили подписку MGN VPN "
+                    f"на {days_label(days)}</b>\n\n"
+                    f"Доступно устройств: <b>до {device_limit}</b>"
+                ),
+                reply_markup=kb.as_markup(),
+            )
+        except TelegramForbiddenError:
+            logger.info("Could not notify user %s about admin subscription grant: bot is blocked", telegram_id)
+        except Exception as exc:
+            logger.warning(
+                "Could not notify user %s about admin subscription grant: %s",
+                telegram_id,
+                type(exc).__name__,
+            )
+
     async def grant_paid_device_slot(
         telegram_id: int,
     ) -> dict[str, Any] | None:
@@ -3777,6 +3817,7 @@ def build_router(
                 exc,
             )
 
+        await notify_subscription_granted(callback.message.bot, user, days)
         await callback.answer(f"Добавлено {days} дней")
         await show_admin_user(
             callback.message,
@@ -3896,6 +3937,7 @@ def build_router(
                 exc,
             )
 
+        await notify_subscription_granted(message.bot, user, days)
         role = await get_admin_role(message.from_user.id)
         await send_screen(
             message,
@@ -3975,6 +4017,8 @@ def build_router(
             updated = await db.adjust_subscription_days(uid, days if action in {"grant", "add"} else -days)
             await sync_device_limit(updated)
             await db.clear_support_session(user_id)
+            if action == "grant":
+                await notify_subscription_granted(message.bot, updated, days)
             await show_admin_user(message, message.from_user, uid)
             return True
 
