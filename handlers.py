@@ -271,6 +271,7 @@ def blue_inline_button(
     url: str | None = None,
     web_app: WebAppInfo | None = None,
     icon_index: int | None = None,
+    premium_icon: bool = True,
 ) -> InlineKeyboardButton:
     kwargs: dict[str, Any] = {
         "text": _clean_button_text(text),
@@ -279,9 +280,10 @@ def blue_inline_button(
         "web_app": web_app,
         "style": "danger",
     }
-    custom_id = _button_icon_id(text, icon_index)
-    if custom_id:
-        kwargs["icon_custom_emoji_id"] = custom_id
+    if premium_icon:
+        custom_id = _button_icon_id(text, icon_index)
+        if custom_id:
+            kwargs["icon_custom_emoji_id"] = custom_id
     return InlineKeyboardButton(**kwargs)
 
 
@@ -307,7 +309,6 @@ def connection_keyboard(
     *,
     back_data: str = "home",
 ) -> Any:
-    # Connection screen intentionally contains exactly two actions.
     kb = InlineKeyboardBuilder()
     primary_client = CLIENTS[0]
     kb.row(
@@ -324,6 +325,13 @@ def connection_keyboard(
             icon_index=3,
         )
     )
+    kb.row(
+        blue_inline_button(
+            "Назад",
+            callback_data=back_data,
+            premium_icon=False,
+        )
+    )
     return kb.as_markup()
 
 
@@ -333,7 +341,11 @@ def add_nav_buttons(
     back_data: str = "home",
 ) -> None:
     kb.row(
-        blue_inline_button("⬅️ Назад", callback_data=back_data),
+        blue_inline_button(
+            "Назад",
+            callback_data=back_data,
+            premium_icon=False,
+        ),
     )
 
 
