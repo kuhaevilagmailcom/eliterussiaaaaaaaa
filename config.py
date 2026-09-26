@@ -19,6 +19,8 @@ LEGACY_PUBLIC_BASE_URLS = {
     "http://bot-1789383103-4489-furadev.bothost.tech",
     "https://bot-1790078948-4568-furadev.bothost.tech",
     "http://bot-1790078948-4568-furadev.bothost.tech",
+    "https://sub.mgnvpn.ru",
+    "http://sub.mgnvpn.ru",
 }
 
 
