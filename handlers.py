@@ -2397,7 +2397,7 @@ def build_router(
         await send_screen(
             message,
             message.from_user,
-            connection_text(user, state, emoji),
+            connection_text(user, state, emoji, subscription_url),
             reply_markup=connection_keyboard(subscription_url),
         )
 
