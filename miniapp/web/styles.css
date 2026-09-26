@@ -796,3 +796,211 @@ button.pressing,
     animation-iteration-count:1!important
   }
 }
+
+
+/* ===== Compact pass: fit more on one phone screen ===== */
+.app-shell{
+  padding:calc(var(--safe-top) + 4px) 12px calc(78px + var(--safe-bottom))!important
+}
+.topbar{
+  height:56px!important;
+  gap:10px!important
+}
+.brand img{
+  width:68px!important;
+  height:30px!important
+}
+.avatar{
+  width:38px!important;
+  height:38px!important
+}
+.avatar::after{
+  width:8px!important;
+  height:8px!important
+}
+.user-chip{gap:8px!important}
+.user-chip b{font-size:13px!important;max-width:116px!important}
+.user-chip small{font-size:10px!important;margin-top:2px!important}
+
+.page[data-page="home"]{padding-top:4px!important}
+.page{padding-bottom:10px!important}
+
+.hero-card{
+  padding:16px 15px 15px!important;
+  border-radius:17px!important
+}
+.hero-copy{margin:0 0 14px!important}
+.hero-copy small{font-size:11px!important}
+.hero-copy h2{
+  margin-top:3px!important;
+  font-size:27px!important;
+  letter-spacing:-.04em!important
+}
+.hero-stats>div{
+  min-height:48px!important;
+  gap:9px!important;
+  padding-right:10px!important
+}
+.hero-stats>div+div{padding-left:12px!important}
+.hero-stats small{font-size:10px!important}
+.hero-stats b{font-size:16px!important;margin-top:2px!important}
+.stat-icon{
+  flex-basis:38px!important;
+  width:38px!important;
+  height:38px!important;
+  border-radius:11px!important
+}
+.stat-icon svg{width:19px!important;height:19px!important}
+
+.personal-link{
+  margin-top:10px!important;
+  padding:16px 14px 13px!important;
+  border-radius:18px!important
+}
+.link-heading{gap:10px!important}
+.link-icon{
+  flex-basis:42px!important;
+  width:42px!important;
+  height:42px!important;
+  border-radius:12px!important
+}
+.link-icon svg{width:21px!important;height:21px!important}
+.link-copy b{font-size:19px!important}
+.link-copy span{font-size:11px!important;margin-top:2px!important}
+.personal-link .link-value{
+  min-height:46px!important;
+  margin:12px 0 8px!important;
+  padding:0 8px 0 12px!important;
+  border-radius:13px!important
+}
+.personal-link .link-value code{font-size:13px!important}
+.link-copy-icon{
+  width:32px!important;
+  height:32px!important;
+  min-height:32px!important;
+  flex-basis:32px!important;
+  border-radius:9px!important
+}
+.link-copy-icon svg{width:17px!important;height:17px!important}
+.link-actions{gap:7px!important}
+.link-actions button{
+  min-height:43px!important;
+  font-size:13px!important;
+  border-radius:13px!important
+}
+.link-private{font-size:9px!important;margin-top:8px!important}
+
+.section-title{margin:14px 2px 7px!important}
+.section-title h3{font-size:14px!important}
+.quick-grid{gap:8px!important}
+.quick-grid button{
+  min-height:78px!important;
+  padding:11px!important;
+  border-radius:15px!important;
+  gap:4px!important
+}
+.quick-grid button>span{
+  width:33px!important;
+  height:33px!important;
+  border-radius:10px!important
+}
+.quick-grid button>span svg{width:18px!important;height:18px!important}
+.quick-grid b{font-size:13px!important;margin-top:1px!important}
+.quick-grid small{font-size:10px!important;line-height:1.15!important}
+
+.notice{
+  margin-top:9px!important;
+  padding:11px!important;
+  border-radius:14px!important
+}
+.notice p{font-size:10px!important}
+.notice button{min-height:38px!important;font-size:11px!important}
+
+.page-intro{
+  margin:11px 1px 9px!important
+}
+.page-intro h1{font-size:22px!important}
+.page-intro p{font-size:12px!important;margin-top:5px!important}
+.page-section-head{
+  margin:15px 1px 7px!important
+}
+.page-section-head h3{font-size:15px!important}
+.page-section-head small,.eyebrow{font-size:9px!important}
+
+.current-card,.capacity-card,.profile-hero,.referral-card,.balance-card,.legal-card{
+  padding:13px!important;
+  border-radius:15px!important
+}
+.profile-avatar{
+  width:54px!important;
+  height:54px!important;
+  border-radius:16px!important
+}
+.profile-meta h1{font-size:20px!important;margin:1px 0!important}
+.profile-meta p{font-size:11px!important;margin-bottom:5px!important}
+.profile-plan-chip{padding:5px 8px!important;font-size:10px!important}
+.profile-stats{margin:8px 0!important}
+.stats-grid{gap:7px!important}
+.stats-grid article{
+  padding:9px 6px!important;
+  border-radius:13px!important
+}
+.stats-grid article svg{width:17px!important;height:17px!important}
+.stats-grid small{font-size:9px!important}
+.stats-grid b{font-size:13px!important}
+
+.device,.secondary-row,.menu-list button,.reward-list>div,.payment-list button{
+  padding:10px!important;
+  border-radius:13px!important
+}
+.icon-box,.device-symbol{
+  width:35px!important;
+  height:35px!important;
+  flex-basis:35px!important;
+  border-radius:10px!important
+}
+.icon-box svg,.device-symbol svg{width:18px!important;height:18px!important}
+.secondary-row b,.menu-list b,.device-copy b{font-size:12px!important}
+.secondary-row small,.menu-list small,.device-copy small{font-size:9px!important}
+
+.plan-card{
+  padding:11px!important;
+  gap:8px!important;
+  border-radius:14px!important
+}
+.plan-info h3{font-size:14px!important}
+.plan-info p,.plan-info em,.plan-price small{font-size:10px!important}
+.plan-price b{font-size:14px!important}
+.plan-card button{min-height:40px!important;font-size:12px!important}
+
+.bottom-nav{
+  width:min(calc(100% - 18px),412px)!important;
+  bottom:calc(5px + var(--safe-bottom))!important;
+  padding:4px 6px 5px!important;
+  border-radius:17px!important
+}
+.bottom-nav button{
+  min-height:47px!important;
+  border-radius:11px!important;
+  gap:1px!important
+}
+.bottom-nav button svg{width:19px!important;height:19px!important}
+.bottom-nav button small{font-size:9px!important}
+.bottom-nav button.active::after{
+  width:22px!important;
+  height:3px!important;
+  bottom:-1px!important
+}
+
+.sheet{
+  padding:10px 14px calc(14px + var(--safe-bottom))!important;
+  border-radius:19px 19px 0 0!important
+}
+.sheet h2{font-size:20px!important}
+.sheet>p{font-size:11px!important}
+
+/* Keep motion restrained on compact UI */
+.motion-in{
+  animation-duration:340ms!important;
+  animation-delay:calc(var(--motion-index,0) * 24ms)!important
+}
