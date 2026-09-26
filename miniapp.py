@@ -507,6 +507,65 @@ class MiniAppServer:
                 logger.warning("Mini App provisioning deferred for %s: %s", target_id, exc)
         await self._sync_bot_subscription_menu(target)
 
+    async def landing(self, request: web.Request) -> web.Response:
+        return web.Response(
+            text="""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <title>MGN VPN</title>
+  <style>
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",Arial,sans-serif}
+    body{display:grid;place-items:center}
+    main{width:min(100%,760px);padding:28px 22px 36px}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:74px}
+    .logo{width:82px;height:auto;display:block}
+    .tag{font-size:12px;color:#8f8f99}
+    h1{margin:0;font-size:clamp(44px,10vw,76px);line-height:.95;letter-spacing:-.06em;font-weight:850}
+    h1 span{color:#ff3aa7}
+    p{max-width:520px;margin:22px 0 0;color:#9d9da8;font-size:17px;line-height:1.5}
+    .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:30px}
+    a{min-height:50px;padding:0 18px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;font-weight:760}
+    .primary{background:#ff3aa7;color:#fff}
+    .secondary{border:1px solid rgba(255,255,255,.12);background:#0e0e11;color:#fff}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:70px}
+    .card{padding:17px;border:1px solid rgba(255,255,255,.07);border-radius:16px;background:#0d0d10}
+    .card b{display:block;font-size:14px}
+    .card small{display:block;margin-top:5px;color:#85858f;line-height:1.35}
+    footer{margin-top:22px;color:#555560;font-size:11px}
+    @media(max-width:560px){header{margin-bottom:54px}.grid{grid-template-columns:1fr;margin-top:46px}p{font-size:15px}}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <img class="logo" src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN">
+      <span class="tag">VPN в Telegram</span>
+    </header>
+    <section>
+      <h1>MGN <span>VPN</span></h1>
+      <p>Быстрое подключение через Happ, персональная подписка и управление устройствами прямо в Telegram.</p>
+      <div class="actions">
+        <a class="primary" href="https://t.me/mgnvpn_bot/mgnvpn">Открыть в Telegram</a>
+        <a class="secondary" href="/app">Mini App</a>
+      </div>
+    </section>
+    <section class="grid">
+      <div class="card"><b>Подключение</b><small>Персональная ссылка и добавление в Happ.</small></div>
+      <div class="card"><b>Подписка</b><small>Тариф, срок и устройства в одном месте.</small></div>
+      <div class="card"><b>Без лишнего</b><small>Минималистичный интерфейс и быстрый доступ.</small></div>
+    </section>
+    <footer>MGN VPN</footer>
+  </main>
+</body>
+</html>""",
+            content_type="text/html",
+            headers={"Cache-Control": "public, max-age=60"},
+        )
+
     async def index(self, request: web.Request) -> web.StreamResponse:
         index = self.web_dir / "index.html"
         if not index.exists():
@@ -1194,7 +1253,10 @@ class MiniAppServer:
             client_max_size=64 * 1024,
             middlewares=[security_headers],
         )
-        app.router.add_get("/", self.index)
+        app.router.add_get("/", self.landing)
+        app.router.add_get("/app", self.index)
+        app.router.add_get("/app/", self.index)
+        # Keep old Mini App paths alive for already cached Telegram links.
         app.router.add_get("/miniapp", self.index)
         app.router.add_get("/miniapp/", self.index)
         app.router.add_get("/sub/{token}", self.subscription)
