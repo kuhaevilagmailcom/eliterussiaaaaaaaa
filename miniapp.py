@@ -464,6 +464,11 @@ class MiniAppServer:
                     for code, plan in PLANS.items()
                 ],
                 "payments": {"sbp_enabled": bool(self.config.rollypay_enabled)},
+                "capabilities": {
+                    "device_list": bool(self.provider.capabilities.supports_device_list),
+                    "device_removal": bool(self.provider.capabilities.supports_device_removal),
+                    "device_reset": bool(self.provider.capabilities.supports_device_reset),
+                },
                 "clients": client_registry(subscription_url) if subscription_url else [],
                 "shop": {
                     "extra_device_price_rub": int(EXTRA_DEVICE_PRICE_RUB),
@@ -777,6 +782,12 @@ class MiniAppServer:
         if not getattr(self.provider, "service_ready", True):
             raise _json_error(503, "VPN-серверы ещё не подключены")
 
+        if not self.provider.capabilities.supports_device_removal:
+            raise _json_error(
+                409,
+                "H1Cloud не поддерживает отключение одного устройства. Используйте сброс всех устройств.",
+            )
+
         device_id = str(request.match_info.get("device_id") or "")
         if not device_id:
             raise _json_error(400, "Устройство не найдено")
@@ -789,6 +800,23 @@ class MiniAppServer:
             raise _json_error(503, "Не удалось отключить устройство")
 
         return web.json_response({"ok": True, "vpn_ok": ok, "devices": state.devices})
+
+    async def reset_devices(self, request: web.Request) -> web.Response:
+        uid, _tg_user, row = await self._auth(request)
+        if not _active(row):
+            raise _json_error(409, "Подписка не активна")
+        if not getattr(self.provider, "service_ready", True):
+            raise _json_error(503, "VPN-серверы ещё не подключены")
+        if not self.provider.capabilities.supports_device_reset:
+            raise _json_error(409, "Сброс устройств недоступен для этого VPN-провайдера")
+
+        try:
+            state = await asyncio.wait_for(self.provider.reset_devices(row), 30.0)
+        except Exception as exc:
+            logger.warning("Mini App device reset failed for %s: %s", uid, exc)
+            raise _json_error(503, "Не удалось сбросить устройства")
+
+        return web.json_response({"ok": True, "devices": state.devices})
 
     async def start(self) -> None:
         app = web.Application(client_max_size=1024 * 1024)
@@ -807,6 +835,7 @@ class MiniAppServer:
         app.router.add_post("/api/miniapp/promo/quote", self.promo_quote)
         app.router.add_post("/api/miniapp/promo/redeem", self.promo_redeem)
         app.router.add_delete("/api/miniapp/devices/{device_id}", self.delete_device)
+        app.router.add_post("/api/miniapp/devices/reset", self.reset_devices)
         app.router.add_static("/static/", str(self.web_dir), show_index=False)
 
         self.runner = web.AppRunner(app, access_log=None)
