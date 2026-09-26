@@ -351,12 +351,12 @@
     if(ROOT_PAGES.has(page))state.previousRoot=page;
     state.page=page;
     let activePage=null;
-    $('.page').forEach(el=>{
+    $$('.page').forEach(el=>{
       const active=el.dataset.page===page;
       el.classList.toggle('active',active);
       if(active)activePage=el;
     });
-    $('#bottomNav button').forEach(el=>{
+    $$('#bottomNav button').forEach(el=>{
       const active=el.dataset.nav===page;
       el.classList.toggle('active',active);
       if(active)pulseElement(el,'nav-pop');
