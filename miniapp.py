@@ -14,7 +14,7 @@ from urllib.parse import parse_qsl, quote
 from uuid import uuid4
 
 from aiohttp import web
-from aiogram.types import LabeledPrice
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 
 from catalog import (
     EXTRA_DEVICE_PRICE_RUB,
@@ -41,6 +41,7 @@ def _json_error(status: int, message: str) -> web.HTTPException:
         403: web.HTTPForbidden,
         404: web.HTTPNotFound,
         409: web.HTTPConflict,
+        429: web.HTTPTooManyRequests,
         503: web.HTTPServiceUnavailable,
     }.get(status, web.HTTPBadRequest)
     return cls(
@@ -118,6 +119,7 @@ class MiniAppServer:
         self._reconcile_tasks: dict[int, asyncio.Task] = {}
         self._subscription_refresh_tasks: dict[int, asyncio.Task] = {}
         self._subscription_cache: dict[str, dict] = {}
+        self._rate_events: dict[str, list[float]] = {}
         self._subscription_cache_dir = Path(self.config.db_path).with_name(
             "subscription_cache"
         )
@@ -173,6 +175,26 @@ class MiniAppServer:
         except Exception:
             logger.exception("Could not persist subscription cache")
 
+    def _rate_limit(
+        self,
+        key: str,
+        *,
+        limit: int,
+        window_seconds: float,
+    ) -> None:
+        now = time.monotonic()
+        window_start = now - float(window_seconds)
+        events = [
+            value
+            for value in self._rate_events.get(key, [])
+            if value >= window_start
+        ]
+        if len(events) >= int(limit):
+            self._rate_events[key] = events
+            raise _json_error(429, "Слишком много запросов. Попробуйте немного позже")
+        events.append(now)
+        self._rate_events[key] = events
+
     def _telegram_user(self, request: web.Request) -> dict:
         raw = request.headers.get("X-Telegram-Init-Data", "")
         return validate_init_data(
@@ -184,6 +206,11 @@ class MiniAppServer:
     async def _auth(self, request: web.Request) -> tuple[int, dict, dict]:
         tg_user = self._telegram_user(request)
         user_id = int(tg_user["id"])
+        self._rate_limit(
+            f"miniapp:{user_id}",
+            limit=120,
+            window_seconds=60.0,
+        )
         row = await self.db.ensure_user(
             user_id,
             tg_user.get("username"),
@@ -549,7 +576,10 @@ class MiniAppServer:
             title = base64.b64encode("MGN VPN".encode("utf-8")).decode("ascii")
             headers = {
                 "Content-Type": "text/plain; charset=utf-8",
-                "Cache-Control": "no-store",
+                "Cache-Control": "private, no-store, max-age=0",
+                "Pragma": "no-cache",
+                "Referrer-Policy": "no-referrer",
+                "X-Content-Type-Options": "nosniff",
                 "Content-Disposition": 'inline; filename="MGN-VPN.txt"',
                 "Profile-Title": f"base64:{title}",
                 "Profile-Update-Interval": "12",
@@ -1038,6 +1068,96 @@ class MiniAppServer:
 
         return web.json_response({"ok": True, "vpn_ok": ok, "devices": state.devices})
 
+    async def create_support_ticket(self, request: web.Request) -> web.Response:
+        uid, tg_user, _row = await self._auth(request)
+        self._rate_limit(
+            f"support:{uid}",
+            limit=3,
+            window_seconds=600.0,
+        )
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise _json_error(400, "Некорректный запрос") from exc
+
+        message = str(payload.get("message") or "").strip()
+        if not message:
+            raise _json_error(400, "Напишите текст обращения")
+        if len(message) > 3000:
+            raise _json_error(400, "Максимальная длина обращения — 3000 символов")
+
+        ticket = await self.db.create_support_ticket(
+            telegram_id=uid,
+            username=tg_user.get("username"),
+            first_name=tg_user.get("first_name"),
+            message=message,
+        )
+
+        username = (
+            f"@{escape(str(ticket.get('username')))}"
+            if ticket.get("username")
+            else "без username"
+        )
+        created = from_iso(ticket.get("created_at"))
+        created_text = (
+            created.astimezone(self.config.display_tz).strftime("%d.%m.%Y %H:%M:%S")
+            if created
+            else "—"
+        )
+        admin_text = (
+            f"<b>Новое обращение #{int(ticket['id'])}</b>\n\n"
+            f"Пользователь: <b>{username}</b>\n"
+            f"ID: <code>{uid}</code>\n"
+            f"Дата: <b>{created_text}</b>\n\n"
+            f"<b>Сообщение:</b>\n{escape(message)}"
+        )
+        reply_markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Ответить",
+                        callback_data=f"support:reply:{int(ticket['id'])}",
+                        style="danger",
+                    )
+                ]
+            ]
+        )
+
+        recipients = set(int(value) for value in self.config.admin_ids)
+        try:
+            recipients.update(
+                int(item["telegram_id"])
+                for item in await self.db.list_admin_roles()
+            )
+        except Exception:
+            logger.exception("Could not load Mini App support recipients")
+
+        for admin_id in recipients:
+            try:
+                await self.bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_text,
+                    reply_markup=reply_markup,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not notify admin %s about support ticket %s: %s",
+                    admin_id,
+                    ticket.get("id"),
+                    exc,
+                )
+
+        return web.json_response(
+            {
+                "ok": True,
+                "ticket": {
+                    "id": int(ticket["id"]),
+                    "status": str(ticket.get("status") or "open"),
+                    "created_at": str(ticket.get("created_at") or ""),
+                },
+            }
+        )
+
     async def reset_devices(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
         if not _active(row):
@@ -1056,7 +1176,29 @@ class MiniAppServer:
         return web.json_response({"ok": True, "devices": state.devices})
 
     async def start(self) -> None:
-        app = web.Application(client_max_size=1024 * 1024)
+        @web.middleware
+        async def security_headers(request: web.Request, handler):
+            try:
+                response = await handler(request)
+            except web.HTTPException as exc:
+                response = exc
+
+            response.headers.setdefault("X-Content-Type-Options", "nosniff")
+            response.headers.setdefault("Referrer-Policy", "no-referrer")
+            response.headers.setdefault("X-Frame-Options", "DENY")
+            response.headers.setdefault(
+                "Permissions-Policy",
+                "camera=(), microphone=(), geolocation=(), payment=()",
+            )
+            if request.path.startswith("/api/") or request.path.startswith("/sub/"):
+                response.headers["Cache-Control"] = "private, no-store, max-age=0"
+                response.headers["Pragma"] = "no-cache"
+            return response
+
+        app = web.Application(
+            client_max_size=64 * 1024,
+            middlewares=[security_headers],
+        )
         app.router.add_get("/", self.index)
         app.router.add_get("/miniapp", self.index)
         app.router.add_get("/miniapp/", self.index)
@@ -1071,6 +1213,7 @@ class MiniAppServer:
         app.router.add_post("/api/miniapp/shop/device", self.buy_extra_device)
         app.router.add_post("/api/miniapp/promo/quote", self.promo_quote)
         app.router.add_post("/api/miniapp/promo/redeem", self.promo_redeem)
+        app.router.add_post("/api/miniapp/support", self.create_support_ticket)
         app.router.add_delete("/api/miniapp/devices/{device_id}", self.delete_device)
         app.router.add_post("/api/miniapp/devices/reset", self.reset_devices)
         app.router.add_static("/static/", str(self.web_dir), show_index=False)
