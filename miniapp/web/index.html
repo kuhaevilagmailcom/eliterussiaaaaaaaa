@@ -8,7 +8,7 @@
   <title>MGN VPN</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=13">
+  <link rel="stylesheet" href="/static/styles.css?v=14">
 </head>
 <body>
   <div class="app-shell">
@@ -17,11 +17,11 @@
         <img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN">
       </button>
       <button type="button" class="user-chip" data-nav="profile" aria-label="Профиль">
-        <span>
+        <span class="avatar"><span id="avatarText">U</span><img id="avatarImg" alt=""></span>
+        <span class="user-chip-copy">
           <b id="headerName">MGN VPN</b>
           <small id="headerStatus">загрузка</small>
         </span>
-        <span class="avatar"><span id="avatarText">U</span><img id="avatarImg" alt=""></span>
       </button>
     </header>
 
@@ -57,14 +57,17 @@
           <div class="link-heading">
             <span class="link-icon"><i data-lucide="link-2"></i></span>
             <div class="link-copy">
-              <b id="linkTitle">Персональная ссылка</b>
-              <span id="linkActionNote">Только для вашего аккаунта</span>
+              <b id="linkTitle">Ваш VPN готов</b>
+              <span id="linkActionNote">Персональная ссылка только для вашего аккаунта</span>
             </div>
           </div>
-          <div class="link-value"><code id="linkMasked">mgnvpn.ru/••••••••</code></div>
+          <div class="link-value">
+            <code id="linkMasked">mgnvpn.ru/••••••••</code>
+            <span class="link-copy-icon"><i data-lucide="copy"></i></span>
+          </div>
           <div class="link-actions">
-            <button type="button" class="primary" id="openHappHome"><span><i data-lucide="shield-check"></i><b>Добавить в Happ</b></span></button>
-            <button type="button" class="copy-button" id="copySubscriptionHome"><i data-lucide="copy"></i><span>Скопировать ссылку</span></button>
+            <button type="button" class="copy-button link-primary-action" id="copySubscriptionHome"><i data-lucide="copy"></i><span>Скопировать ссылку</span></button>
+            <button type="button" class="link-secondary-action" id="openHappHome"><i data-lucide="shield-check"></i><span>Добавить в Happ</span></button>
           </div>
           <small class="link-private"><i data-lucide="lock-keyhole"></i> Не передавайте эту ссылку другим людям</small>
         </article>
@@ -289,6 +292,6 @@
   <div class="toast" id="toast"></div>
   <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"><span><i></i></span></div>
 
-  <script src="/static/app.js?v=13"></script>
+  <script src="/static/app.js?v=14"></script>
 </body>
 </html>
