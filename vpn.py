@@ -529,7 +529,28 @@ class H1CloudVpnProvider(VpnProvider):
         return selected
 
     async def _federated_nodes(self) -> list[dict[str, Any]]:
-        data = await self._request("GET", "/fed/lagg")
+        # /fed/registry is the lightweight source of linked node IDs. /fed/lagg
+        # performs remote status/inbound/client requests for every node and is
+        # far too slow for a VPN subscription refresh.
+        data: dict[str, Any] | None = None
+        try:
+            data = await asyncio.wait_for(
+                self._request("GET", "/fed/registry"),
+                timeout=1.2,
+            )
+        except Exception as exc:
+            logger.warning(
+                "H1Cloud /fed/registry unavailable, trying aggregate fallback: %s",
+                str(exc).strip() or type(exc).__name__,
+            )
+            try:
+                data = await asyncio.wait_for(
+                    self._request("GET", "/fed/lagg"),
+                    timeout=2.0,
+                )
+            except Exception:
+                return []
+
         if not isinstance(data, dict):
             return []
         raw = data.get("nodes")
@@ -970,21 +991,48 @@ class H1CloudVpnProvider(VpnProvider):
             )
             nodes = []
 
+        main_uuid = str((main or {}).get("uuid") or "").strip()
+
         async def load_remote(node_id: str) -> tuple[str, list[str], str | None]:
             prefix = f"/fed/lproxy/{quote(node_id, safe='')}"
             try:
                 client = await asyncio.wait_for(
                     self._get_client(name, prefix=prefix),
-                    timeout=0.8,
+                    timeout=1.2,
                 )
-                return node_id, self._client_vless_links(client), None
+                remote_links = self._client_vless_links(client)
+                if remote_links:
+                    return node_id, remote_links, None
+
+                # Existing users may not have replicas on newer federation
+                # nodes, or an older build may have saved channels=[] there.
+                # Repair/create the remote replica with the SAME UUID.
+                if not main_uuid:
+                    return node_id, [], "main_uuid_missing"
+
+                desired_expiry = self._desired_expiry(user)
+                if desired_expiry <= int(datetime.now().timestamp()):
+                    desired_expiry = int(datetime.now().timestamp()) + 86400
+
+                repaired = await asyncio.wait_for(
+                    self._upsert_location(
+                        name=name,
+                        client_uuid=main_uuid,
+                        expires_at=desired_expiry,
+                        traffic_limit=max(0, int(user.get("traffic_limit_gb") or 0)),
+                        device_limit=max(1, int(user.get("max_devices") or 1)),
+                        prefix=prefix,
+                    ),
+                    timeout=3.0,
+                )
+                return node_id, self._client_vless_links(repaired), None
             except Exception as exc:
                 return node_id, [], str(exc).strip() or type(exc).__name__
 
         node_ids = [self._node_id(node) for node in nodes if self._node_id(node)]
         if node_ids:
             tasks = [asyncio.create_task(load_remote(node_id)) for node_id in node_ids]
-            done, pending = await asyncio.wait(tasks, timeout=0.9)
+            done, pending = await asyncio.wait(tasks, timeout=3.2)
             for task in pending:
                 task.cancel()
             errors: list[str] = []
