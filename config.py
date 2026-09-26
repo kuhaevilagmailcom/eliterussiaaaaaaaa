@@ -9,10 +9,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Canonical public domains. The Mini App lives on the root domain, while
-# personal VPN subscriptions are isolated on a dedicated subdomain.
+# One canonical HTTPS origin for the whole product. BotHost issues SSL for
+# mgnvpn.ru, so Mini App, API, client redirects and subscriptions all stay
+# under this host.
 DEFAULT_PUBLIC_BASE_URL = "https://mgnvpn.ru"
-DEFAULT_SUBSCRIPTION_BASE_URL = "https://sub.mgnvpn.ru"
+DEFAULT_SUBSCRIPTION_BASE_URL = "https://mgnvpn.ru/sub"
 LEGACY_PUBLIC_BASE_URLS = {
     "https://bot-1789383103-4489-furadev.bothost.tech",
     "http://bot-1789383103-4489-furadev.bothost.tech",
@@ -159,9 +160,14 @@ class Config:
         legacy_subscription_urls = {
             "",
             "https://vpn.example.com/sub",
-            "https://mgnvpn.ru/sub",
+            "https://sub.mgnvpn.ru",
+            "http://sub.mgnvpn.ru",
+            "https://sub.mgnvpn.ru/sub",
+            "http://sub.mgnvpn.ru/sub",
             "https://bot-1789383103-4489-furadev.bothost.tech/sub",
+            "http://bot-1789383103-4489-furadev.bothost.tech/sub",
             "https://bot-1790078948-4568-furadev.bothost.tech/sub",
+            "http://bot-1790078948-4568-furadev.bothost.tech/sub",
         }
         if configured_subscription.rstrip("/") in {
             value.rstrip("/") for value in legacy_subscription_urls
