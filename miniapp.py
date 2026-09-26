@@ -293,7 +293,11 @@ class MiniAppServer:
 
     def _remember_public_base_url(self, value: str) -> str:
         value = str(value or "").strip().rstrip("/")
-        if not value.startswith(("http://", "https://")):
+        if value.startswith("http://"):
+            value = "https://" + value[len("http://"):]
+        elif value and not value.startswith("https://"):
+            value = "https://" + value.lstrip("/")
+        if not value.startswith("https://"):
             return ""
         path = Path(self.config.db_path).with_name("public_base_url.txt")
         try:
@@ -326,17 +330,13 @@ class MiniAppServer:
             .split(",", 1)[0]
             .strip()
         )
-        scheme = forwarded_proto or request.scheme or "https"
         host = forwarded_host or request.headers.get("Host", "").strip()
 
         if host:
-            # Public Telegram Mini Apps are HTTPS. Some reverse proxies expose
-            # the app to aiohttp as plain HTTP, so prefer HTTPS for external
-            # hosts unless the proxy explicitly supplied another scheme.
-            if not forwarded_proto and host not in {"localhost", "127.0.0.1"}:
-                scheme = "https"
+            # The public Bothost/Telegram endpoint is HTTPS even when the
+            # reverse proxy talks to aiohttp over plain HTTP internally.
             return self._remember_public_base_url(
-                f"{scheme}://{host}".rstrip("/")
+                f"https://{host}".rstrip("/")
             )
         return ""
 
