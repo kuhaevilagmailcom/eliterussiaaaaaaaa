@@ -59,6 +59,27 @@ PACK_NEWS = "NewsEmoji"
 
 logger = logging.getLogger(__name__)
 
+
+_button_emoji_bank: EmojiBank | None = None
+_BUTTON_EMOJI_RE = re.compile(
+    r"[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+"
+)
+
+
+def _clean_button_text(value: str) -> str:
+    cleaned = _BUTTON_EMOJI_RE.sub("", str(value or ""))
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
+
+
+def _button_icon_id(text: str, index: int | None = None) -> str | None:
+    bank = _button_emoji_bank
+    if bank is None:
+        return None
+    label = _clean_button_text(text)
+    stable_index = index if index is not None else sum(ord(ch) for ch in label) % 64
+    return bank.raw_id(stable_index, pack=PACK_NEWS)
+
+
 MAIN_MENU_BANNER_DIR = Path(__file__).with_name("assets") / "banner_parts"
 _main_menu_banner_bytes: bytes | None = None
 
@@ -203,25 +224,37 @@ def strip_custom_emoji(value: str) -> str:
 def main_keyboard(
     emoji: EmojiBank | None = None,
     *,
-    custom_icons: bool = False,
+    custom_icons: bool = True,
+    active: bool = False,
 ) -> ReplyKeyboardMarkup:
-    def button(text: str) -> KeyboardButton:
-        return KeyboardButton(text=text, style="primary")
+    bank = emoji or _button_emoji_bank
 
+    def button(text: str, index: int) -> KeyboardButton:
+        kwargs: dict[str, Any] = {
+            "text": _clean_button_text(text),
+            "style": "danger",
+        }
+        if custom_icons and bank is not None:
+            custom_id = bank.raw_id(index, pack=PACK_NEWS)
+            if custom_id:
+                kwargs["icon_custom_emoji_id"] = custom_id
+        return KeyboardButton(**kwargs)
+
+    purchase_label = "Продлить VPN" if active else "Купить VPN"
     return ReplyKeyboardMarkup(
         keyboard=[
-            [button("🔗 Подключить VPN")],
+            [button("Подключить VPN", 2)],
             [
-                button("👤 Профиль"),
-                button("ℹ️ Информация"),
+                button("Профиль", 0),
+                button("Информация", 5),
             ],
             [
-                button("💳 Купить VPN"),
-                button("📱 Устройства"),
+                button(purchase_label, 1),
+                button("Друзья", 8),
             ],
             [
-                button("👥 Друзья"),
-                button("🆘 Поддержка"),
+                button("Промокод", 7),
+                button("Поддержка", 6),
             ],
         ],
         resize_keyboard=True,
@@ -231,27 +264,42 @@ def main_keyboard(
     )
 
 
-
 def blue_inline_button(
     text: str,
     *,
     callback_data: str | None = None,
     url: str | None = None,
+    web_app: WebAppInfo | None = None,
+    icon_index: int | None = None,
 ) -> InlineKeyboardButton:
-    return InlineKeyboardButton(
-        text=text,
-        callback_data=callback_data,
-        url=url,
-        style="primary",
-    )
+    kwargs: dict[str, Any] = {
+        "text": _clean_button_text(text),
+        "callback_data": callback_data,
+        "url": url,
+        "web_app": web_app,
+        "style": "danger",
+    }
+    custom_id = _button_icon_id(text, icon_index)
+    if custom_id:
+        kwargs["icon_custom_emoji_id"] = custom_id
+    return InlineKeyboardButton(**kwargs)
 
 
-def copy_inline_button(text: str, value: str) -> InlineKeyboardButton:
-    return InlineKeyboardButton(
-        text=text,
-        copy_text=CopyTextButton(text=value),
-        style="primary",
-    )
+def copy_inline_button(
+    text: str,
+    value: str,
+    *,
+    icon_index: int | None = None,
+) -> InlineKeyboardButton:
+    kwargs: dict[str, Any] = {
+        "text": _clean_button_text(text),
+        "copy_text": CopyTextButton(text=value),
+        "style": "danger",
+    }
+    custom_id = _button_icon_id(text, icon_index)
+    if custom_id:
+        kwargs["icon_custom_emoji_id"] = custom_id
+    return InlineKeyboardButton(**kwargs)
 
 
 def connection_keyboard(
@@ -259,33 +307,23 @@ def connection_keyboard(
     *,
     back_data: str = "home",
 ) -> Any:
+    # Connection screen intentionally contains exactly two actions.
     kb = InlineKeyboardBuilder()
     primary_client = CLIENTS[0]
     kb.row(
         blue_inline_button(
-            "🩷 Подключить в Happ",
+            "Добавить в Happ",
             url=client_redirect_url(subscription_url, primary_client),
+            icon_index=2,
         )
     )
     kb.row(
         copy_inline_button(
-            "📋 Скопировать ссылку",
+            "Скопировать ссылку",
             subscription_url,
+            icon_index=3,
         )
     )
-    for client in CLIENTS:
-        target = (
-            client_redirect_url(subscription_url, client)
-            if client.supports_subscription_import
-            else client.download_url
-        )
-        label = (
-            f"{client.icon} Добавить в {client.name}"
-            if client.supports_subscription_import
-            else f"{client.icon} Скачать {client.name}"
-        )
-        kb.row(blue_inline_button(label, url=target))
-    add_nav_buttons(kb, back_data=back_data)
     return kb.as_markup()
 
 
@@ -308,37 +346,41 @@ def section_nav_keyboard(*, back_data: str = "home") -> Any:
 def main_menu_inline_keyboard(
     admin_role: str | None = None,
     miniapp_url: str = "",
+    *,
+    active: bool = False,
 ) -> Any:
     kb = InlineKeyboardBuilder()
     if miniapp_url:
         kb.row(
-            InlineKeyboardButton(
-                text="🚀 Открыть MGN VPN",
+            blue_inline_button(
+                "Открыть MGN VPN",
                 web_app=WebAppInfo(url=miniapp_url),
-                style="primary",
+                icon_index=9,
             )
         )
-    kb.row(blue_inline_button("🔗 Подключить VPN", callback_data="menu:connect"))
+    kb.row(blue_inline_button("Подключить VPN", callback_data="menu:connect", icon_index=2))
     kb.row(
-        blue_inline_button("👤 Профиль", callback_data="menu:profile"),
-        blue_inline_button("ℹ️ Информация", callback_data="menu:info"),
+        blue_inline_button("Профиль", callback_data="menu:profile", icon_index=0),
+        blue_inline_button("Информация", callback_data="menu:info", icon_index=5),
     )
     kb.row(
-        blue_inline_button("💳 Купить VPN", callback_data="plans"),
-        blue_inline_button("📱 Устройства", callback_data="menu:devices"),
+        blue_inline_button(
+            "Продлить VPN" if active else "Купить VPN",
+            callback_data="plans",
+            icon_index=1,
+        ),
+        blue_inline_button("Пригласить друзей", callback_data="menu:friends", icon_index=8),
     )
     kb.row(
-        blue_inline_button("👥 Пригласить друзей", callback_data="menu:friends"),
-        blue_inline_button("🎟 Промокод", callback_data="menu:promo"),
-    )
-    kb.row(
-        blue_inline_button("🆘 Поддержка", callback_data="menu:support"),
+        blue_inline_button("Промокод", callback_data="menu:promo", icon_index=7),
+        blue_inline_button("Поддержка", callback_data="menu:support", icon_index=6),
     )
     if admin_role:
         kb.row(
-            blue_inline_button("🛡 Админка", callback_data="admin:home"),
+            blue_inline_button("Админка", callback_data="admin:home", icon_index=10),
         )
     return kb.as_markup()
+
 
 def plans_keyboard(config: Config) -> Any:
     kb = InlineKeyboardBuilder()
@@ -431,15 +473,19 @@ def profile_text(
     user_id = int(user["telegram_id"])
     active = is_active(user)
     max_devices = int(user.get("max_devices") or 1)
-    devices_count = len(state.devices)
+    devices = list(state.devices or [])
+    devices_count = len(devices)
     plan = html.escape(user.get("plan_name") or "—")
 
     e_profile = emoji.icon(0, pack=PACK_NEWS)
     e_sub = emoji.icon(1, pack=PACK_NEWS)
+    e_devices = emoji.icon(3, pack=PACK_NEWS)
 
     lines = [
-        f"{e_profile} <b>Ваш ID:</b> <code>{user_id}</code>",
-        f"{e_sub} <b>Информация о подписке:</b>",
+        f"{e_profile} <b>Профиль</b>",
+        f"ID: <code>{user_id}</code>",
+        "",
+        f"{e_sub} <b>Подписка</b>",
         f"├ Статус: <b>{'Активна' if active else 'Не активна'}</b>",
     ]
 
@@ -447,29 +493,48 @@ def profile_text(
         lines += [
             f"├ Тариф: <b>{plan}</b>",
             f"├ Действует до: <b>{format_until(user, config)}</b>",
-            f"├ Осталось: <b>{remaining_text(user)}</b>",
-            f"└ Устройства: <b>{devices_count}/{max_devices}</b>",
+            f"└ Осталось: <b>{remaining_text(user)}</b>",
+            "",
+            f"{e_devices} <b>Устройства — {devices_count}/{max_devices}</b>",
         ]
-    else:
-        if user.get("trial_used"):
-            trial = "использован"
+        if devices:
+            for index, item in enumerate(devices[:max_devices], start=1):
+                name = html.escape(
+                    str(
+                        item.get("name")
+                        or item.get("device_name")
+                        or item.get("model")
+                        or f"Устройство {index}"
+                    )
+                )
+                platform = html.escape(
+                    str(item.get("platform") or item.get("os") or "").strip()
+                )
+                suffix = f" · {platform}" if platform else ""
+                lines.append(f"├ {name}{suffix}")
+            free_slots = max(0, max_devices - devices_count)
+            lines.append(f"└ Свободно слотов: <b>{free_slots}</b>")
         else:
-            trial = "доступен после подписки на канал"
-        lines += [
-            f"├ Бесплатный день: <b>{trial}</b>",
-            f"└ Устройства: <b>до {max_devices}</b>",
-        ]
-
-    lines += [
-        "",
-        "Получить доступ можно кнопкой <b>«🔗 Подключить VPN»</b> ниже.",
-    ]
+            lines.append("└ Подключённых устройств пока нет.")
+    else:
+        if not user.get("trial_used"):
+            lines += [
+                "└ Для нового аккаунта доступен <b>1 бесплатный день</b> после подписки на канал.",
+                "",
+                "Вы также можете сразу выбрать платный тариф.",
+            ]
+        else:
+            lines += [
+                "└ Бесплатный день уже использован.",
+                "",
+                "Выберите тариф, чтобы снова подключиться к VPN.",
+            ]
 
     if not provider_ok and active:
-        if config.vpn_mode == "demo":
-            lines += ["", "<i>VPN-серверы ещё не подключены. Подписка сохранена.</i>"]
-        else:
-            lines += ["", "<i>VPN-сервер временно не отвечает. Подписка сохранена.</i>"]
+        lines += [
+            "",
+            "<i>Подписка сохранена, но VPN-сервер временно не отвечает.</i>",
+        ]
 
     return "\n".join(lines)
 
@@ -533,14 +598,13 @@ def connection_text(
     subscription_url: str,
 ) -> str:
     e_link = emoji.icon(2, pack=PACK_NEWS)
-    server = html.escape(state.server or "MGN VPN")
     safe_url = html.escape(subscription_url)
     return (
-        f"{e_link} <b>Подключение</b>\n\n"
-        "Ваша персональная HTTPS-ссылка готова.\n"
-        f"<code>{safe_url}</code>\n\n"
-        f"Сервер — <b>{server}</b>\n"
-        f"Можно использовать на <b>{int(user.get('max_devices') or 1)}</b> устройствах."
+        f"{e_link} <b>Подключить VPN</b>\n\n"
+        "<b>Ваша персональная ссылка</b>\n"
+        f"<blockquote><code>{safe_url}</code></blockquote>\n"
+        "<i>Не пересылайте её другим людям: ссылка даёт доступ к вашей подписке.</i>\n\n"
+        f"Доступно устройств: <b>{int(user.get('max_devices') or 1)}</b>."
     )
 
 
@@ -550,8 +614,14 @@ def build_router(
     emoji: EmojiBank,
     provider: VpnProvider,
 ) -> Router:
+    global _button_emoji_bank
+    _button_emoji_bank = emoji
+
     router = Router()
     pending_gift_plans: dict[int, str] = {}
+    pending_support_users: set[int] = set()
+    pending_support_admins: dict[int, int] = {}
+    support_cooldowns: dict[int, float] = {}
 
     banner_file_id_path = Path(config.db_path).with_name("main_menu_banner_file_id.txt")
 
@@ -668,7 +738,11 @@ def build_router(
         user = await ensure_actor(actor)
         last_id = user.get("last_menu_message_id")
         admin_role = await get_admin_role(int(actor.id))
-        home_markup = main_menu_inline_keyboard(admin_role, config.miniapp_url)
+        home_markup = main_menu_inline_keyboard(
+            admin_role,
+            config.miniapp_url,
+            active=is_active(user),
+        )
         if reply_markup is None:
             reply_markup = home_markup
 
@@ -1048,11 +1122,36 @@ def build_router(
     async def show_profile(message: Message, actor) -> None:
         user = await ensure_actor(actor)
         state, ok = await load_state(user, provider, config)
+        kb = InlineKeyboardBuilder()
+        if is_active(user):
+            kb.row(
+                blue_inline_button(
+                    "Подключить VPN",
+                    callback_data="menu:connect",
+                    icon_index=2,
+                )
+            )
+            kb.row(
+                blue_inline_button(
+                    "Продлить VPN",
+                    callback_data="plans",
+                    icon_index=1,
+                )
+            )
+        else:
+            kb.row(
+                blue_inline_button(
+                    "Купить VPN",
+                    callback_data="plans",
+                    icon_index=1,
+                )
+            )
+        add_nav_buttons(kb, back_data="home")
         await send_screen(
             message,
             actor,
             profile_text(user, state, emoji, ok, config),
-            reply_markup=section_nav_keyboard(),
+            reply_markup=kb.as_markup(),
         )
 
     async def activate_paid_plan(telegram_id: int, code: str) -> dict[str, Any]:
@@ -1242,23 +1341,133 @@ def build_router(
             reply_markup=connection_keyboard(subscription_url),
         )
 
+    def user_agreement_text() -> str:
+        return (
+            "<b>Пользовательское соглашение MGN VPN</b>\n\n"
+            "Используя MGN VPN, пользователь подтверждает, что будет применять сервис "
+            "только законным способом и не будет использовать его для атак, спама, "
+            "вредоносной активности или нарушения прав третьих лиц.\n\n"
+            "<b>Персональная ссылка.</b> Ссылка предназначена только владельцу подписки. "
+            "Её нельзя публиковать или передавать другим людям. При подозрении на утечку "
+            "обратитесь в поддержку.\n\n"
+            "<b>Устройства.</b> Одновременно можно использовать не больше количества "
+            "устройств, указанного в тарифе.\n\n"
+            "<b>Доступность.</b> Работа отдельных локаций может временно меняться из-за "
+            "обслуживания, сетевых ограничений или работ инфраструктуры.\n\n"
+            "<b>Данные.</b> Для работы сервиса обрабатываются Telegram ID, username, "
+            "состояние подписки и платежей, технические идентификаторы подключений, "
+            "которые предоставляет VPN-панель, а также обращения в поддержку. "
+            "Секреты и токены не должны передаваться в обращения.\n\n"
+            "Оплата, возвраты и обязательные права пользователя применяются в соответствии "
+            "с правилами платёжного способа и применимым законодательством."
+        )
+
+    def support_keyboard() -> Any:
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "Создать обращение",
+                callback_data="support:new",
+                icon_index=6,
+            )
+        )
+        add_nav_buttons(kb, back_data="home")
+        return kb.as_markup()
+
+    def support_admin_keyboard(ticket_id: int) -> Any:
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "Ответить",
+                callback_data=f"support:reply:{int(ticket_id)}",
+                icon_index=6,
+            )
+        )
+        return kb.as_markup()
+
+    def support_ticket_admin_text(ticket: dict[str, Any]) -> str:
+        username = (
+            f"@{html.escape(str(ticket.get('username')))}"
+            if ticket.get("username")
+            else "без username"
+        )
+        created = from_iso(ticket.get("created_at"))
+        created_text = (
+            created.astimezone(config.display_tz).strftime("%d.%m.%Y %H:%M:%S")
+            if created
+            else "—"
+        )
+        return (
+            f"<b>Новое обращение #{int(ticket['id'])}</b>\n\n"
+            f"Пользователь: <b>{username}</b>\n"
+            f"ID: <code>{int(ticket['telegram_id'])}</code>\n"
+            f"Дата: <b>{created_text}</b>\n\n"
+            f"<b>Сообщение:</b>\n{html.escape(str(ticket.get('message') or ''))}"
+        )
+
+    async def notify_support_admins(bot, ticket: dict[str, Any]) -> None:
+        recipients = set(int(value) for value in config.admin_ids)
+        try:
+            recipients.update(
+                int(item["telegram_id"])
+                for item in await db.list_admin_roles()
+            )
+        except Exception:
+            logger.exception("Could not load support admin recipients")
+
+        for admin_id in recipients:
+            try:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=support_ticket_admin_text(ticket),
+                    reply_markup=support_admin_keyboard(int(ticket["id"])),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not deliver support ticket %s to admin %s: %s",
+                    ticket.get("id"),
+                    admin_id,
+                    exc,
+                )
+
+    @router.callback_query(F.data == "menu:terms")
+    async def menu_terms(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if callback.message:
+            await send_screen(
+                callback.message,
+                callback.from_user,
+                user_agreement_text(),
+                reply_markup=section_nav_keyboard(back_data="menu:info"),
+            )
+
     @router.callback_query(F.data == "menu:info")
     async def menu_info(callback: CallbackQuery) -> None:
         await callback.answer()
         if not callback.message:
             return
+        user = await ensure_actor(callback.from_user)
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("📢 Канал MGN VPN", url=config.trial_channel_url))
+        kb.row(blue_inline_button("Канал MGN VPN", url=config.trial_channel_url, icon_index=5))
+        kb.row(blue_inline_button("Пользовательское соглашение", callback_data="menu:terms", icon_index=11))
         add_nav_buttons(kb, back_data="home")
         e = emoji.icon(5, pack=PACK_NEWS)
+        lines = [
+            f"{e} <b>Информация</b>",
+            "",
+            "Персональная VPN-ссылка выдаётся только владельцу аккаунта.",
+            f"В подписку входит от <b>1</b> до <b>{MAX_DEVICES}</b> устройств.",
+            "Управление подпиской и подключёнными устройствами находится в <b>Профиле</b>.",
+        ]
+        if not is_active(user):
+            if not user.get("trial_used"):
+                lines += ["", "Новому пользователю доступен <b>1 бесплатный день</b> после подписки на канал."]
+            else:
+                lines += ["", "Для подключения выберите платный тариф."]
         await send_screen(
             callback.message,
             callback.from_user,
-            f"{e} <b>Информация</b>\n\n"
-            "🔐 Доступ выдаётся по персональной ссылке.\n"
-            f"📱 В тариф входит <b>1 устройство</b>, можно докупить до <b>{MAX_DEVICES}</b>.\n"
-            "🎁 Бесплатный день можно активировать один раз после подписки на наш Telegram-канал.\n"
-            "⚙️ Управление подпиской и устройствами находится прямо в боте.",
+            "\n".join(lines),
             reply_markup=kb.as_markup(),
         )
 
@@ -1266,16 +1475,50 @@ def build_router(
     async def menu_support(callback: CallbackQuery) -> None:
         await callback.answer()
         if callback.message:
-            e = emoji.icon(5, pack=PACK_NEWS)
+            e = emoji.icon(6, pack=PACK_NEWS)
             await send_screen(
                 callback.message,
                 callback.from_user,
                 f"{e} <b>Поддержка</b>\n\n"
-                "1. Активируйте бесплатный день или купите подписку.\n"
-                "2. Нажмите <b>«🔗 Подключить VPN»</b>.\n"
-                "3. Откройте персональную ссылку на нужном устройстве.\n\n"
-                "Лимит устройств и дополнительные слоты находятся в разделе <b>«📱 Устройства»</b>.",
-                reply_markup=section_nav_keyboard(),
+                "Опишите проблему одним сообщением. Обращение получат администраторы; "
+                "в нём будут видны ваш username, Telegram ID, дата и время.",
+                reply_markup=support_keyboard(),
+            )
+
+    @router.callback_query(F.data == "support:new")
+    async def support_new(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not callback.message:
+            return
+        pending_support_users.add(int(callback.from_user.id))
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "<b>Новое обращение</b>\n\n"
+            "Отправьте следующим сообщением описание проблемы. "
+            "До 3000 символов. Не отправляйте пароли, API-токены и другие секреты.",
+            reply_markup=section_nav_keyboard(back_data="menu:support"),
+        )
+
+    @router.callback_query(F.data.startswith("support:reply:"))
+    async def support_reply_start(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        raw = callback.data.rsplit(":", 1)[-1]
+        if not raw.isdigit():
+            await callback.answer("Некорректное обращение", show_alert=True)
+            return
+        ticket = await db.get_support_ticket(int(raw))
+        if not ticket:
+            await callback.answer("Обращение не найдено", show_alert=True)
+            return
+        pending_support_admins[int(callback.from_user.id)] = int(raw)
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer(
+                f"Ответ на обращение <b>#{int(raw)}</b>. "
+                "Отправьте текст следующим сообщением. До 3000 символов."
             )
 
     @router.callback_query(F.data == "menu:promo")
@@ -1286,10 +1529,10 @@ def build_router(
         kb = InlineKeyboardBuilder()
         if config.miniapp_url:
             kb.row(
-                InlineKeyboardButton(
-                    text="🎟 Открыть промокоды",
+                blue_inline_button(
+                    "Открыть промокоды",
                     web_app=WebAppInfo(url=config.miniapp_url),
-                    style="primary",
+                    icon_index=7,
                 )
             )
         add_nav_buttons(kb, back_data="home")
@@ -1462,7 +1705,7 @@ def build_router(
     async def profile(message: Message) -> None:
         await show_profile(message, message.from_user)
 
-    @router.message(F.text.in_({"💳 Купить VPN", "Купить VPN"}))
+    @router.message(F.text.in_({"💳 Купить VPN", "Купить VPN", "Продлить VPN"}))
     async def plans_message(message: Message) -> None:
         await ensure_actor(message.from_user)
         e = emoji.icon(0, pack=PACK_NEWS)
@@ -2498,24 +2741,28 @@ def build_router(
 
     @router.message(F.text.in_({"ℹ️ Информация", "Информация"}))
     async def information_screen(message: Message) -> None:
+        user = await ensure_actor(message.from_user)
         kb = InlineKeyboardBuilder()
-        kb.row(
-            blue_inline_button(
-                "📢 Канал MGN VPN",
-                url=config.trial_channel_url,
-            )
-        )
+        kb.row(blue_inline_button("Канал MGN VPN", url=config.trial_channel_url, icon_index=5))
+        kb.row(blue_inline_button("Пользовательское соглашение", callback_data="menu:terms", icon_index=11))
         add_nav_buttons(kb, back_data="home")
 
         e = emoji.icon(5, pack=PACK_NEWS)
+        lines = [
+            f"{e} <b>Информация</b>",
+            "",
+            "Персональная VPN-ссылка предназначена только владельцу аккаунта.",
+            f"Лимит — до <b>{MAX_DEVICES}</b> устройств; список подключений находится в <b>Профиле</b>.",
+        ]
+        if not is_active(user):
+            if not user.get("trial_used"):
+                lines += ["", "Новому пользователю доступен <b>1 бесплатный день</b> после подписки на канал."]
+            else:
+                lines += ["", "Чтобы подключиться снова, выберите тариф."]
         await send_screen(
             message,
             message.from_user,
-            f"{e} <b>Информация</b>\n\n"
-            "🔐 Доступ выдаётся по персональной ссылке.\n"
-            f"📱 В тариф входит <b>1 устройство</b>; дополнительные — по <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>, максимум <b>{MAX_DEVICES}</b>.\n"
-            "🎁 Бесплатный день можно активировать один раз после подписки на наш Telegram-канал.\n"
-            "⚙️ Управление подпиской и устройствами находится прямо в боте.",
+            "\n".join(lines),
             reply_markup=kb.as_markup(),
         )
 
@@ -2526,11 +2773,9 @@ def build_router(
             message,
             message.from_user,
             f"{e} <b>Поддержка</b>\n\n"
-            "1. Активируйте бесплатный день или купите подписку.\n"
-            "2. Нажмите <b>«🔗 Подключить VPN»</b>.\n"
-            "3. Скопируйте ссылку одной кнопкой или сразу откройте её.\n\n"
-            "Дополнительные слоты находятся в разделе <b>«📱 Устройства»</b>.",
-            reply_markup=section_nav_keyboard(),
+            "Создайте обращение и опишите проблему одним сообщением. "
+            "Администратор сможет ответить вам прямо через бота.",
+            reply_markup=support_keyboard(),
         )
 
     def admin_role_label(role: str | None) -> str:
@@ -2554,6 +2799,9 @@ def build_router(
         )
         kb.row(
             blue_inline_button("💳 Платежи", callback_data="admin:payments"),
+        )
+        kb.row(
+            blue_inline_button("Обращения", callback_data="admin:support", icon_index=6),
         )
         if role in {"owner", "full"}:
             kb.row(
@@ -2624,6 +2872,56 @@ def build_router(
             actor,
             "\n".join(lines),
             reply_markup=admin_main_keyboard(role),
+        )
+
+    async def show_admin_support(message: Message, actor) -> None:
+        role = await get_admin_role(actor.id)
+        if not role:
+            return
+        tickets = await db.list_support_tickets(limit=20)
+        kb = InlineKeyboardBuilder()
+        lines = [
+            "<b>Обращения в поддержку</b>",
+            "",
+        ]
+        if not tickets:
+            lines.append("Обращений пока нет.")
+        else:
+            for ticket in tickets:
+                ticket_id = int(ticket["id"])
+                created = from_iso(ticket.get("created_at"))
+                created_text = (
+                    created.astimezone(config.display_tz).strftime("%d.%m %H:%M")
+                    if created
+                    else "—"
+                )
+                username = (
+                    f"@{html.escape(str(ticket.get('username')))}"
+                    if ticket.get("username")
+                    else html.escape(str(ticket.get("first_name") or "без username"))
+                )
+                status = "открыто" if ticket.get("status") == "open" else "отвечено"
+                preview = html.escape(str(ticket.get("message") or "")[:120])
+                lines += [
+                    f"<b>#{ticket_id}</b> · {status} · {created_text}",
+                    f"{username} · <code>{int(ticket['telegram_id'])}</code>",
+                    preview,
+                    "",
+                ]
+                kb.row(
+                    blue_inline_button(
+                        f"Ответить #{ticket_id}",
+                        callback_data=f"support:reply:{ticket_id}",
+                        icon_index=6,
+                    )
+                )
+        kb.row(blue_inline_button("Обновить", callback_data="admin:support"))
+        kb.row(blue_inline_button("Админка", callback_data="admin:home"))
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
         )
 
     async def show_admin_stats(message: Message, actor) -> None:
@@ -3017,6 +3315,15 @@ def build_router(
         if callback.message:
             await show_admin_users(callback.message, callback.from_user)
 
+    @router.callback_query(F.data == "admin:support")
+    async def admin_support_callback(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        await callback.answer()
+        if callback.message:
+            await show_admin_support(callback.message, callback.from_user)
+
     @router.callback_query(F.data == "admin:payments")
     async def admin_payments_callback(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
@@ -3365,5 +3672,80 @@ def build_router(
             f"✅ Пользователю <code>{telegram_id}</code> добавлено <b>{days}</b> дней.",
             reply_markup=admin_main_keyboard(role or "full"),
         )
+
+    @router.message(F.text)
+    async def support_text_router(message: Message) -> None:
+        if not message.from_user:
+            return
+        user_id = int(message.from_user.id)
+        raw_text = str(message.text or "").strip()
+
+        ticket_id = pending_support_admins.get(user_id)
+        if ticket_id is not None and await has_admin_access(user_id):
+            if len(raw_text) > 3000:
+                await message.answer("Ответ слишком длинный. Максимум 3000 символов.")
+                return
+            ticket = await db.get_support_ticket(ticket_id)
+            if not ticket:
+                pending_support_admins.pop(user_id, None)
+                await message.answer("Обращение больше не найдено.")
+                return
+            try:
+                await message.bot.send_message(
+                    chat_id=int(ticket["telegram_id"]),
+                    text=(
+                        f"<b>Ответ поддержки · обращение #{ticket_id}</b>\n\n"
+                        f"{html.escape(raw_text)}"
+                    ),
+                )
+            except Exception as exc:
+                logger.warning("Could not deliver support answer %s: %s", ticket_id, exc)
+                await message.answer(
+                    "Не удалось доставить ответ пользователю. Обращение оставлено открытым."
+                )
+                return
+
+            await db.answer_support_ticket(
+                ticket_id=ticket_id,
+                answered_by=user_id,
+                answer_text=raw_text,
+            )
+            pending_support_admins.pop(user_id, None)
+            await message.answer(f"Ответ по обращению #{ticket_id} отправлен.")
+            return
+
+        if user_id not in pending_support_users:
+            return
+
+        if not raw_text:
+            return
+        if len(raw_text) > 3000:
+            await message.answer("Сообщение слишком длинное. Максимум 3000 символов.")
+            return
+
+        now_mono = asyncio.get_running_loop().time()
+        last = support_cooldowns.get(user_id, 0.0)
+        if now_mono - last < 30.0:
+            await message.answer("Подождите немного перед новым обращением.")
+            return
+
+        actor = await ensure_actor(message.from_user)
+        ticket = await db.create_support_ticket(
+            telegram_id=user_id,
+            username=message.from_user.username,
+            first_name=message.from_user.first_name,
+            message=raw_text,
+        )
+        pending_support_users.discard(user_id)
+        support_cooldowns[user_id] = now_mono
+        await notify_support_admins(message.bot, ticket)
+        await send_screen(
+            message,
+            message.from_user,
+            f"<b>Обращение #{int(ticket['id'])} создано</b>\n\n"
+            "Администраторы получили сообщение. Ответ придёт сюда, в этот чат.",
+            reply_markup=support_keyboard(),
+        )
+
 
     return router
