@@ -143,6 +143,12 @@
         </div>
         <div class="device-list" id="deviceList"></div>
 
+        <button type="button" class="secondary-row" id="resetDevicesPage" hidden>
+          <span class="icon-box"><i data-lucide="refresh-cw"></i></span>
+          <span><b>Сбросить все устройства</b><small>Старые подключения перестанут работать</small></span>
+          <i data-lucide="chevron-right"></i>
+        </button>
+
         <button type="button" class="secondary-row accent-row device-buy-row" id="buyDevicePage">
           <span class="icon-box"><i data-lucide="plus"></i></span>
           <span><b>Добавить ещё устройство</b><small id="buyDevicePrice">+1 постоянный слот</small></span>
@@ -231,7 +237,7 @@
         <div class="menu-list" id="clientList"></div>
         <div class="faq">
           <details><summary><span><i data-lucide="link-2"></i>Где взять ссылку VPN?</span><i data-lucide="chevron-down"></i></summary><p>Она находится на главном экране в карточке «Персональная ссылка VPN». Если сервер ещё не подключён, ссылка появится автоматически позже.</p></details>
-          <details><summary><span><i data-lucide="monitor-smartphone"></i>Как отключить старое устройство?</span><i data-lucide="chevron-down"></i></summary><p>Открой раздел «Устройства» и нажми кнопку удаления напротив нужного устройства.</p></details>
+          <details><summary><span><i data-lucide="monitor-smartphone"></i>Как отключить старое устройство?</span><i data-lucide="chevron-down"></i></summary><p>На H1Cloud нельзя отключить один HWID через документированный API. Используй «Сбросить все устройства»: старые подключения перестанут работать, а персональная ссылка MGN VPN останется прежней.</p></details>
           <details><summary><span><i data-lucide="credit-card"></i>Как продлить подписку?</span><i data-lucide="chevron-down"></i></summary><p>Открой «Подписка», выбери тариф и оплати через Telegram Stars или СБП, если он доступен.</p></details>
           <details><summary><span><i data-lucide="ticket-percent"></i>Как применить промокод?</span><i data-lucide="chevron-down"></i></summary><p>Код на бесплатные дни активируется в профиле. Код на скидку вводится перед оплатой тарифа.</p></details>
         </div>
