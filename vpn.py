@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json as json_module
 import base64
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
@@ -306,6 +307,34 @@ class H1CloudVpnProvider(VpnProvider):
         value = user.get("subscription_until")
         if not value:
             return 0
+
+    @staticmethod
+    def _expiry_timestamp(client: dict[str, Any] | None) -> int:
+        if not isinstance(client, dict):
+            return 0
+        value = (
+            client.get("expires_at")
+            or client.get("expiry_time")
+            or client.get("expiryTime")
+            or client.get("expire")
+        )
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str) and value.strip():
+            raw = value.strip()
+            try:
+                return int(float(raw))
+            except ValueError:
+                try:
+                    return int(datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp())
+                except ValueError:
+                    return 0
+        return 0
+
+    @staticmethod
+    def _days_until(expires_at: int, *, since: int | None = None) -> int:
+        start = int(datetime.now().timestamp()) if since is None else int(since)
+        return max(1, math.ceil((int(expires_at) - start) / 86400))
         try:
             return int(datetime.fromisoformat(str(value)).timestamp())
         except (TypeError, ValueError):
@@ -609,36 +638,38 @@ class H1CloudVpnProvider(VpnProvider):
         )
         existing = await self._get_client(name, prefix=prefix)
 
-        payload: dict[str, Any] = {
-            "expires_at": expires_at,
-            "traffic_limit_gb": traffic_limit,
-            "device_limit": device_limit,
-            "channels": [],
-            "inbound_ids": inbound_ids,
-        }
-
         if existing is None:
-            payload.update(
-                {
-                    "name": name,
-                    "uuid": client_uuid,
-                    "manual": True,
-                }
-            )
+            # H1Cloud's public API accepts a duration, not an absolute expiry.
+            # Sending expires_at makes the panel reject creation as bad_days.
+            payload: dict[str, Any] = {
+                "name": name,
+                "days": self._days_until(expires_at),
+                "traffic_limit_gb": traffic_limit,
+                "device_limit": device_limit,
+            }
             data = await self._request(
                 "POST",
                 f"{prefix}/create",
                 json=payload,
             )
         else:
-            existing_uuid = str(existing.get("uuid") or "").strip()
-            if existing_uuid and existing_uuid != client_uuid:
-                raise RuntimeError(
-                    f"H1Cloud UUID mismatch for {name} at {prefix or 'main'}"
+            payload = {
+                "name": name,
+                "traffic_limit_gb": traffic_limit,
+                "device_limit": device_limit,
+            }
+            current_expiry = self._expiry_timestamp(existing)
+            # PATCH /edit adds days to the current expiry. Only send days when
+            # the requested subscription is actually later, otherwise retries
+            # would silently extend access over and over.
+            if current_expiry + 60 < expires_at:
+                payload["days"] = self._days_until(
+                    expires_at,
+                    since=max(current_expiry, int(datetime.now().timestamp())),
                 )
             data = await self._request(
                 "PATCH",
-                f"{prefix}/clients/{quote(name, safe='')}",
+                f"{prefix}/edit",
                 json=payload,
             )
 

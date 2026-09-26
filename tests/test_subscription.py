@@ -23,6 +23,12 @@ def test_h1_capabilities_are_explicit():
     assert capabilities.supports_device_reset
 
 
+def test_h1_converts_absolute_expiry_to_panel_days():
+    assert H1CloudVpnProvider._days_until(100 + 86400, since=100) == 1
+    assert H1CloudVpnProvider._days_until(100 + 86401, since=100) == 2
+    assert H1CloudVpnProvider._expiry_timestamp({"expires_at": "1970-01-02T00:00:00+00:00"}) == 86400
+
+
 def test_h1_extracts_vless_links_from_client_payload():
     client = {
         "link": "vless://one@example.com:443?security=tls#one",
