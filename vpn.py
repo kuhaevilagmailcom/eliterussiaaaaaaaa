@@ -890,8 +890,18 @@ class H1CloudVpnProvider(VpnProvider):
         name = self._name(user)
         main = await self._get_client(name)
         if main is None:
-            await self.provision(user)
-            main = await self._get_client(name)
+            # Keep the subscription endpoint fast: create the canonical main
+            # client here without waiting for every federated panel.
+            desired_expiry = self._desired_expiry(user)
+            if desired_expiry <= int(datetime.now().timestamp()):
+                desired_expiry = int(datetime.now().timestamp()) + 86400
+            main = await self._upsert_location(
+                name=name,
+                client_uuid=str(uuid4()),
+                expires_at=desired_expiry,
+                traffic_limit=max(0, int(user.get("traffic_limit_gb") or 0)),
+                device_limit=max(1, int(user.get("max_devices") or 1)),
+            )
 
         links: list[str] = []
         seen: set[str] = set()

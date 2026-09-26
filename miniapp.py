@@ -390,7 +390,7 @@ class MiniAppServer:
             {
                 "ok": True,
                 "service": "MGN VPN Mini App",
-                "build": "h1cloud-v20-panel-api",
+                "build": "h1cloud-v21-fast-sub",
                 "vpn_mode": getattr(self.provider, "mode_name", "vpn"),
                 "vpn_ready": bool(getattr(self.provider, "service_ready", True)),
             }
@@ -418,24 +418,12 @@ class MiniAppServer:
             return rendered, upstream_headers, count
 
         try:
-            try:
-                body, upstream_headers, count = await asyncio.wait_for(
-                    load_payload(),
-                    12.0,
-                )
-            except Exception:
-                await asyncio.wait_for(self.provider.provision(user), 20.0)
-                body, upstream_headers, count = await asyncio.wait_for(
-                    load_payload(),
-                    12.0,
-                )
-
-            if count < 1:
-                await asyncio.wait_for(self.provider.provision(user), 20.0)
-                body, upstream_headers, count = await asyncio.wait_for(
-                    load_payload(),
-                    12.0,
-                )
+            # fetch_subscription performs a bounded main-panel self-heal. A
+            # second full federation provision made clients wait 30+ seconds.
+            body, upstream_headers, count = await asyncio.wait_for(
+                load_payload(),
+                15.0,
+            )
             if count < 1:
                 raise RuntimeError("H1Cloud subscription contains no VLESS nodes")
 
