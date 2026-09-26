@@ -390,6 +390,7 @@ class MiniAppServer:
             {
                 "ok": True,
                 "service": "MGN VPN Mini App",
+                "build": "h1cloud-v18-days-api",
                 "vpn_mode": getattr(self.provider, "mode_name", "vpn"),
                 "vpn_ready": bool(getattr(self.provider, "service_ready", True)),
             }
