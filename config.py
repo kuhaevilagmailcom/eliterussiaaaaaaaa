@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
@@ -92,6 +93,27 @@ class Config:
                 "VPN_MODE must be demo, webhook, h1cloud or 3xui"
             )
 
+        raw_db_path = os.getenv("DB_PATH", "").strip()
+        if Path("/app").exists():
+            # Bothost preserves /app/data across Git deploys/restarts. Never
+            # keep SQLite in /app root inside the disposable container.
+            if raw_db_path:
+                requested = Path(raw_db_path)
+                if (
+                    not requested.is_absolute()
+                    or (
+                        str(requested).startswith("/app/")
+                        and not str(requested).startswith("/app/data/")
+                    )
+                ):
+                    db_path = str(Path("/app/data") / requested.name)
+                else:
+                    db_path = str(requested)
+            else:
+                db_path = "/app/data/mgn_vpn.sqlite3"
+        else:
+            db_path = raw_db_path or "mgn_vpn.sqlite3"
+
         domain = os.getenv("DOMAIN", "").strip()
         explicit_miniapp_url = os.getenv("MINIAPP_URL", "").strip().rstrip("/")
         public_base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
@@ -110,7 +132,7 @@ class Config:
         return cls(
             bot_token=token,
             admin_ids=_ints(os.getenv("ADMIN_IDS", "8464597898")),
-            db_path=os.getenv("DB_PATH", "mgn_vpn.sqlite3"),
+            db_path=db_path,
             display_tz=ZoneInfo(os.getenv("DISPLAY_TZ", "Asia/Yekaterinburg")),
             miniapp_url=miniapp_url,
             main_menu_banner_file_id=os.getenv(
