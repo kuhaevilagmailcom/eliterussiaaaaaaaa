@@ -107,6 +107,7 @@ class VpnState:
 class ProviderCapabilities:
     supports_device_list: bool = False
     supports_device_removal: bool = False
+    supports_device_reset: bool = False
     supports_federation: bool = False
     supports_subscription_proxy: bool = False
 
@@ -123,6 +124,9 @@ class VpnProvider:
         raise NotImplementedError
 
     async def delete_device(self, user: dict[str, Any], device_id: str) -> None:
+        raise NotImplementedError
+
+    async def reset_devices(self, user: dict[str, Any]) -> VpnState:
         raise NotImplementedError
 
     async def fetch_subscription(
@@ -247,7 +251,8 @@ class WebhookVpnProvider(VpnProvider):
 class H1CloudVpnProvider(VpnProvider):
     capabilities = ProviderCapabilities(
         supports_device_list=True,
-        supports_device_removal=True,
+        supports_device_removal=False,
+        supports_device_reset=True,
         supports_federation=True,
         supports_subscription_proxy=True,
     )
@@ -735,6 +740,51 @@ class H1CloudVpnProvider(VpnProvider):
         raise RuntimeError(
             "H1Cloud does not expose a documented per-device removal endpoint"
         )
+
+    async def reset_devices(self, user: dict[str, Any]) -> VpnState:
+        """Disconnect every current H1 device by recreating the client UUID.
+
+        H1 documents client deletion, but not deletion of one HWID/device.
+        The public MGN /sub/<token> URL remains stable; only the upstream H1
+        client/configuration is recreated.
+        """
+        name = self._name(user)
+        nodes = await self._federated_nodes()
+        node_ids = [self._node_id(node) for node in nodes if self._node_id(node)]
+
+        async def delete_remote(node_id: str) -> tuple[str, str | None]:
+            prefix = f"/fed/lproxy/{quote(node_id, safe='')}"
+            try:
+                existing = await self._get_client(name, prefix=prefix)
+                if existing is not None:
+                    await self._request(
+                        "DELETE",
+                        f"{prefix}/clients/{quote(name, safe='')}",
+                        allow_missing=True,
+                    )
+                return node_id, None
+            except Exception as exc:
+                return node_id, str(exc).strip() or type(exc).__name__
+
+        results = await asyncio.gather(
+            *(delete_remote(node_id) for node_id in node_ids),
+            return_exceptions=False,
+        )
+        errors = [f"{node_id}: {error}" for node_id, error in results if error]
+        if errors:
+            logger.warning(
+                "H1Cloud device reset remote cleanup partial for %s: %s",
+                name,
+                "; ".join(errors),
+            )
+
+        await self._request(
+            "DELETE",
+            f"/clients/{quote(name, safe='')}",
+            allow_missing=True,
+        )
+        logger.info("H1Cloud devices reset for %s; recreating client", name)
+        return await self.provision(user)
 
     async def health(self) -> dict[str, Any]:
         data = await self._request("GET", "/health")
