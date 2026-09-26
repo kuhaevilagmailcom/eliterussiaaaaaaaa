@@ -132,6 +132,26 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_promo_uses_user
                 ON promo_uses(promo_id, telegram_id);
 
+                CREATE TABLE IF NOT EXISTS support_tickets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_id INTEGER NOT NULL,
+                    username TEXT,
+                    first_name TEXT NOT NULL DEFAULT '',
+                    message TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open'
+                        CHECK(status IN ('open', 'answered', 'closed')),
+                    created_at TEXT NOT NULL,
+                    answered_at TEXT,
+                    answered_by INTEGER,
+                    answer_text TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_support_tickets_status_created
+                ON support_tickets(status, created_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_support_tickets_user_created
+                ON support_tickets(telegram_id, created_at DESC);
+
                 CREATE TABLE IF NOT EXISTS payment_intents (
                     intent_id TEXT PRIMARY KEY,
                     buyer_telegram_id INTEGER NOT NULL,
@@ -998,6 +1018,135 @@ class Database:
                 )
             ).fetchall()
         return [dict(row) for row in rows]
+
+    async def create_support_ticket(
+        self,
+        *,
+        telegram_id: int,
+        username: str | None,
+        first_name: str | None,
+        message: str,
+    ) -> dict[str, Any]:
+        text = str(message or "").strip()
+        if not text:
+            raise ValueError("support message is empty")
+        if len(text) > 3000:
+            raise ValueError("support message is too long")
+
+        created_at = to_iso(utcnow())
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                INSERT INTO support_tickets (
+                    telegram_id, username, first_name, message,
+                    status, created_at
+                ) VALUES (?, ?, ?, ?, 'open', ?)
+                """,
+                (
+                    int(telegram_id),
+                    (str(username).lstrip("@").strip() or None)
+                    if username
+                    else None,
+                    str(first_name or "")[:128],
+                    text,
+                    created_at,
+                ),
+            )
+            ticket_id = int(cursor.lastrowid)
+            await db.commit()
+            row = await (
+                await db.execute(
+                    "SELECT * FROM support_tickets WHERE id=?",
+                    (ticket_id,),
+                )
+            ).fetchone()
+        return dict(row)
+
+    async def get_support_ticket(self, ticket_id: int) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (
+                await db.execute(
+                    "SELECT * FROM support_tickets WHERE id=?",
+                    (int(ticket_id),),
+                )
+            ).fetchone()
+        return dict(row) if row else None
+
+    async def list_support_tickets(
+        self,
+        *,
+        limit: int = 20,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 100))
+        params: list[Any] = []
+        where = ""
+        if status in {"open", "answered", "closed"}:
+            where = "WHERE status=?"
+            params.append(status)
+        params.append(limit)
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    f"""
+                    SELECT *
+                    FROM support_tickets
+                    {where}
+                    ORDER BY
+                        CASE status WHEN 'open' THEN 0 WHEN 'answered' THEN 1 ELSE 2 END,
+                        created_at DESC
+                    LIMIT ?
+                    """,
+                    tuple(params),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def answer_support_ticket(
+        self,
+        *,
+        ticket_id: int,
+        answered_by: int,
+        answer_text: str,
+    ) -> dict[str, Any] | None:
+        text = str(answer_text or "").strip()
+        if not text:
+            raise ValueError("support answer is empty")
+        if len(text) > 3000:
+            raise ValueError("support answer is too long")
+
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                UPDATE support_tickets
+                SET status='answered',
+                    answered_at=?,
+                    answered_by=?,
+                    answer_text=?
+                WHERE id=?
+                """,
+                (
+                    to_iso(utcnow()),
+                    int(answered_by),
+                    text,
+                    int(ticket_id),
+                ),
+            )
+            if cursor.rowcount != 1:
+                await db.rollback()
+                return None
+            await db.commit()
+            row = await (
+                await db.execute(
+                    "SELECT * FROM support_tickets WHERE id=?",
+                    (int(ticket_id),),
+                )
+            ).fetchone()
+        return dict(row) if row else None
 
     async def admin_overview(self) -> dict[str, int]:
         now = to_iso(utcnow())
