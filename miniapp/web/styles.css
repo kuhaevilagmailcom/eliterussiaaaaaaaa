@@ -5,8 +5,8 @@
   --text:#f7f7f8;
   --muted:#9b9ba6;
   --line:rgba(255,255,255,.09);
-  --accent:#ff3b30;
-  --danger:#ff453a;
+  --accent:#ff3aa7;
+  --danger:#ff5a72;
   --success:#61d095;
   --space-1:4px;
   --space-2:8px;
@@ -23,7 +23,7 @@
   --safe-bottom:env(safe-area-inset-bottom,0px)
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font:15px/1.38 -apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue","Segoe UI",sans-serif;font-synthesis:none;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 body{overflow-x:hidden}
 button,input{font:inherit}
 button{min-height:44px;color:inherit;cursor:pointer}
@@ -164,9 +164,9 @@ body{background:#000}
 .stat-icon,.icon-box,.link-icon,.device-symbol{background:#151518;color:var(--accent);border-radius:12px}
 .primary,.sheet-primary{background:var(--accent);color:#fff;border-radius:13px}
 .copy-button{background:#151518;color:#fff;border:1px solid rgba(255,255,255,.08);border-radius:13px}
-.personal-link{border-color:rgba(255,59,48,.42)}
+.personal-link{border-color:rgba(255,58,167,.42)}
 .personal-link .link-value{
-  border:1px solid rgba(255,59,48,.28);
+  border:1px solid rgba(255,58,167,.28);
   background:#050505;
   min-height:48px;
 }
@@ -179,7 +179,7 @@ body{background:#000}
   border-radius:14px;background:#0b0b0d;border:1px solid rgba(255,255,255,.08);box-shadow:none
 }
 .quick-grid button:active,.secondary-row:active,.menu-list button:active,.plan-card button:active{transform:none}
-.plan-card.featured{border-color:rgba(255,59,48,.45)}
+.plan-card.featured{border-color:rgba(255,58,167,.45)}
 .plan-label{background:var(--accent);color:#fff}
 .plan-card button{background:#151518;color:#fff}
 .plan-card.featured button{background:var(--accent)}
@@ -194,14 +194,14 @@ body{background:#000}
   border:1px solid var(--line);border-radius:14px;background:#0b0b0d;
   color:var(--text);padding:13px 14px;outline:none;font:inherit
 }
-.support-field textarea:focus{border-color:rgba(255,59,48,.7)}
+.support-field textarea:focus{border-color:rgba(255,58,167,.70)}
 .support-field small{text-align:right;color:var(--muted)}
 .support-note{margin-top:12px}
 .legal-card h3{margin:18px 0 6px;font-size:15px}
 .legal-card h3:first-child{margin-top:0}
 .legal-card p{margin:0;color:var(--muted);font-size:13px}
 .promo-field input{background:#0b0b0d;border-radius:14px}
-.promo-field input:focus{border-color:rgba(255,59,48,.7)}
+.promo-field input:focus{border-color:rgba(255,58,167,.70)}
 .promo-apply{background:#151518}
 .bottom-nav{
   bottom:calc(8px + var(--safe-bottom));padding:6px;border-radius:16px;
@@ -215,4 +215,346 @@ body{background:#000}
 @media (max-width:370px){
   .app-shell{padding-inline:12px}
   .hero-stats,.quick-grid{grid-template-columns:1fr 1fr}
+}
+
+
+/* ===== Reference pass: black + MGN pink, iOS-like proportions ===== */
+:root{
+  --accent:#ff3aa7;
+  --accent-strong:#ff2496;
+  --accent-soft:rgba(255,58,167,.16);
+  --surface:#0d0d10;
+  --surface-elevated:#17171c;
+  --text:#fff;
+  --muted:#9e9eaa;
+  --line:rgba(255,255,255,.085);
+  --success:#30d978
+}
+
+html,body{background:#000}
+body{letter-spacing:-.005em}
+.app-shell{
+  width:min(100%,430px);
+  padding:calc(var(--safe-top) + 8px) 16px calc(92px + var(--safe-bottom));
+  background:#000
+}
+
+/* Header: compact logo, avatar + two-line identity like reference */
+.topbar{height:72px;gap:14px}
+.brand{display:flex;align-items:center}
+.brand img{
+  width:76px;
+  height:34px;
+  object-fit:contain;
+  object-position:left center;
+  filter:none
+}
+.user-chip{gap:10px}
+.user-chip-copy{display:grid;text-align:left!important;min-width:0}
+.user-chip b{
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text",sans-serif;
+  font-size:15px;
+  line-height:1.1;
+  font-weight:750;
+  letter-spacing:-.02em;
+  max-width:132px
+}
+.user-chip small{
+  margin-top:3px;
+  font-size:11px;
+  line-height:1.15;
+  letter-spacing:0;
+  text-transform:none;
+  color:var(--muted);
+  font-weight:650
+}
+.user-chip small.active{color:var(--success)}
+.avatar{
+  width:46px;
+  height:46px;
+  border-radius:50%;
+  border:0;
+  background:#1a1a1f;
+  font-size:16px;
+  position:relative
+}
+.avatar::after{
+  content:"";
+  position:absolute;
+  right:1px;
+  bottom:1px;
+  width:10px;
+  height:10px;
+  border-radius:50%;
+  background:var(--success);
+  border:2px solid #000
+}
+
+/* Home starts immediately with the tariff card */
+.page[data-page="home"] .page-intro.compact{display:none}
+.page[data-page="home"]{padding-top:8px}
+
+/* Tariff card */
+.hero-card{
+  padding:22px 20px 20px;
+  border-radius:22px;
+  background:#0e0e11;
+  border:1px solid rgba(255,255,255,.07);
+  box-shadow:0 14px 36px rgba(0,0,0,.26)
+}
+.hero-card .hero-head{display:none}
+.hero-copy{margin:0 0 22px}
+.hero-copy small{
+  font-size:13px;
+  color:#8f8f9a;
+  letter-spacing:0
+}
+.hero-copy h2{
+  margin:4px 0 0;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text",sans-serif;
+  font-size:34px;
+  line-height:1;
+  font-weight:850;
+  letter-spacing:-.045em;
+  color:#fff
+}
+.hero-copy p{display:none}
+.hero-stats{gap:0}
+.hero-stats>div{
+  min-height:62px;
+  gap:12px;
+  padding-right:14px
+}
+.hero-stats>div+div{
+  padding-left:18px;
+  padding-right:0
+}
+.hero-stats>div:first-child{border-right:1px solid rgba(255,255,255,.09)}
+.hero-stats small{
+  font-size:12px;
+  line-height:1.1;
+  color:#9a9aa5
+}
+.hero-stats b{
+  display:block;
+  margin-top:3px;
+  font-size:19px;
+  line-height:1.08;
+  font-weight:780;
+  letter-spacing:-.025em
+}
+.stat-icon{
+  flex-basis:50px;
+  width:50px;
+  height:50px;
+  border-radius:14px;
+  background:#1a171d;
+  color:var(--accent)
+}
+.stat-icon svg{width:24px;height:24px;stroke-width:2}
+.hero-card>.progress,#homeSubscriptionAction{display:none}
+
+/* Main bright VPN card */
+.personal-link{
+  margin-top:14px;
+  padding:22px 18px 18px;
+  border:0!important;
+  border-radius:22px!important;
+  background:linear-gradient(145deg,#ff3aab 0%,#ff2694 58%,#ec1785 100%)!important;
+  box-shadow:0 14px 34px rgba(255,35,143,.16)!important;
+  color:#fff
+}
+.link-heading{gap:13px}
+.link-icon{
+  flex-basis:52px;
+  width:52px;
+  height:52px;
+  border-radius:15px;
+  color:#fff!important;
+  background:rgba(255,255,255,.13)!important
+}
+.link-icon svg{width:27px;height:27px;stroke-width:2.1}
+.link-copy b{
+  font-size:24px;
+  line-height:1.05;
+  font-weight:830;
+  letter-spacing:-.035em;
+  color:#fff
+}
+.link-copy span{
+  margin-top:4px;
+  color:rgba(255,255,255,.78)!important;
+  font-size:13px;
+  line-height:1.25
+}
+.personal-link .link-value{
+  min-height:58px;
+  margin:18px 0 10px;
+  padding:0 14px 0 16px;
+  border:1px solid rgba(255,255,255,.11)!important;
+  border-radius:16px;
+  background:#151519!important
+}
+.personal-link .link-value code{
+  color:#fff!important;
+  font-size:16px!important;
+  font-weight:720!important;
+  letter-spacing:-.015em!important
+}
+.link-copy-icon{
+  display:grid;
+  place-items:center;
+  width:38px;
+  height:38px;
+  border-radius:11px;
+  background:#24242a;
+  color:#fff
+}
+.link-copy-icon svg{width:21px;height:21px}
+.link-actions{gap:9px;margin-top:0}
+.link-primary-action{
+  min-height:54px!important;
+  border:0!important;
+  border-radius:15px!important;
+  background:#fff!important;
+  color:#111!important;
+  font-size:16px;
+  font-weight:800
+}
+.link-primary-action svg{width:21px;height:21px}
+.link-secondary-action{
+  width:100%;
+  min-height:50px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  border:1px solid rgba(255,255,255,.32);
+  border-radius:15px;
+  background:rgba(0,0,0,.04);
+  color:#fff;
+  font-weight:750
+}
+.link-secondary-action svg{width:20px;height:20px}
+.link-private{
+  justify-content:center;
+  margin-top:11px;
+  color:rgba(255,255,255,.68)!important;
+  font-size:10px
+}
+.link-private svg{color:#fff!important}
+
+/* Quick tiles */
+.section-title{margin:20px 2px 10px}
+.section-title h3{
+  font-size:16px;
+  font-weight:760;
+  letter-spacing:-.02em
+}
+.quick-grid{gap:10px}
+.quick-grid button{
+  min-height:102px;
+  padding:14px;
+  border:1px solid rgba(255,255,255,.07)!important;
+  border-radius:18px!important;
+  background:#0e0e11!important;
+  box-shadow:0 10px 22px rgba(0,0,0,.16)!important
+}
+.quick-grid button>span{
+  width:42px;
+  height:42px;
+  border-radius:13px;
+  background:#1a171d;
+  color:var(--accent)
+}
+.quick-grid button>span svg{width:23px;height:23px;stroke-width:2}
+.quick-grid b{
+  margin-top:3px;
+  font-size:15px;
+  line-height:1.1;
+  font-weight:760;
+  letter-spacing:-.02em
+}
+.quick-grid small{
+  font-size:11px;
+  line-height:1.25;
+  color:#8f8f9a
+}
+
+/* Shared pages */
+.page-intro h1{
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text",sans-serif;
+  font-weight:820;
+  letter-spacing:-.04em
+}
+.eyebrow,.page-section-head small{
+  letter-spacing:.09em;
+  font-weight:700
+}
+.icon-box,.device-symbol{
+  background:#1a171d!important;
+  color:var(--accent)!important
+}
+.plan-card.featured{border-color:rgba(255,58,167,.42)!important}
+.plan-label{background:var(--accent)!important;color:#fff!important}
+.plan-card.featured button,.sheet-primary{background:var(--accent)!important;color:#fff!important}
+.promo-field input:focus,.support-field textarea:focus{border-color:rgba(255,58,167,.65)!important}
+
+/* Bottom nav: glass-black with pink active icon + underline */
+.bottom-nav{
+  width:min(calc(100% - 22px),408px);
+  bottom:calc(8px + var(--safe-bottom));
+  padding:7px 8px 8px;
+  border:1px solid rgba(255,255,255,.08);
+  border-radius:22px;
+  background:rgba(14,14,17,.96);
+  box-shadow:0 10px 30px rgba(0,0,0,.38)
+}
+.bottom-nav button{
+  min-height:54px;
+  position:relative;
+  border-radius:14px;
+  background:transparent!important;
+  color:#888894;
+  gap:3px
+}
+.bottom-nav button svg{
+  width:22px;
+  height:22px;
+  stroke-width:2
+}
+.bottom-nav button small{
+  font-size:10px;
+  font-weight:650;
+  letter-spacing:0
+}
+.bottom-nav button.active{color:var(--accent)!important}
+.bottom-nav button.active::after{
+  content:"";
+  position:absolute;
+  left:50%;
+  bottom:-3px;
+  width:28px;
+  height:4px;
+  border-radius:99px;
+  transform:translateX(-50%);
+  background:var(--accent);
+  box-shadow:0 0 10px rgba(255,58,167,.35)
+}
+
+/* Smaller loader/brand mark */
+.loader img{width:82px!important}
+.loader span{border-top-color:var(--accent)!important}
+
+/* No neon/AI-looking motion */
+.quick-grid button,.plan-card,.secondary-row,.menu-list button,.personal-link,.hero-card{
+  transition:none!important
+}
+
+@media (max-width:370px){
+  .brand img{width:70px}
+  .user-chip b{max-width:105px}
+  .hero-copy h2{font-size:30px}
+  .link-copy b{font-size:21px}
+  .hero-stats b{font-size:17px}
 }
