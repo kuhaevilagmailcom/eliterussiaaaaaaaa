@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
@@ -33,6 +34,7 @@ class Config:
     display_tz: ZoneInfo
 
     miniapp_url: str
+    main_menu_banner_file_id: str
     miniapp_host: str
     miniapp_port: int
     miniapp_initdata_max_age: int
@@ -42,6 +44,11 @@ class Config:
     vpn_api_url: str
     vpn_api_token: str
     vpn_server_name: str
+
+    h1_api_url: str
+    h1_api_token: str
+    h1_subscription_template: str
+    h1_verify_ssl: bool
 
     xui_url: str
     xui_token: str
@@ -81,20 +88,63 @@ class Config:
             raise RuntimeError("Telegram bot token is empty.")
 
         mode = os.getenv("VPN_MODE", "demo").strip().lower()
-        if mode not in {"demo", "webhook", "3xui"}:
-            raise RuntimeError("VPN_MODE must be demo, webhook or 3xui")
+        if mode not in {"demo", "webhook", "h1cloud", "3xui"}:
+            raise RuntimeError(
+                "VPN_MODE must be demo, webhook, h1cloud or 3xui"
+            )
+
+        raw_db_path = os.getenv("DB_PATH", "").strip()
+        if Path("/app").exists():
+            # Bothost preserves /app/data across Git deploys/restarts. Never
+            # keep SQLite in /app root inside the disposable container.
+            if raw_db_path:
+                requested = Path(raw_db_path)
+                if (
+                    not requested.is_absolute()
+                    or (
+                        str(requested).startswith("/app/")
+                        and not str(requested).startswith("/app/data/")
+                    )
+                ):
+                    db_path = str(Path("/app/data") / requested.name)
+                else:
+                    db_path = str(requested)
+            else:
+                db_path = "/app/data/mgn_vpn.sqlite3"
+        else:
+            db_path = raw_db_path or "mgn_vpn.sqlite3"
 
         domain = os.getenv("DOMAIN", "").strip()
-        miniapp_url = os.getenv("MINIAPP_URL", "").strip().rstrip("/")
-        if not miniapp_url and domain:
-            miniapp_url = f"https://{domain}"
+        explicit_miniapp_url = os.getenv("MINIAPP_URL", "").strip().rstrip("/")
+        public_base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+
+        def _https_public_url(value: str) -> str:
+            value = str(value or "").strip().rstrip("/")
+            if not value:
+                return ""
+            if value.startswith("http://"):
+                return "https://" + value[len("http://"):]
+            if value.startswith("https://"):
+                return value
+            return "https://" + value.lstrip("/")
+
+        # Telegram Mini Apps and public subscription links must always be HTTPS.
+        # Reverse proxies may expose the app to Python as HTTP internally; that
+        # internal scheme must never leak into links sent to users.
+        if not public_base_url and domain:
+            public_base_url = domain
+        miniapp_url = _https_public_url(public_base_url or explicit_miniapp_url)
 
         return cls(
             bot_token=token,
             admin_ids=_ints(os.getenv("ADMIN_IDS", "8464597898")),
-            db_path=os.getenv("DB_PATH", "mgn_vpn.sqlite3"),
+            db_path=db_path,
             display_tz=ZoneInfo(os.getenv("DISPLAY_TZ", "Asia/Yekaterinburg")),
             miniapp_url=miniapp_url,
+            main_menu_banner_file_id=os.getenv(
+                "MAIN_MENU_BANNER_FILE_ID",
+                "",
+            ).strip(),
             miniapp_host=os.getenv("MINIAPP_HOST", "0.0.0.0").strip() or "0.0.0.0",
             miniapp_port=max(
                 1,
@@ -112,6 +162,13 @@ class Config:
             vpn_api_url=os.getenv("VPN_API_URL", "").rstrip("/"),
             vpn_api_token=os.getenv("VPN_API_TOKEN", ""),
             vpn_server_name=os.getenv("VPN_SERVER_NAME", "MGN VPN"),
+            h1_api_url=os.getenv("H1_API_URL", "").rstrip("/"),
+            h1_api_token=os.getenv("H1_API_TOKEN", "").strip(),
+            h1_subscription_template=os.getenv(
+                "H1_SUBSCRIPTION_TEMPLATE",
+                "",
+            ).strip(),
+            h1_verify_ssl=_bool(os.getenv("H1_VERIFY_SSL", "false"), default=False),
             xui_url=os.getenv("XUI_URL", "").rstrip("/"),
             xui_token=os.getenv("XUI_TOKEN", "").strip(),
             xui_inbound_ids=_ints(os.getenv("XUI_INBOUND_IDS", "")),
@@ -120,7 +177,8 @@ class Config:
                 "",
             ).strip(),
             xui_verify_ssl=_bool(os.getenv("XUI_VERIFY_SSL", "true")),
-            trial_minutes=max(1, int(os.getenv("TRIAL_MINUTES", "60"))),
+            # One channel bonus per Telegram account: exactly one day.
+            trial_minutes=1440,
             trial_max_devices=max(1, int(os.getenv("TRIAL_MAX_DEVICES", "1"))),
             trial_channel_username=os.getenv(
                 "TRIAL_CHANNEL_USERNAME",
@@ -131,12 +189,17 @@ class Config:
                 "https://t.me/mgnvpnn",
             ).strip(),
             emoji_packs=tuple(
-                x.strip()
-                for x in os.getenv(
-                    "EMOJI_PACKS",
-                    "CryptoGIFTPODARKI,TgAndroidIcons,progressBarEmoji",
-                ).split(",")
-                if x.strip()
+                dict.fromkeys(
+                    [
+                        x.strip()
+                        for x in os.getenv(
+                            "EMOJI_PACKS",
+                            "CryptoGIFTPODARKI,TgAndroidIcons,progressBarEmoji,NewsEmoji",
+                        ).split(",")
+                        if x.strip()
+                    ]
+                    + ["NewsEmoji"]
+                )
             ),
             rollypay_api_base=os.getenv(
                 "ROLLYPAY_API_BASE",

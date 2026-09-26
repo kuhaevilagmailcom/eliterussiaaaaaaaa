@@ -1,33 +1,33 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
 import logging
 import time
-from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote
 from uuid import uuid4
 
 from aiohttp import web
 from aiogram.types import LabeledPrice
 
 from catalog import (
-    DIAMOND_REWARDS,
-    DIAMOND_SHOP_DAYS,
-    EXTRA_DEVICE_COST,
+    EXTRA_DEVICE_PRICE_RUB,
+    MAX_DEVICES,
     PLANS,
-    REFERRAL_FIRST_PAID_REWARD,
-    REFERRAL_TRIAL_REWARD,
     plan_price_rub,
     plan_price_stars,
+    plan_savings_rub,
+    rub_to_stars,
 )
 from db import Database, from_iso, utcnow
 from payments import RollyPayError, create_payment, get_payment
-from vpn import VpnProvider, VpnState
+from vpn import VpnProvider, VpnState, prettify_subscription_payload
+from vpn_clients import client_registry, get_client
 
 
 logger = logging.getLogger(__name__)
@@ -113,6 +113,9 @@ class MiniAppServer:
         self.runner: web.AppRunner | None = None
         self.site: web.TCPSite | None = None
         self._bot_username = ""
+        self._last_reconcile: dict[int, float] = {}
+        self._reconcile_tasks: dict[int, asyncio.Task] = {}
+        self._subscription_cache: dict[str, dict] = {}
 
     def _telegram_user(self, request: web.Request) -> dict:
         raw = request.headers.get("X-Telegram-Init-Data", "")
@@ -138,6 +141,72 @@ class MiniAppServer:
             self._bot_username = me.username or "mgnvpn_bot"
         return self._bot_username
 
+    async def _is_trial_channel_member(
+        self,
+        user_id: int,
+        *,
+        retries: int = 1,
+    ) -> bool:
+        retries = max(1, min(int(retries), 4))
+        for attempt in range(retries):
+            try:
+                member = await self.bot.get_chat_member(
+                    chat_id=self.config.trial_channel_username,
+                    user_id=user_id,
+                )
+                status = getattr(
+                    getattr(member, "status", ""),
+                    "value",
+                    getattr(member, "status", ""),
+                )
+                status = str(status)
+                if status in {"member", "administrator", "creator"}:
+                    return True
+                if status == "restricted" and bool(getattr(member, "is_member", False)):
+                    return True
+            except Exception as exc:
+                logger.warning(
+                    "Mini App channel membership check failed for %s: %s",
+                    user_id,
+                    exc,
+                )
+
+            if attempt + 1 < retries:
+                await asyncio.sleep(0.6)
+
+        return False
+
+    async def _sync_bot_subscription_menu(self, user: dict) -> None:
+        message_id = user.get("last_menu_message_id")
+        if not message_id:
+            return
+
+        until = from_iso(user.get("subscription_until"))
+        until_text = "—"
+        if until:
+            until_text = until.astimezone(self.config.display_tz).strftime("%d.%m.%Y %H:%M")
+
+        active = _active(user)
+        caption = (
+            "🔐 <b>MGN VPN</b>\n\n"
+            f"Статус: <b>{'Активна' if active else 'Не активна'}</b>\n"
+            f"Тариф: <b>{user.get('plan_name') or '—'}</b>\n"
+            f"До: <b>{until_text}</b>\n"
+            f"Устройства: <b>до {int(user.get('max_devices') or 1)}</b>"
+        )
+        try:
+            await self.bot.edit_message_caption(
+                chat_id=int(user["telegram_id"]),
+                message_id=int(message_id),
+                caption=caption,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Could not sync bot menu caption for %s: %s",
+                user.get("telegram_id"),
+                exc,
+            )
+
     def _fallback_state(self, user: dict) -> VpnState:
         return VpnState(
             subscription_url="",
@@ -147,19 +216,152 @@ class MiniAppServer:
             devices=[],
         )
 
+    async def _reconcile_h1(self, user: dict) -> None:
+        user_id = int(user["telegram_id"])
+        try:
+            await asyncio.wait_for(
+                self.provider.provision(user),
+                15.0,
+            )
+            self._last_reconcile[user_id] = time.monotonic()
+        except Exception as exc:
+            logger.warning(
+                "Mini App H1 background reconciliation failed for %s: %s",
+                user_id,
+                str(exc).strip() or type(exc).__name__,
+            )
+        finally:
+            self._reconcile_tasks.pop(user_id, None)
+
+    def _schedule_h1_reconcile(self, user: dict) -> None:
+        user_id = int(user["telegram_id"])
+        current = self._reconcile_tasks.get(user_id)
+        if current and not current.done():
+            return
+        self._reconcile_tasks[user_id] = asyncio.create_task(
+            self._reconcile_h1(dict(user))
+        )
+
     async def _load_state(self, user: dict) -> tuple[VpnState, bool]:
         if not _active(user):
             return self._fallback_state(user), True
         if not getattr(self.provider, "service_ready", True):
             return self._fallback_state(user), False
+
+        user_id = int(user["telegram_id"])
+        is_h1 = getattr(self.provider, "mode_name", "") == "h1cloud"
+
+        # Fast path: the main panel already has the canonical client/sub_url.
+        # Never make opening the Mini App wait for every remote country.
         try:
-            return await asyncio.wait_for(self.provider.get_state(user), 4.0), True
-        except Exception:
+            state = await asyncio.wait_for(
+                self.provider.get_state(user),
+                5.0,
+            )
+            if (
+                is_h1
+                and time.monotonic() - self._last_reconcile.get(user_id, 0.0)
+                >= 60.0
+            ):
+                self._schedule_h1_reconcile(user)
+            return state, True
+        except Exception as state_exc:
+            if not is_h1:
+                logger.warning(
+                    "Mini App VPN state read failed for %s: %s",
+                    user_id,
+                    str(state_exc).strip() or type(state_exc).__name__,
+                )
+
+        # First activation or a missing main client: provisioning is required.
+        try:
+            state = await asyncio.wait_for(
+                self.provider.provision(user),
+                15.0,
+            )
+            if is_h1:
+                self._last_reconcile[user_id] = time.monotonic()
+            return state, True
+        except Exception as exc:
+            logger.warning(
+                "Mini App VPN state unavailable for %s: %s",
+                user_id,
+                str(exc).strip() or type(exc).__name__,
+            )
+            return self._fallback_state(user), False
+
+
+    def _remember_public_base_url(self, value: str) -> str:
+        value = str(value or "").strip().rstrip("/")
+        if value.startswith("http://"):
+            value = "https://" + value[len("http://"):]
+        elif value and not value.startswith("https://"):
+            value = "https://" + value.lstrip("/")
+        if not value.startswith("https://"):
+            return ""
+        path = Path(self.config.db_path).with_name("public_base_url.txt")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            current = ""
             try:
-                return await asyncio.wait_for(self.provider.provision(user), 6.0), True
-            except Exception as exc:
-                logger.warning("Mini App VPN state unavailable for %s: %s", user["telegram_id"], exc)
-                return self._fallback_state(user), False
+                current = path.read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
+                pass
+            if current != value:
+                path.write_text(value + "\n", encoding="utf-8")
+                logger.info("Public Mini App base URL learned from request host: %s", value)
+        except Exception:
+            logger.exception("Could not persist public Mini App base URL")
+        return value
+
+    def _external_base_url(self, request: web.Request) -> str:
+        if self.config.miniapp_url:
+            return self._remember_public_base_url(
+                self.config.miniapp_url.rstrip("/")
+            )
+
+        forwarded_proto = (
+            request.headers.get("X-Forwarded-Proto", "")
+            .split(",", 1)[0]
+            .strip()
+        )
+        forwarded_host = (
+            request.headers.get("X-Forwarded-Host", "")
+            .split(",", 1)[0]
+            .strip()
+        )
+        host = forwarded_host or request.headers.get("Host", "").strip()
+
+        if host:
+            # The public Bothost/Telegram endpoint is HTTPS even when the
+            # reverse proxy talks to aiohttp over plain HTTP internally.
+            return self._remember_public_base_url(
+                f"https://{host}".rstrip("/")
+            )
+        return ""
+
+    def _public_subscription_url(
+        self,
+        user: dict,
+        state: VpnState | None = None,
+        *,
+        request: web.Request | None = None,
+    ) -> str:
+        base_url = (
+            self._external_base_url(request)
+            if request is not None
+            else self.config.miniapp_url.rstrip("/")
+        )
+        if (
+            getattr(self.provider, "mode_name", "") == "h1cloud"
+            and base_url
+            and user.get("sub_token")
+            and _active(user)
+        ):
+            token = quote(str(user["sub_token"]), safe="")
+            return f"{base_url}/sub/{token}"
+        return (state.subscription_url if state else "") or ""
+
 
     async def _activate_paid(self, buyer_id: int, target_id: int, code: str, event_key: str) -> None:
         plan = PLANS[code]
@@ -169,27 +371,12 @@ class MiniAppServer:
             plan_name=str(plan["name"]),
             max_devices=int(plan["devices"]),
         )
-        reward = int(DIAMOND_REWARDS.get(code, 0))
-        if reward:
-            await self.db.add_diamonds(
-                telegram_id=buyer_id,
-                amount=reward,
-                reason=f"Покупка VPN: {plan['name']}",
-                event_key=f"payment-reward:{event_key}",
-            )
-        referrer_id = target.get("referrer_id")
-        if referrer_id:
-            await self.db.add_diamonds(
-                telegram_id=int(referrer_id),
-                amount=REFERRAL_FIRST_PAID_REWARD,
-                reason="Друг впервые купил VPN",
-                event_key=f"referral-first-paid:{target_id}",
-            )
         if getattr(self.provider, "service_ready", True):
             try:
                 await asyncio.wait_for(self.provider.provision(target), 7.0)
             except Exception as exc:
                 logger.warning("Mini App provisioning deferred for %s: %s", target_id, exc)
+        await self._sync_bot_subscription_menu(target)
 
     async def index(self, request: web.Request) -> web.StreamResponse:
         index = self.web_dir / "index.html"
@@ -207,18 +394,129 @@ class MiniAppServer:
             }
         )
 
+    async def subscription(self, request: web.Request) -> web.Response:
+        token = str(request.match_info.get("token") or "").strip()
+        user = await self.db.get_user_by_sub_token(token)
+        if user is None:
+            raise web.HTTPNotFound(text="Subscription not found")
+        if not _active(user):
+            raise web.HTTPForbidden(text="Subscription expired")
+
+        cached = self._subscription_cache.get(token)
+        now = time.monotonic()
+        if cached and now - float(cached["created"]) <= 30.0:
+            return web.Response(
+                body=cached["body"],
+                headers=dict(cached["headers"]),
+            )
+
+        async def load_payload() -> tuple[bytes, dict[str, str], int]:
+            body, upstream_headers = await self.provider.fetch_subscription(user)
+            rendered, count = prettify_subscription_payload(body)
+            return rendered, upstream_headers, count
+
+        try:
+            try:
+                body, upstream_headers, count = await asyncio.wait_for(
+                    load_payload(),
+                    12.0,
+                )
+            except Exception:
+                await asyncio.wait_for(self.provider.provision(user), 20.0)
+                body, upstream_headers, count = await asyncio.wait_for(
+                    load_payload(),
+                    12.0,
+                )
+
+            if count < 1:
+                await asyncio.wait_for(self.provider.provision(user), 20.0)
+                body, upstream_headers, count = await asyncio.wait_for(
+                    load_payload(),
+                    12.0,
+                )
+            if count < 1:
+                raise RuntimeError("H1Cloud subscription contains no VLESS nodes")
+
+            title = base64.b64encode("MGN VPN".encode("utf-8")).decode("ascii")
+            headers = {
+                "Content-Type": "text/plain; charset=utf-8",
+                "Cache-Control": "no-store",
+                "Content-Disposition": 'inline; filename="MGN-VPN.txt"',
+                "Profile-Title": f"base64:{title}",
+                "Profile-Update-Interval": "12",
+            }
+            for key in (
+                "subscription-userinfo",
+                "support-url",
+                "profile-web-page-url",
+            ):
+                value = upstream_headers.get(key)
+                if value:
+                    headers[key.title()] = value
+
+            self._subscription_cache[token] = {
+                "created": now,
+                "body": body,
+                "headers": headers,
+            }
+            logger.info(
+                "MGN subscription served for %s with %s node(s)",
+                user["telegram_id"],
+                count,
+            )
+            return web.Response(body=body, headers=headers)
+        except Exception as exc:
+            # Existing configurations remain useful during a short H1 outage.
+            # Serve a recently cached copy rather than turning the profile empty.
+            if cached and now - float(cached["created"]) <= 600.0:
+                logger.warning(
+                    "MGN subscription upstream unavailable for %s; serving stale cache: %s",
+                    user["telegram_id"],
+                    exc,
+                )
+                return web.Response(
+                    body=cached["body"],
+                    headers=dict(cached["headers"]),
+                )
+            logger.warning(
+                "MGN subscription unavailable for %s: %s",
+                user["telegram_id"],
+                exc,
+            )
+            raise web.HTTPServiceUnavailable(
+                text="MGN VPN subscription is temporarily unavailable"
+            )
+
+    async def client_redirect(self, request: web.Request) -> web.Response:
+        client = get_client(str(request.match_info.get("client") or ""))
+        token = str(request.match_info.get("token") or "").strip()
+        user = await self.db.get_user_by_sub_token(token)
+        if client is None or user is None or not _active(user):
+            raise web.HTTPNotFound(text="Client link not found")
+        base = self._external_base_url(request)
+        subscription_url = f"{base}/sub/{quote(token, safe='')}"
+        target = client.import_url(subscription_url)
+        if not target:
+            raise web.HTTPFound(client.download_url)
+        raise web.HTTPFound(target)
+
     async def me(self, request: web.Request) -> web.Response:
         uid, tg_user, row = await self._auth(request)
         state, vpn_ok = await self._load_state(row)
-        referrals = await self.db.referral_count(uid)
-        diamonds = await self.db.diamond_balance(uid)
-        diamond_history = await self.db.diamond_history(uid, 10)
+        referral_stats = await self.db.referral_stats(uid)
         username = await self._username()
+        trial_available = not bool(row.get("trial_used")) and not _active(row)
+        trial_channel_member = (
+            await self._is_trial_channel_member(uid, retries=1)
+            if trial_available
+            else False
+        )
 
         until = from_iso(row.get("subscription_until"))
         until_text = ""
         if until:
             until_text = until.astimezone(self.config.display_tz).isoformat()
+        subscription_url = self._public_subscription_url(row, state, request=request)
 
         return web.json_response(
             {
@@ -227,8 +525,8 @@ class MiniAppServer:
                     "first_name": tg_user.get("first_name") or row.get("first_name") or "Пользователь",
                     "username": tg_user.get("username") or row.get("username") or "",
                     "photo_url": tg_user.get("photo_url") or "",
-                    "diamonds": diamonds,
-                    "referrals": referrals,
+                    "referrals": referral_stats["invited"],
+                    "referral_rewards": referral_stats["rewarded"],
                     "referral_url": f"https://t.me/{username}?start=ref_{uid}",
                 },
                 "subscription": {
@@ -238,13 +536,14 @@ class MiniAppServer:
                     "remaining_seconds": _remaining_seconds(row),
                     "max_devices": int(row.get("max_devices") or 1),
                     "trial_used": bool(row.get("trial_used")),
-                    "trial_available": not bool(row.get("trial_used")) and not _active(row),
+                    "trial_available": trial_available,
+                    "trial_channel_member": trial_channel_member,
                 },
                 "vpn": {
                     "ready": bool(getattr(self.provider, "service_ready", True)),
                     "ok": vpn_ok,
                     "server": state.server or self.config.vpn_server_name,
-                    "subscription_url": state.subscription_url or "",
+                    "subscription_url": subscription_url,
                     "traffic_used_gb": round(float(state.traffic_used_gb or 0), 2),
                     "traffic_limit_gb": round(float(state.traffic_limit_gb or 0), 2),
                     "devices": state.devices,
@@ -257,27 +556,21 @@ class MiniAppServer:
                         "devices": plan["devices"],
                         "rub": plan_price_rub(self.config, code),
                         "stars": plan_price_stars(self.config, code),
-                        "diamonds": int(DIAMOND_REWARDS.get(code, 0)),
+                        "savings": plan_savings_rub(code),
                     }
                     for code, plan in PLANS.items()
                 ],
                 "payments": {"sbp_enabled": bool(self.config.rollypay_enabled)},
-                "shop": {
-                    "extra_device_cost": int(EXTRA_DEVICE_COST),
-                    "max_devices": 10,
-                    "days": [
-                        {
-                            "code": code,
-                            "days": int(item["days"]),
-                            "cost": int(item["cost"]),
-                        }
-                        for code, item in DIAMOND_SHOP_DAYS.items()
-                    ],
+                "capabilities": {
+                    "device_list": bool(self.provider.capabilities.supports_device_list),
+                    "device_removal": bool(self.provider.capabilities.supports_device_removal),
+                    "device_reset": bool(self.provider.capabilities.supports_device_reset),
                 },
-                "diamond_history": diamond_history,
-                "referral_rewards": {
-                    "trial": int(REFERRAL_TRIAL_REWARD),
-                    "first_paid": int(REFERRAL_FIRST_PAID_REWARD),
+                "clients": client_registry(subscription_url) if subscription_url else [],
+                "shop": {
+                    "extra_device_price_rub": int(EXTRA_DEVICE_PRICE_RUB),
+                    "extra_device_price_stars": rub_to_stars(EXTRA_DEVICE_PRICE_RUB),
+                    "max_devices": MAX_DEVICES,
                 },
                 "trial_channel_url": self.config.trial_channel_url,
                 "bot_url": f"https://t.me/{username}",
@@ -287,25 +580,13 @@ class MiniAppServer:
     async def activate_trial(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
         if row.get("trial_used"):
-            raise _json_error(409, "Пробный период уже использован")
-        if _active(row):
-            raise _json_error(409, "Подписка уже активна")
-
-        try:
-            member = await self.bot.get_chat_member(
-                chat_id=self.config.trial_channel_username,
-                user_id=uid,
-            )
-        except Exception as exc:
-            logger.warning("Mini App trial membership check failed: %s", exc)
-            raise _json_error(503, "Не удалось проверить подписку на канал")
-
-        status = getattr(getattr(member, "status", ""), "value", getattr(member, "status", ""))
-        subscribed = str(status) in {"member", "administrator", "creator"} or (
-            str(status) == "restricted" and bool(getattr(member, "is_member", False))
-        )
+            raise _json_error(409, "Бесплатный день уже использован")
+        subscribed = await self._is_trial_channel_member(uid, retries=3)
         if not subscribed:
-            raise _json_error(403, "Сначала подпишись на канал MGN VPN")
+            raise _json_error(
+                403,
+                "Подписка на канал пока не найдена. Вернитесь из канала и нажмите «Забрать 1 день» ещё раз.",
+            )
 
         activated = await self.db.activate_trial(
             uid,
@@ -313,25 +594,23 @@ class MiniAppServer:
             self.config.trial_max_devices,
         )
         if not activated:
-            raise _json_error(409, "Пробный период уже использован")
+            raise _json_error(409, "Бесплатный день уже использован")
 
         row = await self.db.get_user(uid)
-        referrer_id = row.get("referrer_id")
-        if referrer_id:
-            await self.db.add_diamonds(
-                telegram_id=int(referrer_id),
-                amount=REFERRAL_TRIAL_REWARD,
-                reason="Друг активировал пробную подписку",
-                event_key=f"referral-trial:{uid}",
-            )
-
         if getattr(self.provider, "service_ready", True):
             try:
                 await asyncio.wait_for(self.provider.provision(row), 7.0)
             except Exception as exc:
                 logger.warning("Trial provisioning deferred for %s: %s", uid, exc)
 
-        return web.json_response({"ok": True})
+        await self._sync_bot_subscription_menu(row)
+        return web.json_response(
+            {
+                "ok": True,
+                "subscription_until": row.get("subscription_until"),
+                "plan": row.get("plan_name") or "Бесплатный доступ",
+            }
+        )
 
     async def stars_invoice(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
@@ -341,8 +620,35 @@ class MiniAppServer:
         if not plan:
             raise _json_error(400, "Тариф не найден")
 
-        stars = plan_price_stars(self.config, code)
-        payload = f"xtr|{code}|{uid}|{uid}|{uuid4().hex[:12]}"
+        original = plan_price_rub(self.config, code)
+        promo_code = str(data.get("promo_code") or "").strip()
+        quote = None
+        if promo_code:
+            quote = await self.db.promo_quote(
+                code=promo_code,
+                telegram_id=uid,
+                plan_code=code,
+                original_price=original,
+            )
+            if not quote or quote["type"] != "discount":
+                raise _json_error(400, "Промокод не подходит для этой покупки")
+        final = int(quote["final_price"]) if quote else original
+        stars = rub_to_stars(final)
+        intent_id = uuid4().hex
+        await self.db.create_payment_intent(
+            intent_id=intent_id,
+            buyer_id=uid,
+            target_id=uid,
+            product_code=code,
+            original_amount_rub=original,
+            discount_amount_rub=int(quote["discount"]) if quote else 0,
+            final_amount_rub=final,
+            currency="XTR",
+            currency_amount=stars,
+            promo_id=int(quote["id"]) if quote else None,
+            promo_code=str(quote["code"]) if quote else None,
+        )
+        payload = f"xtr2|{intent_id}"
         try:
             invoice_url = await self.bot.create_invoice_link(
                 title=f"MGN VPN · {plan['name']}",
@@ -355,7 +661,13 @@ class MiniAppServer:
             logger.exception("Mini App Stars invoice failed: %s", exc)
             raise _json_error(503, "Не удалось создать оплату Stars")
 
-        return web.json_response({"invoice_url": invoice_url, "stars": stars})
+        return web.json_response({
+            "invoice_url": invoice_url,
+            "stars": stars,
+            "original_price": original,
+            "discount": int(quote["discount"]) if quote else 0,
+            "final_price": final,
+        })
 
     async def sbp_create(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
@@ -368,7 +680,19 @@ class MiniAppServer:
         if not plan:
             raise _json_error(400, "Тариф не найден")
 
-        amount = plan_price_rub(self.config, code)
+        original = plan_price_rub(self.config, code)
+        promo_code = str(data.get("promo_code") or "").strip()
+        quote = None
+        if promo_code:
+            quote = await self.db.promo_quote(
+                code=promo_code,
+                telegram_id=uid,
+                plan_code=code,
+                original_price=original,
+            )
+            if not quote or quote["type"] != "discount":
+                raise _json_error(400, "Промокод не подходит для этой покупки")
+        amount = int(quote["final_price"]) if quote else original
         order_id = f"vpn-mini-{uid}-{uuid4().hex[:12]}"
         try:
             payment = await create_payment(
@@ -387,13 +711,23 @@ class MiniAppServer:
                 target_telegram_id=uid,
                 plan_code=code,
                 amount_rub=amount,
+                original_amount_rub=original,
+                discount_amount_rub=int(quote["discount"]) if quote else 0,
+                promo_id=int(quote["id"]) if quote else None,
+                promo_code=str(quote["code"]) if quote else None,
             )
         except (RollyPayError, KeyError) as exc:
             logger.warning("Mini App SBP create failed: %s", exc)
             raise _json_error(503, "Не удалось создать платёж")
 
         return web.json_response(
-            {"payment_id": payment_id, "pay_url": pay_url, "amount_rub": amount}
+            {
+                "payment_id": payment_id,
+                "pay_url": pay_url,
+                "amount_rub": amount,
+                "original_price": original,
+                "discount": int(quote["discount"]) if quote else 0,
+            }
         )
 
     async def sbp_check(self, request: web.Request) -> web.Response:
@@ -434,135 +768,110 @@ class MiniAppServer:
         if status == "paid":
             fresh = await self.db.mark_sbp_paid(payment_id)
             if fresh:
-                await self._activate_paid(
-                    buyer_id=uid,
-                    target_id=int(local.get("target_telegram_id") or uid),
-                    code=str(local["plan_code"]),
-                    event_key=f"sbp:{payment_id}",
-                )
+                if local.get("promo_id"):
+                    await self.db.consume_promo(
+                        promo_id=int(local["promo_id"]),
+                        telegram_id=uid,
+                        payment_id=payment_id,
+                    )
+                if str(local["plan_code"]) == "device":
+                    updated = await self.db.grant_extra_device(uid, MAX_DEVICES)
+                    if updated and getattr(self.provider, "service_ready", True):
+                        await self.provider.provision(updated)
+                    if updated:
+                        await self._sync_bot_subscription_menu(updated)
+                else:
+                    await self._activate_paid(
+                        buyer_id=uid,
+                        target_id=int(local.get("target_telegram_id") or uid),
+                        code=str(local["plan_code"]),
+                        event_key=f"sbp:{payment_id}",
+                    )
             return web.json_response({"status": "paid"})
 
         await self.db.set_sbp_status(payment_id, status or "processing")
         return web.json_response({"status": status or "processing"})
 
-    async def buy_bonus_days_by_code(self, request: web.Request) -> web.Response:
+    async def buy_extra_device(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
-        code = str(request.match_info.get("code") or "")
-        item = DIAMOND_SHOP_DAYS.get(code)
-        if not item:
-            raise _json_error(404, "Награда не найдена")
+        if not _active(row):
+            raise _json_error(409, "Сначала активируйте подписку")
+        if int(row.get("max_devices") or 1) >= MAX_DEVICES:
+            raise _json_error(409, "Уже доступно максимальное количество устройств")
+        if not self.config.rollypay_enabled:
+            raise _json_error(503, "СБП пока не настроена")
 
-        cost = int(item["cost"])
-        balance = int(row.get("diamonds") or 0)
-        if balance < cost:
-            raise _json_error(409, f"Не хватает {cost - balance} алмазов")
-
-        updated = await self.db.purchase_vpn_days(
-            telegram_id=uid,
-            days=int(item["days"]),
-            cost=cost,
-            event_key=f"mini-days:{uid}:{code}:{uuid4().hex}",
-        )
-        if not updated:
-            raise _json_error(409, "Не удалось выполнить покупку")
-
-        if getattr(self.provider, "service_ready", True):
-            try:
-                await asyncio.wait_for(self.provider.provision(updated), 7.0)
-            except Exception as exc:
-                logger.warning(
-                    "Mini App bonus-days provisioning deferred for %s: %s",
-                    uid,
-                    exc,
-                )
-
+        order_id = f"device-mini-{uid}-{uuid4().hex[:12]}"
+        try:
+            payment = await create_payment(
+                self.config,
+                order_id=order_id,
+                amount=Decimal(EXTRA_DEVICE_PRICE_RUB),
+                description="MGN VPN +1 устройство",
+                user_id=uid,
+            )
+            payment_id = str(payment["payment_id"])
+            pay_url = str(payment["pay_url"])
+            await self.db.create_sbp_payment(
+                payment_id=payment_id,
+                order_id=order_id,
+                telegram_id=uid,
+                target_telegram_id=uid,
+                plan_code="device",
+                amount_rub=EXTRA_DEVICE_PRICE_RUB,
+                original_amount_rub=EXTRA_DEVICE_PRICE_RUB,
+            )
+        except (RollyPayError, KeyError) as exc:
+            logger.warning("Mini App device payment failed: %s", exc)
+            raise _json_error(503, "Не удалось создать платёж")
         return web.json_response(
             {
-                "ok": True,
-                "days": int(item["days"]),
-                "diamonds": int(updated.get("diamonds") or 0),
-                "subscription_until": updated.get("subscription_until"),
+                "payment_id": payment_id,
+                "pay_url": pay_url,
+                "amount_rub": EXTRA_DEVICE_PRICE_RUB,
             }
         )
 
-    async def buy_bonus_days(self, request: web.Request) -> web.Response:
+    async def promo_quote(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
         data = await request.json()
         code = str(data.get("code") or "")
-        item = DIAMOND_SHOP_DAYS.get(code)
-        if not item:
-            raise _json_error(400, "Награда не найдена")
-
-        balance = await self.db.diamond_balance(uid)
-        cost = int(item["cost"])
-        if balance < cost:
-            raise _json_error(409, f"Не хватает {cost - balance} алмазов")
-
-        updated = await self.db.purchase_vpn_days(
+        plan_code = str(data.get("plan_code") or "")
+        plan = PLANS.get(plan_code)
+        original = plan_price_rub(self.config, plan_code) if plan else 0
+        quote = await self.db.promo_quote(
+            code=code,
             telegram_id=uid,
-            days=int(item["days"]),
-            cost=cost,
-            event_key=f"mini-days:{uid}:{code}:{uuid4().hex}",
+            plan_code=plan_code,
+            original_price=original,
         )
-        if not updated:
-            raise _json_error(409, "Не удалось обменять алмазы")
+        if not quote:
+            raise _json_error(400, "Промокод недействителен или уже использован")
+        return web.json_response(
+            {
+                "code": quote["code"],
+                "type": quote["type"],
+                "value": int(quote["value"]),
+                "original_price": int(quote["original_price"]),
+                "discount": int(quote["discount"]),
+                "final_price": int(quote["final_price"]),
+            }
+        )
 
+    async def promo_redeem(self, request: web.Request) -> web.Response:
+        uid, _tg_user, _row = await self._auth(request)
+        data = await request.json()
+        code = str(data.get("code") or "")
+        updated = await self.db.redeem_free_days_promo(code, uid)
+        if not updated:
+            raise _json_error(400, "Промокод недействителен или не даёт бесплатные дни")
         if getattr(self.provider, "service_ready", True):
             try:
                 await asyncio.wait_for(self.provider.provision(updated), 7.0)
             except Exception as exc:
-                logger.warning(
-                    "Mini App bonus-days provisioning deferred for %s: %s",
-                    uid,
-                    exc,
-                )
-
-        return web.json_response(
-            {
-                "ok": True,
-                "diamonds": int(updated.get("diamonds") or 0),
-                "subscription_until": updated.get("subscription_until"),
-                "plan_name": updated.get("plan_name") or "",
-            }
-        )
-
-    async def buy_extra_device(self, request: web.Request) -> web.Response:
-        uid, _tg_user, row = await self._auth(request)
-        current_limit = int(row.get("max_devices") or 1)
-        if current_limit >= 10:
-            raise _json_error(409, "Уже доступно максимальное количество устройств")
-
-        balance = int(row.get("diamonds") or 0)
-        if balance < int(EXTRA_DEVICE_COST):
-            missing = int(EXTRA_DEVICE_COST) - balance
-            raise _json_error(409, f"Не хватает {missing} алмазов")
-
-        updated = await self.db.purchase_extra_device(
-            telegram_id=uid,
-            cost=int(EXTRA_DEVICE_COST),
-            event_key=f"mini-device:{uid}:{uuid4().hex}",
-            max_total_devices=10,
-        )
-        if not updated:
-            raise _json_error(409, "Не удалось добавить устройство")
-
-        if getattr(self.provider, "service_ready", True) and _active(updated):
-            try:
-                await asyncio.wait_for(self.provider.provision(updated), 7.0)
-            except Exception as exc:
-                logger.warning(
-                    "Mini App device limit provisioning deferred for %s: %s",
-                    uid,
-                    exc,
-                )
-
-        return web.json_response(
-            {
-                "ok": True,
-                "max_devices": int(updated.get("max_devices") or current_limit + 1),
-                "diamonds": int(updated.get("diamonds") or 0),
-            }
-        )
+                logger.warning("Promo provisioning deferred for %s: %s", uid, exc)
+        await self._sync_bot_subscription_menu(updated)
+        return web.json_response({"ok": True, "subscription_until": updated["subscription_until"]})
 
     async def delete_device(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
@@ -570,6 +879,12 @@ class MiniAppServer:
             raise _json_error(409, "Подписка не активна")
         if not getattr(self.provider, "service_ready", True):
             raise _json_error(503, "VPN-серверы ещё не подключены")
+
+        if not self.provider.capabilities.supports_device_removal:
+            raise _json_error(
+                409,
+                "H1Cloud не поддерживает отключение одного устройства. Используйте сброс всех устройств.",
+            )
 
         device_id = str(request.match_info.get("device_id") or "")
         if not device_id:
@@ -584,21 +899,41 @@ class MiniAppServer:
 
         return web.json_response({"ok": True, "vpn_ok": ok, "devices": state.devices})
 
+    async def reset_devices(self, request: web.Request) -> web.Response:
+        uid, _tg_user, row = await self._auth(request)
+        if not _active(row):
+            raise _json_error(409, "Подписка не активна")
+        if not getattr(self.provider, "service_ready", True):
+            raise _json_error(503, "VPN-серверы ещё не подключены")
+        if not self.provider.capabilities.supports_device_reset:
+            raise _json_error(409, "Сброс устройств недоступен для этого VPN-провайдера")
+
+        try:
+            state = await asyncio.wait_for(self.provider.reset_devices(row), 30.0)
+        except Exception as exc:
+            logger.warning("Mini App device reset failed for %s: %s", uid, exc)
+            raise _json_error(503, "Не удалось сбросить устройства")
+
+        return web.json_response({"ok": True, "devices": state.devices})
+
     async def start(self) -> None:
         app = web.Application(client_max_size=1024 * 1024)
         app.router.add_get("/", self.index)
         app.router.add_get("/miniapp", self.index)
         app.router.add_get("/miniapp/", self.index)
+        app.router.add_get("/sub/{token}", self.subscription)
+        app.router.add_get("/client/{client}/{token}", self.client_redirect)
         app.router.add_get("/api/miniapp/health", self.health)
         app.router.add_get("/api/miniapp/me", self.me)
         app.router.add_post("/api/miniapp/trial", self.activate_trial)
         app.router.add_post("/api/miniapp/payment/stars", self.stars_invoice)
         app.router.add_post("/api/miniapp/payment/sbp", self.sbp_create)
         app.router.add_get("/api/miniapp/payment/sbp/{payment_id}", self.sbp_check)
-        app.router.add_post("/api/miniapp/shop/days/{code}", self.buy_bonus_days_by_code)
         app.router.add_post("/api/miniapp/shop/device", self.buy_extra_device)
-        app.router.add_post("/api/miniapp/shop/days", self.buy_bonus_days)
+        app.router.add_post("/api/miniapp/promo/quote", self.promo_quote)
+        app.router.add_post("/api/miniapp/promo/redeem", self.promo_redeem)
         app.router.add_delete("/api/miniapp/devices/{device_id}", self.delete_device)
+        app.router.add_post("/api/miniapp/devices/reset", self.reset_devices)
         app.router.add_static("/static/", str(self.web_dir), show_index=False)
 
         self.runner = web.AppRunner(app, access_log=None)
@@ -616,6 +951,13 @@ class MiniAppServer:
         )
 
     async def close(self) -> None:
+        tasks = list(self._reconcile_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._reconcile_tasks.clear()
+
         if self.runner is not None:
             await self.runner.cleanup()
             self.runner = None

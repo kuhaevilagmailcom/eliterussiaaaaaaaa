@@ -5,6 +5,7 @@ import base64
 import html
 import logging
 import re
+from datetime import timedelta
 from io import BytesIO
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -13,11 +14,13 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from aiogram import F, Router
+import aiosqlite
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery,
     BufferedInputFile,
+    CopyTextButton,
     InlineKeyboardButton,
     InputMediaPhoto,
     KeyboardButton,
@@ -31,25 +34,28 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from PIL import Image
 
 from catalog import (
-    DIAMOND_REWARDS,
-    DIAMOND_SHOP_DAYS,
-    EXTRA_DEVICE_COST,
+    BASE_DEVICES,
+    DEVICE_PRODUCT_CODE,
+    EXTRA_DEVICE_PRICE_RUB,
+    MAX_DEVICES,
     PLANS,
-    REFERRAL_FIRST_PAID_REWARD,
-    REFERRAL_TRIAL_REWARD,
+    extra_device_price_stars,
     plan_price_rub,
     plan_price_stars,
+    plan_savings_rub,
 )
 from config import Config
 from db import Database, from_iso, utcnow
 from emoji import EmojiBank
 from payments import RollyPayError, create_payment, get_payment
 from vpn import VpnProvider, VpnState
+from vpn_clients import CLIENTS, client_redirect_url
 
 
 PACK_CRYPTO = "CryptoGIFTPODARKI"
 PACK_UI = "TgAndroidIcons"
 PACK_PROGRESS = "progressBarEmoji"
+PACK_NEWS = "NewsEmoji"
 
 logger = logging.getLogger(__name__)
 
@@ -61,28 +67,37 @@ def main_menu_banner() -> BufferedInputFile:
     global _main_menu_banner_bytes
 
     if _main_menu_banner_bytes is None:
-        encoded = "".join(
-            (MAIN_MENU_BANNER_DIR / f"{index:02d}.txt")
-            .read_text(encoding="utf-8")
-            .strip()
-            for index in range(1, 19)
-        )
-        webp_bytes = base64.b64decode(encoded, validate=True)
-
-        with Image.open(BytesIO(webp_bytes)) as image:
-            image = image.convert("RGB")
-            if image.size != (1600, 900):
-                image = image.resize((1600, 900), Image.Resampling.LANCZOS)
-            output = BytesIO()
-            image.save(
-                output,
-                format="JPEG",
-                quality=95,
-                subsampling=0,
-                optimize=False,
-                progressive=False,
+        try:
+            encoded = "".join(
+                (MAIN_MENU_BANNER_DIR / f"{index:02d}.txt")
+                .read_text(encoding="utf-8")
+                .strip()
+                for index in range(1, 19)
             )
-            _main_menu_banner_bytes = output.getvalue()
+            webp_bytes = base64.b64decode(encoded, validate=True)
+
+            with Image.open(BytesIO(webp_bytes)) as source:
+                image = source.convert("RGB")
+                if image.size != (1600, 900):
+                    image = image.resize((1600, 900), Image.Resampling.LANCZOS)
+        except Exception as exc:
+            # A broken bundled banner must never take the whole bot down.
+            # Keep the menu usable even if one of the base64 asset chunks is
+            # malformed or was partially committed.
+            logger.error("Bundled main-menu banner is invalid: %s", exc)
+            image = Image.new("RGB", (1600, 900), (7, 7, 9))
+            image.paste((244, 90, 184), (0, 0, 1600, 10))
+
+        output = BytesIO()
+        image.save(
+            output,
+            format="JPEG",
+            quality=95,
+            subsampling=0,
+            optimize=False,
+            progressive=False,
+        )
+        _main_menu_banner_bytes = output.getvalue()
 
         logger.info(
             "Main menu HQ banner loaded: 1600x900, %s bytes",
@@ -98,15 +113,6 @@ def main_menu_banner() -> BufferedInputFile:
 def is_active(user: dict[str, Any]) -> bool:
     until = from_iso(user.get("subscription_until"))
     return bool(until and until > utcnow())
-
-
-def plan_price_rub(config: Config, code: str) -> int:
-    return int(PLANS[code]["price_rub"])
-
-
-def plan_price_stars(config: Config, code: str) -> int:
-    rub = plan_price_rub(config, code)
-    return max(1, (rub * STAR_RATE_XTR + STAR_RATE_RUB - 1) // STAR_RATE_RUB)
 
 
 def format_until(user: dict[str, Any], config: Config) -> str:
@@ -154,21 +160,35 @@ async def load_state(
         return fallback_state(user, config), True
     if not getattr(provider, "service_ready", True):
         return fallback_state(user, config), False
+
+    # Fast path for an already provisioned H1 client: opening the bot UI must
+    # not wait for every remote federation node.
     try:
         state = await asyncio.wait_for(
             provider.get_state(user),
-            timeout=4.0,
+            timeout=5.0,
         )
         return state, True
-    except Exception:
-        try:
-            state = await asyncio.wait_for(
-                provider.provision(user),
-                timeout=6.0,
-            )
-            return state, True
-        except Exception:
-            return fallback_state(user, config), False
+    except Exception as state_exc:
+        logger.warning(
+            "VPN state read failed for user %s: %s",
+            user.get("telegram_id"),
+            str(state_exc).strip() or type(state_exc).__name__,
+        )
+
+    try:
+        state = await asyncio.wait_for(
+            provider.provision(user),
+            timeout=15.0,
+        )
+        return state, True
+    except Exception as exc:
+        logger.warning(
+            "VPN provisioning failed for user %s: %s",
+            user.get("telegram_id"),
+            str(exc).strip() or type(exc).__name__,
+        )
+        return fallback_state(user, config), False
 
 
 def strip_custom_emoji(value: str) -> str:
@@ -196,7 +216,7 @@ def main_keyboard(
                 button("ℹ️ Информация"),
             ],
             [
-                button("💎 Купить VPN"),
+                button("💳 Купить VPN"),
                 button("📱 Устройства"),
             ],
             [
@@ -224,6 +244,48 @@ def blue_inline_button(
         url=url,
         style="primary",
     )
+
+
+def copy_inline_button(text: str, value: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(
+        text=text,
+        copy_text=CopyTextButton(text=value),
+        style="primary",
+    )
+
+
+def connection_keyboard(
+    subscription_url: str,
+    *,
+    back_data: str = "home",
+) -> Any:
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        blue_inline_button(
+            "🚀 Открыть VPN",
+            url=subscription_url,
+        )
+    )
+    kb.row(
+        copy_inline_button(
+            "📋 Скопировать ссылку",
+            subscription_url,
+        )
+    )
+    for client in CLIENTS:
+        target = (
+            client_redirect_url(subscription_url, client)
+            if client.supports_subscription_import
+            else client.download_url
+        )
+        label = (
+            f"{client.icon} Добавить в {client.name}"
+            if client.supports_subscription_import
+            else f"{client.icon} Скачать {client.name}"
+        )
+        kb.row(blue_inline_button(label, url=target))
+    add_nav_buttons(kb, back_data=back_data)
+    return kb.as_markup()
 
 
 def add_nav_buttons(
@@ -261,12 +323,12 @@ def main_menu_inline_keyboard(
         blue_inline_button("ℹ️ Информация", callback_data="menu:info"),
     )
     kb.row(
-        blue_inline_button("💎 Купить VPN", callback_data="plans"),
+        blue_inline_button("💳 Купить VPN", callback_data="plans"),
         blue_inline_button("📱 Устройства", callback_data="menu:devices"),
     )
     kb.row(
-        blue_inline_button("💎 Алмазы", callback_data="diamonds"),
-        blue_inline_button("👥 Друзья", callback_data="menu:friends"),
+        blue_inline_button("👥 Пригласить друзей", callback_data="menu:friends"),
+        blue_inline_button("🎟 Промокод", callback_data="menu:promo"),
     )
     kb.row(
         blue_inline_button("🆘 Поддержка", callback_data="menu:support"),
@@ -280,15 +342,33 @@ def main_menu_inline_keyboard(
 def plans_keyboard(config: Config) -> Any:
     kb = InlineKeyboardBuilder()
     for code, plan in PLANS.items():
+        savings = plan_savings_rub(code)
+        suffix = f" · выгода {savings} ₽" if savings else ""
         kb.row(
             blue_inline_button(
-                "💳 "
-                + f'{plan["name"]} · {plan_price_rub(config, code)} ₽ · '
-                + f'+{DIAMOND_REWARDS.get(code, 0)} 💎',
+                f"💳 {plan['name']} · {plan_price_rub(config, code)} ₽{suffix}",
                 callback_data=f"plan:{code}",
             )
         )
     add_nav_buttons(kb, back_data="home")
+    return kb.as_markup()
+
+
+def device_payment_keyboard() -> Any:
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        blue_inline_button(
+            f"🏦 СБП · {EXTRA_DEVICE_PRICE_RUB} ₽",
+            callback_data="device:sbp",
+        )
+    )
+    kb.row(
+        blue_inline_button(
+            f"⭐ Telegram Stars · {extra_device_price_stars()} ⭐",
+            callback_data="device:stars",
+        )
+    )
+    add_nav_buttons(kb, back_data="menu:devices")
     return kb.as_markup()
 
 
@@ -353,13 +433,11 @@ def profile_text(
     devices_count = len(state.devices)
     plan = html.escape(user.get("plan_name") or "—")
 
-    e_profile = emoji.icon(0, pack=PACK_UI)
-    e_sub = emoji.icon(1, pack=PACK_CRYPTO)
+    e_profile = emoji.icon(0, pack=PACK_NEWS)
+    e_sub = emoji.icon(1, pack=PACK_NEWS)
 
     lines = [
         f"{e_profile} <b>Ваш ID:</b> <code>{user_id}</code>",
-        f"💎 <b>Алмазы:</b> {int(user.get('diamonds') or 0)}",
-        "",
         f"{e_sub} <b>Информация о подписке:</b>",
         f"├ Статус: <b>{'Активна' if active else 'Не активна'}</b>",
     ]
@@ -377,7 +455,7 @@ def profile_text(
         else:
             trial = "доступен после подписки на канал"
         lines += [
-            f"├ Пробный доступ: <b>{trial}</b>",
+            f"├ Бесплатный день: <b>{trial}</b>",
             f"└ Устройства: <b>до {max_devices}</b>",
         ]
 
@@ -395,16 +473,71 @@ def profile_text(
     return "\n".join(lines)
 
 
+def _https_public_base_url(value: str) -> str:
+    value = str(value or "").strip().rstrip("/")
+    if value.startswith("http://"):
+        value = "https://" + value[len("http://"):]
+    elif value and not value.startswith("https://"):
+        value = "https://" + value.lstrip("/")
+    return value if value.startswith("https://") else ""
+
+
+def _saved_public_base_url(config: Config) -> str:
+    path = Path(config.db_path).with_name("public_base_url.txt")
+    try:
+        value = path.read_text(encoding="utf-8").strip().rstrip("/")
+    except FileNotFoundError:
+        return ""
+    except Exception:
+        logger.exception("Could not read saved public base URL")
+        return ""
+    return _https_public_base_url(value)
+
+
+async def public_subscription_url(
+    user: dict[str, Any],
+    state: VpnState,
+    config: Config,
+    *,
+    bot=None,
+) -> str:
+    if config.vpn_mode == "h1cloud" and user.get("sub_token") and is_active(user):
+        base_url = _https_public_base_url(config.miniapp_url) or _saved_public_base_url(config)
+
+        # If BotHost did not expose DOMAIN/MINIAPP_URL to the process, Telegram
+        # may still have the previously configured Mini App menu button. Reuse
+        # its URL so the bot and Mini App return the exact same /sub/<token>.
+        if not base_url and bot is not None:
+            try:
+                menu_button = await bot.get_chat_menu_button()
+                web_app = getattr(menu_button, "web_app", None)
+                menu_url = str(getattr(web_app, "url", "") or "").strip().rstrip("/")
+                menu_url = _https_public_base_url(menu_url)
+                if menu_url:
+                    base_url = menu_url
+            except Exception as exc:
+                logger.warning("Could not resolve Mini App URL from Telegram menu: %s", exc)
+
+        if base_url:
+            token = quote(str(user["sub_token"]), safe="")
+            return f"{base_url}/sub/{token}"
+
+    return state.subscription_url or ""
+
+
 def connection_text(
     user: dict[str, Any],
     state: VpnState,
     emoji: EmojiBank,
+    subscription_url: str,
 ) -> str:
-    e_link = emoji.icon(10, pack=PACK_UI)
+    e_link = emoji.icon(2, pack=PACK_NEWS)
     server = html.escape(state.server or "MGN VPN")
+    safe_url = html.escape(subscription_url)
     return (
         f"{e_link} <b>Подключение</b>\n\n"
-        "Ваша персональная ссылка готова.\n"
+        "Ваша персональная HTTPS-ссылка готова.\n"
+        f"<code>{safe_url}</code>\n\n"
         f"Сервер — <b>{server}</b>\n"
         f"Можно использовать на <b>{int(user.get('max_devices') or 1)}</b> устройствах."
     )
@@ -422,6 +555,8 @@ def build_router(
     banner_file_id_path = Path(config.db_path).with_name("main_menu_banner_file_id.txt")
 
     def current_main_menu_banner():
+        # A Telegram file_id is the preferred source: no decoding, no image
+        # processing and no quality loss. /setbanner persists it next to DB.
         try:
             file_id = banner_file_id_path.read_text(encoding="utf-8").strip()
             if file_id:
@@ -430,6 +565,10 @@ def build_router(
             pass
         except Exception:
             logger.exception("Could not read saved main-menu banner file_id")
+
+        if config.main_menu_banner_file_id:
+            return config.main_menu_banner_file_id
+
         return main_menu_banner()
 
     def save_main_menu_banner_file_id(file_id: str) -> None:
@@ -465,43 +604,51 @@ def build_router(
     def is_owner(user_id: int) -> bool:
         return user_id in config.admin_ids
 
-    async def is_trial_channel_member(bot, user_id: int) -> bool:
-        try:
-            member = await bot.get_chat_member(
-                chat_id=config.trial_channel_username,
-                user_id=user_id,
-            )
-        except Exception as exc:
-            logger.exception(
-                "Trial channel membership check failed for user %s in %s: %s",
-                user_id,
-                config.trial_channel_username,
-                exc,
-            )
-            return False
+    async def is_trial_channel_member(
+        bot,
+        user_id: int,
+        *,
+        retries: int = 3,
+    ) -> bool:
+        retries = max(1, min(int(retries), 4))
+        for attempt in range(retries):
+            try:
+                member = await bot.get_chat_member(
+                    chat_id=config.trial_channel_username,
+                    user_id=user_id,
+                )
+                status = getattr(member.status, "value", str(member.status))
+                if status in {"member", "administrator", "creator"}:
+                    return True
+                if status == "restricted" and bool(getattr(member, "is_member", False)):
+                    return True
+            except Exception as exc:
+                logger.warning(
+                    "Trial channel membership check failed for user %s in %s: %s",
+                    user_id,
+                    config.trial_channel_username,
+                    exc,
+                )
 
-        status = getattr(member.status, "value", str(member.status))
-        if status in {"member", "administrator", "creator"}:
-            return True
-
-        # Restricted members may still be members of the channel.
-        if status == "restricted" and bool(getattr(member, "is_member", False)):
-            return True
+            # Telegram may need a short moment after the user joins a channel.
+            if attempt + 1 < retries:
+                await asyncio.sleep(0.6)
 
         return False
 
-    def trial_channel_keyboard() -> Any:
+    def trial_channel_keyboard(*, subscribed: bool = False) -> Any:
         kb = InlineKeyboardBuilder()
-        kb.row(
-            blue_inline_button(
-                "📢 Подписаться на канал",
-                url=config.trial_channel_url,
+        if not subscribed:
+            kb.row(
+                blue_inline_button(
+                    "📢 Подписаться на канал",
+                    url=config.trial_channel_url,
+                )
             )
-        )
         kb.row(
             blue_inline_button(
-                "✅ Проверить подписку",
-                callback_data="trialcheck",
+                "🎁 Забрать 1 день",
+                callback_data="trial:claim",
             )
         )
         add_nav_buttons(kb, back_data="home")
@@ -858,18 +1005,31 @@ def build_router(
             ]
         elif not user.get("trial_used"):
             channel = html.escape(config.trial_channel_username)
+            channel_member = await is_trial_channel_member(
+                message.bot,
+                int(actor.id),
+                retries=1,
+            )
             lines += [
-                "└ Пробный доступ: <b>доступен</b>",
+                "└ Бесплатный день: <b>доступен</b>",
                 "",
-                "🎁 <b>Пробная подписка</b>",
-                f"Чтобы активировать её, подпишитесь на канал <b>{channel}</b>.",
-                "После подписки нажмите <b>«🔗 Подключить VPN»</b>.",
+                "🎁 <b>Бесплатный день VPN</b>",
             ]
+            if channel_member:
+                lines += [
+                    "✅ Подписка на канал подтверждена.",
+                    "Откройте <b>«🔗 Подключить VPN»</b> и нажмите <b>«🎁 Забрать 1 день»</b>.",
+                ]
+            else:
+                lines += [
+                    f"Подпишитесь на канал <b>{channel}</b>.",
+                    "Затем откройте <b>«🔗 Подключить VPN»</b> и нажмите <b>«🎁 Забрать 1 день»</b>.",
+                ]
         else:
             lines += [
-                "└ Пробный доступ: <b>уже использован</b>",
+                "└ Бесплатный день: <b>уже использован</b>",
                 "",
-                "Выберите платную подписку кнопкой <b>«💎 Купить VPN»</b>.",
+                "Выберите платную подписку кнопкой <b>«💳 Купить VPN»</b>.",
             ]
 
         if active and not getattr(provider, "service_ready", True):
@@ -892,134 +1052,6 @@ def build_router(
             actor,
             profile_text(user, state, emoji, ok, config),
             reply_markup=section_nav_keyboard(),
-        )
-
-    async def show_diamonds(message: Message, actor) -> None:
-        user = await ensure_actor(actor)
-        balance = int(user.get("diamonds") or 0)
-
-        kb = InlineKeyboardBuilder()
-        kb.row(
-            blue_inline_button("🛍 Магазин", callback_data="diamonds:shop"),
-            blue_inline_button("👥 Заработать", callback_data="diamonds:earn"),
-        )
-        kb.row(
-            blue_inline_button("📜 История", callback_data="diamonds:history"),
-        )
-        add_nav_buttons(kb, back_data="home")
-
-        await send_screen(
-            message,
-            actor,
-            "💎 <b>Алмазы MGN VPN</b>\n\n"
-            f"Баланс — <b>{balance} 💎</b>\n\n"
-            "Получайте алмазы за покупки и приглашённых друзей, "
-            "а затем меняйте их на дни VPN, дополнительные устройства "
-            "и промокоды.",
-            reply_markup=kb.as_markup(),
-        )
-
-    async def show_diamond_shop(message: Message, actor) -> None:
-        user = await ensure_actor(actor)
-        balance = int(user.get("diamonds") or 0)
-        kb = InlineKeyboardBuilder()
-
-        for key, item in DIAMOND_SHOP_DAYS.items():
-            kb.row(
-                blue_inline_button(
-                    f"⏳ {item['days']} дн. VPN · {item['cost']} 💎",
-                    callback_data=f"shop:days:{key}",
-                )
-            )
-
-        kb.row(
-            blue_inline_button(
-                f"📱 +1 устройство · {EXTRA_DEVICE_COST} 💎",
-                callback_data="shop:device",
-            )
-        )
-
-        promos = await db.promo_products()
-        for item in promos[:12]:
-            slug = str(item["slug"])
-            title = str(item["title"])
-            price = int(item["price_diamonds"])
-            stock = int(item["stock"])
-            kb.row(
-                blue_inline_button(
-                    f"🎟 {title[:28]} · {price} 💎 ({stock})",
-                    callback_data=f"shop:promo:{slug}",
-                )
-            )
-
-        add_nav_buttons(kb, back_data="diamonds")
-        promo_note = (
-            "\n\n🎟 Доступные промокоды показаны ниже."
-            if promos
-            else "\n\n🎟 Промокодов сейчас нет в наличии."
-        )
-        await send_screen(
-            message,
-            actor,
-            "🛍 <b>Магазин за алмазы</b>\n\n"
-            f"Ваш баланс — <b>{balance} 💎</b>\n\n"
-            "Выберите награду. Покупки списываются с баланса сразу."
-            + promo_note,
-            reply_markup=kb.as_markup(),
-        )
-
-    async def show_diamond_earn(message: Message, actor) -> None:
-        await ensure_actor(actor)
-        bot_info = await message.bot.get_me()
-        link = f"https://t.me/{bot_info.username}?start=ref_{actor.id}"
-        kb = InlineKeyboardBuilder()
-        kb.row(
-            blue_inline_button(
-                "👥 Поделиться ссылкой",
-                url=(
-                    "https://t.me/share/url?url="
-                    + quote(link, safe="")
-                    + "&text="
-                    + quote("Подключай MGN VPN", safe="")
-                ),
-            )
-        )
-        add_nav_buttons(kb, back_data="diamonds")
-
-        await send_screen(
-            message,
-            actor,
-            "💎 <b>Как заработать алмазы</b>\n\n"
-            f"15 дней VPN — <b>+{DIAMOND_REWARDS['15']} 💎</b>\n"
-            f"1 месяц — <b>+{DIAMOND_REWARDS['30']} 💎</b>\n"
-            f"1 год — <b>+{DIAMOND_REWARDS['365']} 💎</b>\n"
-            f"Навсегда — <b>+{DIAMOND_REWARDS['forever']} 💎</b>\n\n"
-            f"Друг активировал пробник — <b>+{REFERRAL_TRIAL_REWARD} 💎</b>\n"
-            f"Друг впервые купил VPN — <b>+{REFERRAL_FIRST_PAID_REWARD} 💎</b>\n\n"
-            f"Ваша ссылка:\n<code>{html.escape(link)}</code>",
-            reply_markup=kb.as_markup(),
-        )
-
-    async def show_diamond_history(message: Message, actor) -> None:
-        await ensure_actor(actor)
-        history = await db.diamond_history(actor.id, 10)
-        lines = ["📜 <b>История алмазов</b>", ""]
-
-        if not history:
-            lines.append("Операций пока нет.")
-        else:
-            for item in history:
-                amount = int(item["amount"])
-                sign = "+" if amount > 0 else ""
-                lines.append(
-                    f"{sign}{amount} 💎 · {html.escape(str(item['reason']))}"
-                )
-
-        await send_screen(
-            message,
-            actor,
-            "\n".join(lines),
-            reply_markup=section_nav_keyboard(back_data="diamonds"),
         )
 
     async def activate_paid_plan(telegram_id: int, code: str) -> dict[str, Any]:
@@ -1048,26 +1080,7 @@ def build_router(
         payment_event_key: str,
     ) -> tuple[dict[str, Any], int]:
         user = await activate_paid_plan(target_telegram_id, code)
-
-        reward_amount = int(DIAMOND_REWARDS.get(code, 0))
-        if reward_amount:
-            await db.add_diamonds(
-                telegram_id=buyer_telegram_id,
-                amount=reward_amount,
-                reason=f"Покупка VPN: {PLANS[code]['name']}",
-                event_key=f"payment-reward:{payment_event_key}",
-            )
-
-        referrer_id = user.get("referrer_id")
-        if referrer_id:
-            await db.add_diamonds(
-                telegram_id=int(referrer_id),
-                amount=REFERRAL_FIRST_PAID_REWARD,
-                reason="Друг впервые купил VPN",
-                event_key=f"referral-first-paid:{target_telegram_id}",
-            )
-
-        return user, reward_amount
+        return user, 0
 
     @router.message(Command("setbanner"))
     async def set_banner(message: Message) -> None:
@@ -1075,18 +1088,26 @@ def build_router(
             return
 
         source_message = message.reply_to_message or message
-        if not source_message.photo:
+        file_id = ""
+
+        if source_message.photo:
+            file_id = source_message.photo[-1].file_id
+        else:
+            parts = (message.text or "").split(maxsplit=1)
+            if len(parts) == 2:
+                file_id = parts[1].strip()
+
+        if not file_id:
             await message.answer(
-                "Пришли нужную картинку как фото с подписью /setbanner "
-                "или ответь командой /setbanner на фото."
+                "Пришли нужную картинку как фото с подписью /setbanner, "
+                "ответь /setbanner на фото или передай Telegram file_id после команды."
             )
             return
 
-        photo = source_message.photo[-1]
-        save_main_menu_banner_file_id(photo.file_id)
+        save_main_menu_banner_file_id(file_id)
 
-        # Update the existing main-menu message in place. No delete, no new
-        # confirmation message, no duplicate banner.
+        # Refresh the tracked menu immediately. Telegram keeps using its own
+        # file_id afterwards, so the image is not re-uploaded on every screen.
         await show_home(message, message.from_user)
 
     @router.message(CommandStart())
@@ -1094,7 +1115,7 @@ def build_router(
         user = await ensure_actor(message.from_user)
         if command.args and command.args.startswith("ref_"):
             raw = command.args.removeprefix("ref_")
-            if raw.isdigit():
+            if raw.isdigit() and bool(user.get("_is_new")):
                 await db.set_referrer_once(
                     message.from_user.id,
                     int(raw),
@@ -1139,58 +1160,85 @@ def build_router(
         user = await ensure_actor(callback.from_user)
         if not is_active(user):
             if not user.get("trial_used"):
+                subscribed = await is_trial_channel_member(
+                    callback.message.bot,
+                    callback.from_user.id,
+                    retries=2,
+                )
+                text = (
+                    "🎁 <b>Бесплатный день VPN</b>\n\n"
+                    + (
+                        "✅ Подписка на канал подтверждена.\n"
+                        "Нажмите <b>«🎁 Забрать 1 день»</b>."
+                        if subscribed
+                        else (
+                            f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
+                            "вернитесь в бот и нажмите <b>«🎁 Забрать 1 день»</b>."
+                        )
+                    )
+                )
                 await send_screen(
                     callback.message,
                     callback.from_user,
-                    "🎁 <b>Пробная подписка</b>\n\n"
-                    f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
-                    "затем нажмите <b>«✅ Проверить подписку»</b>.",
-                    reply_markup=trial_channel_keyboard(),
+                    text,
+                    reply_markup=trial_channel_keyboard(subscribed=subscribed),
                 )
             else:
                 kb = InlineKeyboardBuilder()
-                kb.row(blue_inline_button("💎 Купить подписку", callback_data="plans"))
+                kb.row(blue_inline_button("💳 Купить подписку", callback_data="plans"))
                 add_nav_buttons(kb, back_data="home")
                 await send_screen(
                     callback.message,
                     callback.from_user,
                     "🔗 <b>Подключение VPN</b>\n\n"
-                    "Пробный период уже использован. Выберите подписку.",
+                    "Бесплатный день уже использован. Выберите подписку.",
                     reply_markup=kb.as_markup(),
                 )
             return
 
         state, ok = await load_state(user, provider, config)
-        if not getattr(provider, "service_ready", True):
+        subscription_url = await public_subscription_url(
+            user,
+            state,
+            config,
+            bot=callback.message.bot,
+        )
+
+        # For H1Cloud the public MGN /sub/<token> URL is stable and does not
+        # depend on a successful live panel read. The proxy can provision,
+        # retry and serve its short stale cache itself, so the bot must not
+        # hide the copy/open buttons just because H1 timed out for this screen.
+        if not subscription_url:
+            if not getattr(provider, "service_ready", True):
+                text = (
+                    "🔗 <b>Подключение VPN</b>\n\n"
+                    "Подписка активна, но VPN-серверы пока ещё не подключены."
+                )
+            else:
+                text = (
+                    "🔗 <b>Подключение VPN</b>\n\n"
+                    "Не удалось сформировать персональную ссылку. "
+                    "Попробуйте ещё раз через несколько секунд."
+                )
             await send_screen(
                 callback.message,
                 callback.from_user,
-                "🔗 <b>Подключение VPN</b>\n\n"
-                "Подписка активна, но VPN-серверы пока ещё не подключены.\n\n"
-                "Бот уже готов: после подключения серверов здесь автоматически "
-                "появится ваша персональная ссылка.",
-                reply_markup=section_nav_keyboard(),
-            )
-            return
-        if not ok or not state.subscription_url:
-            await send_screen(
-                callback.message,
-                callback.from_user,
-                "🔗 <b>Подключение VPN</b>\n\n"
-                "VPN-сервер временно не ответил. Подписка сохранена — "
-                "попробуйте открыть подключение немного позже.",
+                text,
                 reply_markup=section_nav_keyboard(),
             )
             return
 
-        kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("🔗 Открыть подключение", url=state.subscription_url))
-        add_nav_buttons(kb, back_data="home")
+        if not ok:
+            logger.warning(
+                "Showing stable public subscription URL despite H1 state failure for user %s",
+                user.get("telegram_id"),
+            )
+
         await send_screen(
             callback.message,
             callback.from_user,
-            connection_text(user, state, emoji),
-            reply_markup=kb.as_markup(),
+            connection_text(user, state, emoji, subscription_url),
+            reply_markup=connection_keyboard(subscription_url),
         )
 
     @router.callback_query(F.data == "menu:info")
@@ -1201,14 +1249,14 @@ def build_router(
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("📢 Канал MGN VPN", url=config.trial_channel_url))
         add_nav_buttons(kb, back_data="home")
-        e = emoji.icon(9, pack=PACK_UI)
+        e = emoji.icon(5, pack=PACK_NEWS)
         await send_screen(
             callback.message,
             callback.from_user,
             f"{e} <b>Информация</b>\n\n"
             "🔐 Доступ выдаётся по персональной ссылке.\n"
-            "📱 Платная подписка — до <b>5 устройств</b>.\n"
-            "🎁 Пробный доступ можно активировать один раз после подписки на наш Telegram-канал.\n"
+            f"📱 В тариф входит <b>1 устройство</b>, можно докупить до <b>{MAX_DEVICES}</b>.\n"
+            "🎁 Бесплатный день можно активировать один раз после подписки на наш Telegram-канал.\n"
             "⚙️ Управление подпиской и устройствами находится прямо в боте.",
             reply_markup=kb.as_markup(),
         )
@@ -1217,17 +1265,41 @@ def build_router(
     async def menu_support(callback: CallbackQuery) -> None:
         await callback.answer()
         if callback.message:
-            e = emoji.icon(9, pack=PACK_UI)
+            e = emoji.icon(5, pack=PACK_NEWS)
             await send_screen(
                 callback.message,
                 callback.from_user,
                 f"{e} <b>Поддержка</b>\n\n"
-                "1. Активируйте пробный доступ или купите подписку.\n"
+                "1. Активируйте бесплатный день или купите подписку.\n"
                 "2. Нажмите <b>«🔗 Подключить VPN»</b>.\n"
                 "3. Откройте персональную ссылку на нужном устройстве.\n\n"
-                "Подключённые устройства можно отключить в разделе <b>«📱 Устройства»</b>.",
+                "Лимит устройств и дополнительные слоты находятся в разделе <b>«📱 Устройства»</b>.",
                 reply_markup=section_nav_keyboard(),
             )
+
+    @router.callback_query(F.data == "menu:promo")
+    async def menu_promo(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not callback.message:
+            return
+        kb = InlineKeyboardBuilder()
+        if config.miniapp_url:
+            kb.row(
+                InlineKeyboardButton(
+                    text="🎟 Открыть промокоды",
+                    web_app=WebAppInfo(url=config.miniapp_url),
+                    style="primary",
+                )
+            )
+        add_nav_buttons(kb, back_data="home")
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "🎟 <b>Промокод</b>\n\n"
+            "Активируйте бесплатные дни или примените скидку перед оплатой "
+            "в Mini App. Итоговую цену всегда рассчитывает сервер.",
+            reply_markup=kb.as_markup(),
+        )
 
     @router.callback_query(F.data == "menu:friends")
     async def menu_friends(callback: CallbackQuery) -> None:
@@ -1236,7 +1308,7 @@ def build_router(
             return
         bot_info = await callback.message.bot.get_me()
         link = f"https://t.me/{bot_info.username}?start=ref_{callback.from_user.id}"
-        count = await db.referral_count(callback.from_user.id)
+        stats = await db.referral_stats(callback.from_user.id)
         share_url = (
             "https://t.me/share/url?url=" + quote(link, safe="")
             + "&text=" + quote("Подключай MGN VPN", safe="")
@@ -1248,219 +1320,131 @@ def build_router(
         await send_screen(
             callback.message,
             callback.from_user,
-            f"{e} <b>Друзья</b>\n\n"
-            f"Ваша ссылка:\n<code>{html.escape(link)}</code>\n\n"
-            f"Приглашено — <b>{count}</b>\n\n"
-            f"Друг активировал пробник — <b>+{REFERRAL_TRIAL_REWARD} 💎</b>\n"
-            f"Первая покупка друга — <b>+{REFERRAL_FIRST_PAID_REWARD} 💎</b>",
+            f"{e} <b>Пригласить друзей</b>\n\n"
+            "Пригласите до 3 друзей и получите до 3 бесплатных дней VPN.\n\n"
+            f"Приглашено: <b>{min(stats['invited'], 3)} / 3</b>\n"
+            f"Получено: <b>+{stats['rewarded']} дней</b>\n"
+            + (
+                "До следующего бонуса: <b>1 друг</b>\n\n"
+                if stats["rewarded"] < 3
+                else "🎉 <b>Максимальный бонус получен</b>\n\n"
+            )
+            + f"Ваша ссылка:\n<code>{html.escape(link)}</code>",
+            reply_markup=kb.as_markup(),
+        )
+
+    async def show_devices_panel(
+        message: Message,
+        actor,
+        *,
+        back_data: str = "home",
+    ) -> None:
+        user = await ensure_actor(actor)
+        e = emoji.icon(3, pack=PACK_NEWS)
+
+        if not is_active(user):
+            await send_screen(
+                message,
+                actor,
+                f"{e} <b>Устройства</b>\n\n"
+                "Сначала активируйте VPN-подписку.\n"
+                "В любой тариф входит <b>1 устройство</b>.",
+                reply_markup=section_nav_keyboard(back_data=back_data),
+            )
+            return
+
+        state, ok = await load_state(user, provider, config)
+        limit = min(
+            MAX_DEVICES,
+            max(BASE_DEVICES, int(user.get("max_devices") or BASE_DEVICES)),
+        )
+        bonus = max(0, limit - BASE_DEVICES)
+
+        lines = [
+            f"{e} <b>Устройства</b>",
+            "",
+            f"Лимит — <b>{limit} из {MAX_DEVICES}</b>",
+            f"├ В тарифе — <b>{BASE_DEVICES}</b>",
+            f"└ Дополнительных слотов — <b>{bonus}</b>",
+        ]
+
+        if state.devices:
+            lines += [
+                "",
+                f"Активных подключений по данным панели — <b>{len(state.devices)}</b>",
+            ]
+
+        lines += [
+            "",
+            f"+1 устройство — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>.",
+            "Купленный слот сохраняется при продлении тарифа.",
+        ]
+
+        if not ok:
+            lines += [
+                "",
+                "<i>Панель устройств временно отвечает медленно, "
+                "но ваш лимит сохранён.</i>",
+            ]
+
+        kb = InlineKeyboardBuilder()
+        if limit < MAX_DEVICES:
+            kb.row(
+                blue_inline_button(
+                    f"➕ +1 устройство · {EXTRA_DEVICE_PRICE_RUB} ₽",
+                    callback_data="device:buy",
+                )
+            )
+        else:
+            lines += ["", "<b>Достигнут максимум: 5 устройств.</b>"]
+
+        add_nav_buttons(kb, back_data=back_data)
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
             reply_markup=kb.as_markup(),
         )
 
     @router.callback_query(F.data == "menu:devices")
     async def menu_devices(callback: CallbackQuery) -> None:
         await callback.answer()
+        if callback.message:
+            await show_devices_panel(
+                callback.message,
+                callback.from_user,
+                back_data="home",
+            )
+
+    @router.callback_query(F.data == "device:buy")
+    async def device_buy(callback: CallbackQuery) -> None:
         if not callback.message:
             return
         user = await ensure_actor(callback.from_user)
         if not is_active(user):
-            await send_screen(
-                callback.message,
-                callback.from_user,
-                "<b>Устройства</b>\n\n"
-                "Список появится после активации подписки.",
-                reply_markup=section_nav_keyboard(),
+            await callback.answer(
+                "Сначала активируйте подписку.",
+                show_alert=True,
+            )
+            return
+        if int(user.get("max_devices") or BASE_DEVICES) >= MAX_DEVICES:
+            await callback.answer(
+                "У вас уже максимум: 5 устройств.",
+                show_alert=True,
             )
             return
 
-        state, ok = await load_state(user, provider, config)
-        e = emoji.icon(7, pack=PACK_UI)
-        lines = [
-            f"{e} <b>Устройства</b>",
-            "",
-            f"Подключено — <b>{len(state.devices)} из {int(user.get('max_devices') or 1)}</b>",
-        ]
-        kb = InlineKeyboardBuilder()
-        if state.devices:
-            lines.append("")
-            for i, item in enumerate(state.devices[:10], start=1):
-                name = html.escape(str(item.get("name") or item.get("device_name") or f"Устройство {i}"))
-                platform = html.escape(str(item.get("platform") or item.get("os") or ""))
-                suffix = f" — {platform}" if platform else ""
-                lines.append(f"{i}. {name}{suffix}")
-                device_id = str(item.get("id") or item.get("device_id") or "")
-                if device_id and len(device_id.encode("utf-8")) <= 36:
-                    kb.row(blue_inline_button(
-                        f"❌ Отключить устройство {i}",
-                        callback_data=f"deldev:{device_id}",
-                    ))
-        else:
-            lines += ["", "<i>Подключённых устройств пока нет.</i>"]
-        if not ok:
-            if getattr(provider, "service_ready", True):
-                lines += ["", "<i>Сервер устройств временно не ответил.</i>"]
-            else:
-                lines += ["", "<i>Устройства появятся после подключения VPN-серверов.</i>"]
-        add_nav_buttons(kb, back_data="home")
+        await callback.answer()
+        e = emoji.icon(4, pack=PACK_NEWS)
         await send_screen(
             callback.message,
             callback.from_user,
-            "\n".join(lines),
-            reply_markup=kb.as_markup(),
-        )
-
-    @router.callback_query(F.data == "diamonds")
-    async def diamonds_home(callback: CallbackQuery) -> None:
-        await callback.answer()
-        if callback.message:
-            await show_diamonds(callback.message, callback.from_user)
-
-    @router.callback_query(F.data == "diamonds:shop")
-    async def diamonds_shop(callback: CallbackQuery) -> None:
-        await callback.answer()
-        if callback.message:
-            await show_diamond_shop(callback.message, callback.from_user)
-
-    @router.callback_query(F.data == "diamonds:earn")
-    async def diamonds_earn(callback: CallbackQuery) -> None:
-        await callback.answer()
-        if callback.message:
-            await show_diamond_earn(callback.message, callback.from_user)
-
-    @router.callback_query(F.data == "diamonds:history")
-    async def diamonds_history(callback: CallbackQuery) -> None:
-        await callback.answer()
-        if callback.message:
-            await show_diamond_history(callback.message, callback.from_user)
-
-    @router.callback_query(F.data.startswith("shop:days:"))
-    async def buy_shop_days(callback: CallbackQuery) -> None:
-        if not callback.message:
-            return
-        key = callback.data.rsplit(":", 1)[-1]
-        item = DIAMOND_SHOP_DAYS.get(key)
-        if not item:
-            await callback.answer("Товар не найден", show_alert=True)
-            return
-
-        balance = await db.diamond_balance(callback.from_user.id)
-        cost = int(item["cost"])
-        if balance < cost:
-            await callback.answer(
-                f"Не хватает {cost - balance} 💎",
-                show_alert=True,
-            )
-            return
-
-        user = await db.purchase_vpn_days(
-            telegram_id=callback.from_user.id,
-            days=int(item["days"]),
-            cost=cost,
-            event_key=f"shop-days:{callback.from_user.id}:{uuid4().hex}",
-        )
-        if not user:
-            await callback.answer("Не удалось выполнить покупку", show_alert=True)
-            return
-
-        try:
-            await provider.provision(user)
-        except Exception:
-            pass
-
-        await callback.answer(f"+{item['days']} дней VPN")
-        await show_diamond_shop(callback.message, callback.from_user)
-
-    @router.callback_query(F.data == "shop:device")
-    async def buy_shop_device(callback: CallbackQuery) -> None:
-        if not callback.message:
-            return
-        user = await ensure_actor(callback.from_user)
-        balance = int(user.get("diamonds") or 0)
-        if balance < EXTRA_DEVICE_COST:
-            await callback.answer(
-                f"Не хватает {EXTRA_DEVICE_COST - balance} 💎",
-                show_alert=True,
-            )
-            return
-        if int(user.get("max_devices") or 1) >= 10:
-            await callback.answer(
-                "Достигнут лимит: 10 устройств.",
-                show_alert=True,
-            )
-            return
-
-        user = await db.purchase_extra_device(
-            telegram_id=callback.from_user.id,
-            cost=EXTRA_DEVICE_COST,
-            event_key=f"shop-device:{callback.from_user.id}:{uuid4().hex}",
-            max_total_devices=10,
-        )
-        if not user:
-            await callback.answer("Не удалось выполнить покупку", show_alert=True)
-            return
-
-        try:
-            await provider.provision(user)
-        except Exception:
-            pass
-
-        await callback.answer("+1 устройство")
-        await show_diamond_shop(callback.message, callback.from_user)
-
-    @router.callback_query(F.data.startswith("shop:promo:"))
-    async def buy_shop_promo(callback: CallbackQuery) -> None:
-        if not callback.message:
-            return
-        slug = callback.data.split(":", 2)[-1]
-        product_list = await db.promo_products()
-        product = next(
-            (item for item in product_list if str(item["slug"]) == slug),
-            None,
-        )
-        if not product:
-            await callback.answer(
-                "Промокоды закончились или товар недоступен.",
-                show_alert=True,
-            )
-            await show_diamond_shop(callback.message, callback.from_user)
-            return
-
-        balance = await db.diamond_balance(callback.from_user.id)
-        cost = int(product["price_diamonds"])
-        if balance < cost:
-            await callback.answer(
-                f"Не хватает {cost - balance} 💎",
-                show_alert=True,
-            )
-            return
-
-        reward = await db.redeem_promo(
-            telegram_id=callback.from_user.id,
-            slug=slug,
-            event_key=f"shop-promo:{callback.from_user.id}:{uuid4().hex}",
-        )
-        if not reward:
-            await callback.answer(
-                "Промокод уже закончился. Баланс не списан.",
-                show_alert=True,
-            )
-            await show_diamond_shop(callback.message, callback.from_user)
-            return
-
-        kb = InlineKeyboardBuilder()
-        kb.row(
-            blue_inline_button("⬅️ Магазин", callback_data="diamonds:shop"),
-        )
-        await callback.answer("Промокод получен")
-        await send_screen(
-            callback.message,
-            callback.from_user,
-            "🎟 <b>Покупка готова</b>\n\n"
-            f"{html.escape(str(reward['title']))}\n"
-            f"Списано: <b>{int(reward['price_diamonds'])} 💎</b>\n\n"
-            "Ваш промокод:\n"
-            f"<code>{html.escape(str(reward['code']))}</code>\n\n"
-            "<i>Сохраните код. Он также останется в истории алмазов.</i>",
-            reply_markup=kb.as_markup(),
+            f"{e} <b>Дополнительное устройство</b>\n\n"
+            f"+1 слот к текущему лимиту — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>.\n"
+            f"Слот остаётся на аккаунте при продлении VPN.\n"
+            f"Максимум — <b>{MAX_DEVICES}</b> устройств.\n\n"
+            "Выберите способ оплаты.",
+            reply_markup=device_payment_keyboard(),
         )
 
     @router.message(Command("ping"))
@@ -1477,15 +1461,16 @@ def build_router(
     async def profile(message: Message) -> None:
         await show_profile(message, message.from_user)
 
-    @router.message(F.text.in_({"💎 Купить VPN", "💳 Купить VPN", "Купить VPN"}))
+    @router.message(F.text.in_({"💳 Купить VPN", "Купить VPN"}))
     async def plans_message(message: Message) -> None:
         await ensure_actor(message.from_user)
-        e = emoji.icon(0, pack=PACK_CRYPTO)
+        e = emoji.icon(0, pack=PACK_NEWS)
         await send_screen(
             message,
             message.from_user,
             f"{e} <b>Выберите подписку</b>\n\n"
-            "До <b>5 устройств</b> на каждом тарифе.\n"
+            "В каждый тариф входит <b>1 устройство</b>.\n"
+            f"Дополнительный слот — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>, максимум <b>{MAX_DEVICES}</b>.\n"
             "Оплата через СБП или Telegram Stars.",
             reply_markup=plans_keyboard(config),
         )
@@ -1495,12 +1480,13 @@ def build_router(
         await callback.answer()
         if not callback.message:
             return
-        e = emoji.icon(0, pack=PACK_CRYPTO)
+        e = emoji.icon(0, pack=PACK_NEWS)
         await send_screen(
             callback.message,
             callback.from_user,
             f"{e} <b>Выберите подписку</b>\n\n"
-            "До <b>5 устройств</b> на каждом тарифе.\n"
+            "В каждый тариф входит <b>1 устройство</b>.\n"
+            f"Дополнительный слот — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>, максимум <b>{MAX_DEVICES}</b>.\n"
             "Оплата через СБП или Telegram Stars.",
             reply_markup=plans_keyboard(config),
         )
@@ -1516,16 +1502,22 @@ def build_router(
             return
 
         await callback.answer()
-        e = emoji.icon(2, pack=PACK_CRYPTO)
+        e = emoji.icon(1, pack=PACK_NEWS)
         await send_screen(
             callback.message,
             callback.from_user,
             f"{e} <b>{plan['name']}</b>\n\n"
-            f"До {plan['devices']} устройств\n"
+            f"📱 Включено устройств — <b>1</b>\n"
             f"🏦 <b>{plan_price_rub(config, code)} ₽</b> · СБП\n"
             f"⭐ <b>{plan_price_stars(config, code)} Stars</b>\n"
-            f"💎 После оплаты: <b>+{DIAMOND_REWARDS.get(code, 0)} 💎</b>\n\n"
-            f"<i>Курс для тарифов: {STAR_RATE_XTR} ⭐ = {STAR_RATE_RUB} ₽.</i>",
+            + (
+                f"🔥 Выгода — <b>{plan_savings_rub(code)} ₽</b>\n"
+                if plan_savings_rub(code)
+                else ""
+            )
+            + "\n"
+            + f"Дополнительное устройство — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>. "
+            f"Максимум — <b>{MAX_DEVICES}</b>.",
             reply_markup=payment_methods_keyboard(config, code),
         )
 
@@ -1593,6 +1585,30 @@ def build_router(
                 target_telegram_id=target_id,
             ),
         )
+
+    async def sync_device_limit(user: dict[str, Any]) -> None:
+        try:
+            await asyncio.wait_for(
+                provider.provision(user),
+                timeout=15.0,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Device limit provisioning deferred for user %s: %s",
+                user.get("telegram_id"),
+                str(exc).strip() or type(exc).__name__,
+            )
+
+    async def grant_paid_device_slot(
+        telegram_id: int,
+    ) -> dict[str, Any] | None:
+        updated = await db.grant_extra_device(
+            telegram_id=telegram_id,
+            max_total_devices=MAX_DEVICES,
+        )
+        if updated:
+            await sync_device_limit(updated)
+        return updated
 
     async def begin_sbp_checkout(
         callback: CallbackQuery,
@@ -1706,6 +1722,75 @@ def build_router(
             return
         await begin_sbp_checkout(callback, parts[1], int(parts[2]))
 
+    @router.callback_query(F.data == "device:sbp")
+    async def buy_device_sbp(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        user = await ensure_actor(callback.from_user)
+        if not is_active(user):
+            await callback.answer(
+                "Сначала активируйте VPN-подписку.",
+                show_alert=True,
+            )
+            return
+        if int(user.get("max_devices") or BASE_DEVICES) >= MAX_DEVICES:
+            await callback.answer(
+                "У вас уже максимум: 5 устройств.",
+                show_alert=True,
+            )
+            return
+        if not config.rollypay_enabled:
+            await callback.answer(
+                "СБП пока не настроена.",
+                show_alert=True,
+            )
+            return
+
+        await callback.answer()
+        order_id = f"device-{callback.from_user.id}-{uuid4().hex[:12]}"
+        try:
+            payment = await create_payment(
+                config,
+                order_id=order_id,
+                amount=Decimal(EXTRA_DEVICE_PRICE_RUB),
+                description="MGN VPN · +1 устройство",
+                user_id=callback.from_user.id,
+            )
+            payment_id = str(payment["payment_id"])
+            pay_url = str(payment["pay_url"])
+            await db.create_sbp_payment(
+                payment_id=payment_id,
+                order_id=order_id,
+                telegram_id=callback.from_user.id,
+                target_telegram_id=callback.from_user.id,
+                plan_code=DEVICE_PRODUCT_CODE,
+                amount_rub=EXTRA_DEVICE_PRICE_RUB,
+            )
+        except (RollyPayError, KeyError):
+            await callback.answer(
+                "Не удалось создать платёж.",
+                show_alert=True,
+            )
+            return
+
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("🏦 Оплатить 100 ₽", url=pay_url))
+        kb.row(
+            blue_inline_button(
+                "✅ Проверить оплату",
+                callback_data=f"checksbp:{payment_id}",
+            )
+        )
+        add_nav_buttons(kb, back_data="menu:devices")
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "🏦 <b>+1 устройство</b>\n\n"
+            f"Стоимость — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>.\n"
+            "После подтверждения оплаты лимит увеличится автоматически.",
+            reply_markup=kb.as_markup(),
+        )
+
     async def begin_stars_checkout(
         callback: CallbackQuery,
         code: str,
@@ -1808,10 +1893,88 @@ def build_router(
             return
         await begin_stars_checkout(callback, parts[1], int(parts[2]))
 
+    @router.callback_query(F.data == "device:stars")
+    async def buy_device_stars(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        user = await ensure_actor(callback.from_user)
+        if not is_active(user):
+            await callback.answer(
+                "Сначала активируйте VPN-подписку.",
+                show_alert=True,
+            )
+            return
+        if int(user.get("max_devices") or BASE_DEVICES) >= MAX_DEVICES:
+            await callback.answer(
+                "У вас уже максимум: 5 устройств.",
+                show_alert=True,
+            )
+            return
+
+        stars = extra_device_price_stars()
+        payload = (
+            f"xtr|{DEVICE_PRODUCT_CODE}|{callback.from_user.id}|"
+            f"{callback.from_user.id}|{uuid4().hex[:12]}"
+        )
+        try:
+            invoice_url = await callback.message.bot.create_invoice_link(
+                title="MGN VPN · +1 устройство",
+                description="Постоянный дополнительный слот устройства",
+                payload=payload,
+                currency="XTR",
+                prices=[
+                    LabeledPrice(
+                        label="MGN VPN · +1 устройство",
+                        amount=stars,
+                    )
+                ],
+            )
+        except Exception as exc:
+            logger.exception("Device Stars invoice failed: %s", exc)
+            await callback.answer(
+                "Не удалось создать оплату Stars.",
+                show_alert=True,
+            )
+            return
+
+        await callback.answer()
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                f"⭐ Оплатить {stars} Stars",
+                url=invoice_url,
+            )
+        )
+        add_nav_buttons(kb, back_data="menu:devices")
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "⭐ <b>+1 устройство</b>\n\n"
+            f"Стоимость — <b>{stars} Stars</b> "
+            f"(эквивалент {EXTRA_DEVICE_PRICE_RUB} ₽).\n"
+            "После оплаты лимит увеличится автоматически.",
+            reply_markup=kb.as_markup(),
+        )
+
     @router.pre_checkout_query()
     async def pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
         payload = pre_checkout_query.invoice_payload or ""
         parts = payload.split("|")
+        if len(parts) == 2 and parts[0] == "xtr2":
+            intent = await db.get_payment_intent(parts[1])
+            valid = bool(
+                intent
+                and intent["status"] == "created"
+                and int(intent["buyer_telegram_id"]) == pre_checkout_query.from_user.id
+                and intent["currency"] == "XTR"
+                and pre_checkout_query.currency == "XTR"
+                and int(intent["currency_amount"]) == pre_checkout_query.total_amount
+            )
+            await pre_checkout_query.answer(
+                ok=valid,
+                error_message=None if valid else "Параметры оплаты изменились. Откройте тариф заново.",
+            )
+            return
         if len(parts) != 5 or parts[0] != "xtr":
             await pre_checkout_query.answer(
                 ok=False,
@@ -1821,27 +1984,65 @@ def build_router(
 
         _, code, buyer_raw, target_raw, _nonce = parts
         if (
-            code not in PLANS
-            or not buyer_raw.isdigit()
+            not buyer_raw.isdigit()
             or not target_raw.isdigit()
             or int(buyer_raw) != pre_checkout_query.from_user.id
             or pre_checkout_query.currency != "XTR"
-            or pre_checkout_query.total_amount != plan_price_stars(config, code)
         ):
             await pre_checkout_query.answer(
                 ok=False,
-                error_message="Параметры оплаты изменились. Откройте тариф заново.",
+                error_message="Параметры оплаты изменились.",
             )
             return
 
-        try:
-            await db.get_user(int(target_raw))
-        except KeyError:
-            await pre_checkout_query.answer(
-                ok=False,
-                error_message="Получатель не найден.",
-            )
-            return
+        buyer_id = int(buyer_raw)
+        target_id = int(target_raw)
+
+        if code == DEVICE_PRODUCT_CODE:
+            if (
+                target_id != buyer_id
+                or pre_checkout_query.total_amount != extra_device_price_stars()
+            ):
+                await pre_checkout_query.answer(
+                    ok=False,
+                    error_message="Параметры покупки устройства изменились.",
+                )
+                return
+            try:
+                user = await db.get_user(buyer_id)
+            except KeyError:
+                user = None
+            if not user or not is_active(user):
+                await pre_checkout_query.answer(
+                    ok=False,
+                    error_message="Сначала активируйте VPN-подписку.",
+                )
+                return
+            if int(user.get("max_devices") or BASE_DEVICES) >= MAX_DEVICES:
+                await pre_checkout_query.answer(
+                    ok=False,
+                    error_message="У вас уже максимум устройств.",
+                )
+                return
+        else:
+            if (
+                code not in PLANS
+                or pre_checkout_query.total_amount
+                != plan_price_stars(config, code)
+            ):
+                await pre_checkout_query.answer(
+                    ok=False,
+                    error_message="Параметры оплаты изменились. Откройте тариф заново.",
+                )
+                return
+            try:
+                await db.get_user(target_id)
+            except KeyError:
+                await pre_checkout_query.answer(
+                    ok=False,
+                    error_message="Получатель не найден.",
+                )
+                return
 
         await pre_checkout_query.answer(ok=True)
 
@@ -1852,24 +2053,107 @@ def build_router(
             return
 
         parts = (payment.invoice_payload or "").split("|")
+        if len(parts) == 2 and parts[0] == "xtr2":
+            intent = await db.get_payment_intent(parts[1])
+            if not intent or (
+                int(intent["buyer_telegram_id"]) != message.from_user.id
+                or intent["currency"] != "XTR"
+                or int(intent["currency_amount"]) != int(payment.total_amount)
+            ):
+                logger.error("Rejected Stars payment intent %s", parts[1])
+                return
+            charge_id = payment.telegram_payment_charge_id
+            fresh_charge = await db.record_star_payment(
+                telegram_payment_charge_id=charge_id,
+                buyer_telegram_id=message.from_user.id,
+                target_telegram_id=int(intent["target_telegram_id"]),
+                plan_code=str(intent["product_code"]),
+                stars=int(payment.total_amount),
+            )
+            fresh_intent = await db.mark_payment_intent_paid(parts[1])
+            if fresh_charge and fresh_intent:
+                if intent.get("promo_id"):
+                    await db.consume_promo(
+                        promo_id=int(intent["promo_id"]),
+                        telegram_id=message.from_user.id,
+                        payment_id=charge_id,
+                    )
+                await apply_paid_purchase(
+                    message.from_user.id,
+                    int(intent["target_telegram_id"]),
+                    str(intent["product_code"]),
+                    f"stars:{charge_id}",
+                )
+            await show_home(message, message.from_user, force_new=True)
+            return
         if len(parts) != 5 or parts[0] != "xtr":
             return
 
         _, code, buyer_raw, target_raw, _nonce = parts
         if (
-            code not in PLANS
-            or not buyer_raw.isdigit()
+            not buyer_raw.isdigit()
             or not target_raw.isdigit()
             or int(buyer_raw) != message.from_user.id
-            or payment.total_amount != plan_price_stars(config, code)
         ):
-            logger.error("Rejected malformed Stars success payload: %s", payment.invoice_payload)
+            logger.error(
+                "Rejected malformed Stars success payload: %s",
+                payment.invoice_payload,
+            )
             return
 
         buyer_id = int(buyer_raw)
         target_id = int(target_raw)
-        charge_id = payment.telegram_payment_charge_id
 
+        if code == DEVICE_PRODUCT_CODE:
+            if (
+                target_id != buyer_id
+                or payment.total_amount != extra_device_price_stars()
+            ):
+                logger.error(
+                    "Rejected malformed device Stars payment: %s",
+                    payment.invoice_payload,
+                )
+                return
+
+            charge_id = payment.telegram_payment_charge_id
+            fresh = await db.record_star_payment(
+                telegram_payment_charge_id=charge_id,
+                buyer_telegram_id=buyer_id,
+                target_telegram_id=buyer_id,
+                plan_code=DEVICE_PRODUCT_CODE,
+                stars=int(payment.total_amount),
+            )
+            if fresh:
+                updated = await grant_paid_device_slot(buyer_id)
+                if updated is None:
+                    await send_screen(
+                        message,
+                        message.from_user,
+                        "⚠️ <b>Оплата получена</b>\n\n"
+                        "Слот не удалось добавить автоматически. "
+                        "Обратитесь в поддержку — платёж сохранён.",
+                        reply_markup=section_nav_keyboard(back_data="home"),
+                    )
+                    return
+
+            await show_devices_panel(
+                message,
+                message.from_user,
+                back_data="home",
+            )
+            return
+
+        if (
+            code not in PLANS
+            or payment.total_amount != plan_price_stars(config, code)
+        ):
+            logger.error(
+                "Rejected malformed Stars success payload: %s",
+                payment.invoice_payload,
+            )
+            return
+
+        charge_id = payment.telegram_payment_charge_id
         fresh = await db.record_star_payment(
             telegram_payment_charge_id=charge_id,
             buyer_telegram_id=buyer_id,
@@ -1901,19 +2185,13 @@ def build_router(
         except KeyError:
             target_label = str(target_id)
 
-        bonus_line = (
-            f"\n💎 Вам начислено <b>+{reward_amount} 💎</b>."
-            if reward_amount
-            else ""
-        )
         await send_screen(
             message,
             message.from_user,
             "✅ <b>Подарок активирован</b>\n\n"
             f"Получатель — <b>{html.escape(target_label)}</b>\n"
             f"Тариф — <b>{PLANS[code]['name']}</b>\n"
-            f"Оплачено — <b>{payment.total_amount} ⭐</b>"
-            f"{bonus_line}",
+            f"Оплачено — <b>{payment.total_amount} ⭐</b>",
             reply_markup=section_nav_keyboard(back_data="home"),
         )
 
@@ -1963,24 +2241,41 @@ def build_router(
 
         if status == "paid":
             fresh = await db.mark_sbp_paid(payment_id)
-            reward_amount = 0
+            code = str(local["plan_code"])
             target_id = int(
                 local.get("target_telegram_id")
                 or callback.from_user.id
             )
 
+            if code == DEVICE_PRODUCT_CODE:
+                if fresh:
+                    updated = await grant_paid_device_slot(
+                        callback.from_user.id
+                    )
+                    if updated is None:
+                        await callback.answer(
+                            "Оплата получена, но слот не добавлен. Напишите в поддержку.",
+                            show_alert=True,
+                        )
+                        return
+                await callback.answer("Оплата получена · +1 устройство")
+                await show_devices_panel(
+                    callback.message,
+                    callback.from_user,
+                    back_data="home",
+                )
+                return
+
+            reward_amount = 0
             if fresh:
                 _target_user, reward_amount = await apply_paid_purchase(
                     buyer_telegram_id=callback.from_user.id,
                     target_telegram_id=target_id,
-                    code=str(local["plan_code"]),
+                    code=code,
                     payment_event_key=f"sbp:{payment_id}",
                 )
 
-            if reward_amount:
-                await callback.answer(f"Оплата получена · +{reward_amount} 💎")
-            else:
-                await callback.answer("Оплата получена")
+            await callback.answer("Оплата получена")
 
             if target_id == callback.from_user.id:
                 await show_profile(callback.message, callback.from_user)
@@ -2001,7 +2296,7 @@ def build_router(
                 callback.from_user,
                 "✅ <b>Подарок активирован</b>\n\n"
                 f"Получатель — <b>{html.escape(target_label)}</b>\n"
-                f"Тариф — <b>{PLANS[str(local['plan_code'])]['name']}</b>\n"
+                f"Тариф — <b>{PLANS[code]['name']}</b>\n"
                 f"Оплачено — <b>{int(local['amount_rub'])} ₽</b>",
                 reply_markup=section_nav_keyboard(back_data="home"),
             )
@@ -2024,19 +2319,34 @@ def build_router(
         user = await ensure_actor(message.from_user)
         if not is_active(user):
             if not user.get("trial_used"):
+                subscribed = await is_trial_channel_member(
+                    message.bot,
+                    message.from_user.id,
+                    retries=2,
+                )
+                text = (
+                    "🎁 <b>Бесплатный день VPN</b>\n\n"
+                    + (
+                        "✅ Подписка на канал подтверждена.\n"
+                        "Нажмите <b>«🎁 Забрать 1 день»</b>."
+                        if subscribed
+                        else (
+                            f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
+                            "вернитесь в бот и нажмите <b>«🎁 Забрать 1 день»</b>."
+                        )
+                    )
+                )
                 await send_screen(
                     message,
                     message.from_user,
-                    "🎁 <b>Пробная подписка</b>\n\n"
-                    f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
-                    "затем нажмите <b>«✅ Проверить подписку»</b>.",
-                    reply_markup=trial_channel_keyboard(),
+                    text,
+                    reply_markup=trial_channel_keyboard(subscribed=subscribed),
                 )
             else:
                 kb = InlineKeyboardBuilder()
                 kb.row(
                     blue_inline_button(
-                        "💎 Купить подписку",
+                        "💳 Купить подписку",
                         callback_data="plans",
                     )
                 )
@@ -2045,50 +2355,53 @@ def build_router(
                     message,
                     message.from_user,
                     "🔗 <b>Подключение VPN</b>\n\n"
-                    "Пробный период уже использован. Выберите подписку.",
+                    "Бесплатный день уже использован. Выберите подписку.",
                     reply_markup=kb.as_markup(),
                 )
             return
 
         state, ok = await load_state(user, provider, config)
-        if not getattr(provider, "service_ready", True):
+        subscription_url = await public_subscription_url(
+            user,
+            state,
+            config,
+            bot=message.bot,
+        )
+
+        if not subscription_url:
+            if not getattr(provider, "service_ready", True):
+                text = (
+                    "🔗 <b>Подключение VPN</b>\n\n"
+                    "Подписка активна, но VPN-серверы пока ещё не подключены."
+                )
+            else:
+                text = (
+                    "🔗 <b>Подключение VPN</b>\n\n"
+                    "Не удалось сформировать персональную ссылку. "
+                    "Попробуйте ещё раз через несколько секунд."
+                )
             await send_screen(
                 message,
                 message.from_user,
-                "🔗 <b>Подключение VPN</b>\n\n"
-                "Подписка активна, но VPN-серверы пока ещё не подключены.\n\n"
-                "Бот уже готов: после подключения серверов здесь автоматически "
-                "появится ваша персональная ссылка.",
-                reply_markup=section_nav_keyboard(),
-            )
-            return
-        if not ok or not state.subscription_url:
-            await send_screen(
-                message,
-                message.from_user,
-                "🔗 <b>Подключение VPN</b>\n\n"
-                "VPN-сервер временно не ответил. Подписка сохранена — "
-                "попробуйте открыть подключение немного позже.",
+                text,
                 reply_markup=section_nav_keyboard(),
             )
             return
 
-        kb = InlineKeyboardBuilder()
-        kb.row(
-            blue_inline_button(
-                "🔗 Открыть подключение",
-                url=state.subscription_url,
+        if not ok:
+            logger.warning(
+                "Showing stable public subscription URL despite H1 state failure for user %s",
+                user.get("telegram_id"),
             )
-        )
-        add_nav_buttons(kb, back_data="home")
+
         await send_screen(
             message,
             message.from_user,
-            connection_text(user, state, emoji),
-            reply_markup=kb.as_markup(),
+            connection_text(user, state, emoji, subscription_url),
+            reply_markup=connection_keyboard(subscription_url),
         )
 
-    @router.callback_query(F.data.in_({"trial", "trialcheck"}))
+    @router.callback_query(F.data.in_({"trial", "trialcheck", "trial:claim"}))
     async def trial(callback: CallbackQuery) -> None:
         if not callback.message:
             return
@@ -2096,30 +2409,26 @@ def build_router(
         user = await ensure_actor(callback.from_user)
         if user.get("trial_used"):
             await callback.answer(
-                "Пробный период уже использован.",
+                "Бесплатный день уже использован.",
                 show_alert=True,
             )
             return
-        if is_active(user):
-            await callback.answer(
-                "У вас уже есть активная подписка.",
-                show_alert=True,
-            )
-            return
-
         subscribed = await is_trial_channel_member(
             callback.message.bot,
             callback.from_user.id,
         )
         if not subscribed:
-            await callback.answer("Подписка пока не найдена.")
+            await callback.answer(
+                "Подписка пока не найдена. Если только что подписались — нажмите ещё раз через секунду.",
+                show_alert=True,
+            )
             await send_screen(
                 callback.message,
                 callback.from_user,
-                "🎁 <b>Пробная подписка</b>\n\n"
+                "🎁 <b>Бесплатный день VPN</b>\n\n"
                 f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
-                "затем нажмите <b>«✅ Проверить подписку»</b>.",
-                reply_markup=trial_channel_keyboard(),
+                "вернитесь сюда и нажмите <b>«🎁 Забрать 1 день»</b>.",
+                reply_markup=trial_channel_keyboard(subscribed=False),
             )
             return
 
@@ -2130,21 +2439,12 @@ def build_router(
         )
         if not activated:
             await callback.answer(
-                "Пробный период уже использован.",
+                "Бесплатный день уже использован.",
                 show_alert=True,
             )
             return
 
         user = await db.get_user(callback.from_user.id)
-
-        referrer_id = user.get("referrer_id")
-        if referrer_id:
-            await db.add_diamonds(
-                telegram_id=int(referrer_id),
-                amount=REFERRAL_TRIAL_REWARD,
-                reason="Друг активировал пробный VPN",
-                event_key=f"referral-trial:{callback.from_user.id}",
-            )
 
         try:
             await provider.provision(user)
@@ -2155,138 +2455,15 @@ def build_router(
                 exc,
             )
 
-        await callback.answer("Пробный VPN активирован")
-        await show_profile(callback.message, callback.from_user)
+        await callback.answer("Бесплатный день активирован")
+        await show_home(callback.message, callback.from_user)
 
     @router.message(F.text.in_({"📱 Устройства", "Устройства"}))
     async def devices(message: Message) -> None:
-        user = await ensure_actor(message.from_user)
-        if not is_active(user):
-            await send_screen(
-                message,
-                message.from_user,
-                "<b>Устройства</b>\n\n"
-                "Список появится после активации подписки.",
-                reply_markup=section_nav_keyboard(),
-            )
-            return
-
-        state, ok = await load_state(user, provider, config)
-        e = emoji.icon(7, pack=PACK_UI)
-        lines = [
-            f"{e} <b>Устройства</b>",
-            "",
-            f"Подключено — <b>{len(state.devices)} из {int(user.get('max_devices') or 1)}</b>",
-        ]
-        kb = InlineKeyboardBuilder()
-
-        if state.devices:
-            lines.append("")
-            for i, item in enumerate(state.devices[:10], start=1):
-                name = html.escape(
-                    str(item.get("name") or item.get("device_name") or f"Устройство {i}")
-                )
-                platform = html.escape(
-                    str(item.get("platform") or item.get("os") or "")
-                )
-                suffix = f" — {platform}" if platform else ""
-                lines.append(f"{i}. {name}{suffix}")
-                device_id = str(item.get("id") or item.get("device_id") or "")
-                if device_id and len(device_id.encode("utf-8")) <= 36:
-                    kb.row(
-                        blue_inline_button(
-                            f"❌ Отключить устройство {i}",
-                            callback_data=f"deldev:{device_id}",
-                        )
-                    )
-        else:
-            lines += [
-                "",
-                "<i>Подключённых устройств пока нет. Они появятся здесь после первого подключения.</i>",
-            ]
-
-        if not ok:
-            if getattr(provider, "service_ready", True):
-                lines += ["", "<i>Сервер устройств временно не ответил.</i>"]
-            else:
-                lines += ["", "<i>Устройства появятся после подключения VPN-серверов.</i>"]
-
-        add_nav_buttons(kb, back_data="home")
-        await send_screen(
+        await show_devices_panel(
             message,
             message.from_user,
-            "\n".join(lines),
-            reply_markup=kb.as_markup(),
-        )
-
-    @router.callback_query(F.data.startswith("deldev:"))
-    async def delete_device(callback: CallbackQuery) -> None:
-        if not callback.message:
-            return
-        device_id = callback.data.split(":", 1)[1]
-        user = await ensure_actor(callback.from_user)
-        if not getattr(provider, "service_ready", True):
-            await callback.answer(
-                "VPN-серверы пока не подключены.",
-                show_alert=True,
-            )
-            return
-
-        try:
-            await provider.delete_device(user, device_id)
-            await callback.answer("Устройство отключено")
-        except Exception as exc:
-            logger.warning(
-                "Device delete failed for user %s, device %s: %s",
-                callback.from_user.id,
-                device_id,
-                exc,
-            )
-            await callback.answer(
-                "Не удалось отключить устройство.",
-                show_alert=True,
-            )
-            return
-
-        # Refresh device list in the same persistent UI message.
-        state, ok = await load_state(user, provider, config)
-        e = emoji.icon(7, pack=PACK_UI)
-        lines = [
-            f"{e} <b>Устройства</b>",
-            "",
-            f"Подключено — <b>{len(state.devices)} из {int(user.get('max_devices') or 1)}</b>",
-        ]
-        kb = InlineKeyboardBuilder()
-        if state.devices:
-            lines.append("")
-            for i, item in enumerate(state.devices[:10], start=1):
-                name = html.escape(
-                    str(item.get("name") or item.get("device_name") or f"Устройство {i}")
-                )
-                platform = html.escape(str(item.get("platform") or item.get("os") or ""))
-                suffix = f" — {platform}" if platform else ""
-                lines.append(f"{i}. {name}{suffix}")
-                item_id = str(item.get("id") or item.get("device_id") or "")
-                if item_id and len(item_id.encode("utf-8")) <= 36:
-                    kb.row(
-                        blue_inline_button(
-                            f"❌ Отключить устройство {i}",
-                            callback_data=f"deldev:{item_id}",
-                        )
-                    )
-        else:
-            lines += ["", "<i>Подключённых устройств пока нет.</i>"]
-        if not ok:
-            if getattr(provider, "service_ready", True):
-                lines += ["", "<i>VPN-сервер временно не ответил.</i>"]
-            else:
-                lines += ["", "<i>Устройства появятся после подключения VPN-серверов.</i>"]
-        add_nav_buttons(kb, back_data="home")
-        await send_screen(
-            callback.message,
-            callback.from_user,
-            "\n".join(lines),
-            reply_markup=kb.as_markup(),
+            back_data="home",
         )
 
     @router.message(F.text.in_({"👥 Друзья", "👥 Пригласить друга", "Пригласить друга", "Друзья"}))
@@ -2294,7 +2471,7 @@ def build_router(
         await ensure_actor(message.from_user)
         bot_info = await message.bot.get_me()
         link = f"https://t.me/{bot_info.username}?start=ref_{message.from_user.id}"
-        count = await db.referral_count(message.from_user.id)
+        stats = await db.referral_stats(message.from_user.id)
         share_url = (
             "https://t.me/share/url?url="
             + quote(link, safe="")
@@ -2310,11 +2487,11 @@ def build_router(
         await send_screen(
             message,
             message.from_user,
-            f"{e} <b>Друзья</b>\n\n"
-            f"Ваша ссылка:\n<code>{html.escape(link)}</code>\n\n"
-            f"Приглашено — <b>{count}</b>\n\n"
-            f"Друг активировал пробник — <b>+{REFERRAL_TRIAL_REWARD} 💎</b>\n"
-            f"Первая покупка друга — <b>+{REFERRAL_FIRST_PAID_REWARD} 💎</b>",
+            f"{e} <b>Пригласить друзей</b>\n\n"
+            "За каждого нового друга, который подпишется на канал и активирует бесплатный день, вы получите +1 день VPN.\n\n"
+            f"Приглашено: <b>{min(stats['invited'], 3)} / 3</b>\n"
+            f"Получено: <b>+{stats['rewarded']} дней</b>\n\n"
+            f"Ваша ссылка:\n<code>{html.escape(link)}</code>",
             reply_markup=kb.as_markup(),
         )
 
@@ -2329,29 +2506,29 @@ def build_router(
         )
         add_nav_buttons(kb, back_data="home")
 
-        e = emoji.icon(9, pack=PACK_UI)
+        e = emoji.icon(5, pack=PACK_NEWS)
         await send_screen(
             message,
             message.from_user,
             f"{e} <b>Информация</b>\n\n"
             "🔐 Доступ выдаётся по персональной ссылке.\n"
-            "📱 Платная подписка — до <b>5 устройств</b>.\n"
-            "🎁 Пробный доступ можно активировать один раз после подписки на наш Telegram-канал.\n"
+            f"📱 В тариф входит <b>1 устройство</b>; дополнительные — по <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>, максимум <b>{MAX_DEVICES}</b>.\n"
+            "🎁 Бесплатный день можно активировать один раз после подписки на наш Telegram-канал.\n"
             "⚙️ Управление подпиской и устройствами находится прямо в боте.",
             reply_markup=kb.as_markup(),
         )
 
     @router.message(F.text.in_({"🆘 Поддержка", "🆘 Помощь", "Поддержка", "Помощь"}))
     async def help_screen(message: Message) -> None:
-        e = emoji.icon(9, pack=PACK_UI)
+        e = emoji.icon(6, pack=PACK_NEWS)
         await send_screen(
             message,
             message.from_user,
             f"{e} <b>Поддержка</b>\n\n"
-            "1. Активируйте пробный доступ или купите подписку.\n"
+            "1. Активируйте бесплатный день или купите подписку.\n"
             "2. Нажмите <b>«🔗 Подключить VPN»</b>.\n"
-            "3. Откройте персональную ссылку на нужном устройстве.\n\n"
-            "Подключённые устройства можно отключить в разделе <b>«📱 Устройства»</b>.",
+            "3. Скопируйте ссылку одной кнопкой или сразу откройте её.\n\n"
+            "Дополнительные слоты находятся в разделе <b>«📱 Устройства»</b>.",
             reply_markup=section_nav_keyboard(),
         )
 
@@ -2379,7 +2556,7 @@ def build_router(
         )
         if role in {"owner", "full"}:
             kb.row(
-                blue_inline_button("💎 Бонусы", callback_data="admin:bonuses"),
+                blue_inline_button("🎟 Промокоды", callback_data="admin:bonuses"),
                 blue_inline_button("⚙️ Система", callback_data="admin:system"),
             )
         if role == "owner":
@@ -2584,6 +2761,16 @@ def build_router(
                 blue_inline_button("+90 дней", callback_data=f"admin:grant:{telegram_id}:90"),
                 blue_inline_button("+365 дней", callback_data=f"admin:grant:{telegram_id}:365"),
             )
+            kb.row(
+                blue_inline_button(
+                    "📱 +1 слот",
+                    callback_data=f"admin:device:{telegram_id}:add",
+                ),
+                blue_inline_button(
+                    "📱 −1 слот",
+                    callback_data=f"admin:device:{telegram_id}:remove",
+                ),
+            )
 
         if actor_role == "owner" and telegram_id not in config.admin_ids:
             kb.row(
@@ -2616,9 +2803,9 @@ def build_router(
             f"Подписка — <b>{'активна' if active else 'не активна'}</b>",
             f"Тариф — <b>{html.escape(user.get('plan_name') or '—')}</b>",
             f"До — <b>{format_until(user, config) if active else '—'}</b>",
-            f"Устройств — <b>до {int(user.get('max_devices') or 1)}</b>",
-            f"💎 Алмазы — <b>{int(user.get('diamonds') or 0)}</b>",
-            f"Пробник — <b>{'использован' if user.get('trial_used') else 'доступен'}</b>",
+            f"Устройств — <b>{int(user.get('max_devices') or BASE_DEVICES)}/{MAX_DEVICES}</b>",
+            f"Доп. слотов — <b>{max(0, int(user.get('bonus_devices') or 0))}</b>",
+            f"Бесплатный день — <b>{'использован' if user.get('trial_used') else 'доступен'}</b>",
             f"Приглашено — <b>{referrals}</b>",
         ]
         await send_screen(
@@ -2677,32 +2864,26 @@ def build_router(
     async def show_admin_bonuses(message: Message, actor) -> None:
         if not await has_full_admin_access(actor.id):
             return
-        stock = await db.promo_stock_overview()
+        stock = await db.list_service_promos()
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:bonuses"))
         kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
 
         lines = [
-            "💎 <b>Бонусная система</b>",
+            "🎟 <b>Промокоды</b>",
             "",
             "Команды:",
-            "<code>/diamonds ID AMOUNT</code>",
-            "<code>/promoproduct SLUG PRICE TITLE</code>",
-            "<code>/promocode SLUG CODE</code>",
-            "",
-            "🎟 <b>Промокоды</b>",
+            "<code>/promocreate CODE TYPE VALUE MAX_USES DAYS_VALID PLANS</code>",
         ]
 
         if not stock:
-            lines.append("Товаров пока нет.")
+            lines.append("Промокодов пока нет.")
         else:
             for item in stock:
                 lines.append(
-                    f"• {html.escape(str(item['title']))} "
-                    f"(<code>{html.escape(str(item['slug']))}</code>) — "
-                    f"<b>{int(item['price_diamonds'])} 💎</b> · "
-                    f"остаток {int(item['stock'] or 0)} · "
-                    f"выдано {int(item['issued'] or 0)}"
+                    f"• <code>{html.escape(str(item['code']))}</code> · "
+                    f"{html.escape(str(item['type']))} {int(item['value'])} · "
+                    f"использовано {int(item['used_count'] or 0)}"
                 )
 
         await send_screen(
@@ -2730,8 +2911,8 @@ def build_router(
             f"🌐 Сервер — <b>{html.escape(config.vpn_server_name)}</b>\n"
             f"💳 RollyPay — <b>{rolly}</b>\n"
             f"🧾 Режим оплаты — <b>{rolly_mode}</b>\n"
-            f"🎁 Пробный период — <b>{config.trial_minutes} мин.</b>\n"
-            f"📱 Пробник — <b>{config.trial_max_devices} устройство</b>\n\n"
+            "🎁 Бесплатный доступ — <b>1 день, один раз</b>\n"
+            f"📱 Лимит бесплатного доступа — <b>{config.trial_max_devices} устройство</b>\n\n"
             "<i>Секретные ключи здесь не отображаются.</i>"
         )
         await send_screen(message, actor, text, reply_markup=kb.as_markup())
@@ -2952,6 +3133,72 @@ def build_router(
             telegram_id,
         )
 
+    @router.callback_query(F.data.startswith("admin:device:"))
+    async def admin_device_callback(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer(
+                "Нужна полная админка.",
+                show_alert=True,
+            )
+            return
+        if not callback.message:
+            return
+
+        parts = callback.data.split(":")
+        if len(parts) != 4 or not parts[2].isdigit():
+            await callback.answer("Некорректная команда", show_alert=True)
+            return
+
+        telegram_id = int(parts[2])
+        action = parts[3]
+        try:
+            current = await db.get_user(telegram_id)
+        except KeyError:
+            await callback.answer("Пользователь не найден", show_alert=True)
+            return
+
+        current_limit = int(current.get("max_devices") or BASE_DEVICES)
+
+        if action == "add":
+            if current_limit >= MAX_DEVICES:
+                await callback.answer(
+                    "Уже максимум: 5 устройств.",
+                    show_alert=True,
+                )
+                return
+            updated = await db.grant_extra_device(
+                telegram_id,
+                max_total_devices=MAX_DEVICES,
+            )
+            success_text = "+1 устройство выдано"
+        elif action == "remove":
+            if current_limit <= BASE_DEVICES:
+                await callback.answer(
+                    "Нельзя опустить ниже 1 устройства.",
+                    show_alert=True,
+                )
+                return
+            updated = await db.revoke_extra_device(telegram_id)
+            success_text = "−1 устройство"
+        else:
+            await callback.answer("Неизвестное действие", show_alert=True)
+            return
+
+        if not updated:
+            await callback.answer(
+                "Не удалось изменить лимит.",
+                show_alert=True,
+            )
+            return
+
+        await sync_device_limit(updated)
+        await callback.answer(success_text)
+        await show_admin_user(
+            callback.message,
+            callback.from_user,
+            telegram_id,
+        )
+
     @router.callback_query(F.data.startswith("admin:grant:"))
     async def admin_grant_callback(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
@@ -2980,7 +3227,7 @@ def build_router(
             telegram_id=telegram_id,
             days=days,
             plan_name=f"{days} дн.",
-            max_devices=5,
+            max_devices=BASE_DEVICES,
         )
         try:
             await provider.provision(user)
@@ -3020,119 +3267,51 @@ def build_router(
             return
         await show_admin_stats(message, message.from_user)
 
-    @router.message(Command("diamonds"))
-    async def admin_diamonds(message: Message) -> None:
+    @router.message(Command("promocreate"))
+    async def admin_promo_create(message: Message) -> None:
         if not await has_full_admin_access(message.from_user.id):
             return
 
         parts = (message.text or "").split()
-        if len(parts) != 3:
-            await message.answer("Использование: /diamonds TELEGRAM_ID AMOUNT")
-            return
-
-        try:
-            telegram_id = int(parts[1])
-            amount = int(parts[2])
-        except ValueError:
-            await message.answer("ID и AMOUNT должны быть числами.")
-            return
-
-        if amount == 0 or abs(amount) > 1_000_000:
-            await message.answer("AMOUNT: от -1000000 до 1000000, кроме 0.")
-            return
-
-        try:
-            await db.get_user(telegram_id)
-        except KeyError:
-            await message.answer("Пользователь ещё не запускал бота.")
-            return
-
-        changed = await db.add_diamonds(
-            telegram_id=telegram_id,
-            amount=amount,
-            reason="Изменение администратором",
-            event_key=f"admin-diamonds:{message.from_user.id}:{telegram_id}:{uuid4().hex}",
-        )
-        balance = await db.diamond_balance(telegram_id)
-        if not changed:
-            await message.answer("Баланс не изменился.")
-            return
-
-        role = await get_admin_role(message.from_user.id)
-        await send_screen(
-            message,
-            message.from_user,
-            f"💎 Баланс <code>{telegram_id}</code> изменён.\n"
-            f"Теперь: <b>{balance} 💎</b>",
-            reply_markup=admin_main_keyboard(role or "full"),
-        )
-
-    @router.message(Command("promoproduct"))
-    async def admin_promo_product(message: Message) -> None:
-        if not await has_full_admin_access(message.from_user.id):
-            return
-
-        parts = (message.text or "").split(maxsplit=3)
-        if len(parts) != 4:
+        if len(parts) != 7:
             await message.answer(
-                "Использование: /promoproduct SLUG PRICE TITLE\n"
-                "Пример: /promoproduct yandex_plus 500 Яндекс Плюс 60 дней"
+                "Использование: /promocreate CODE TYPE VALUE MAX_USES DAYS_VALID PLANS\n"
+                "TYPE: discount или free_days; 0 в MAX_USES — без лимита; "
+                "PLANS: all или 7,30,90,180,365"
             )
             return
 
-        slug = parts[1].strip().lower()
+        code, promo_type, value_raw, max_raw, valid_raw, plans = parts[1:]
         try:
-            price = int(parts[2])
+            value = int(value_raw)
+            max_uses = int(max_raw)
+            valid_days = int(valid_raw)
         except ValueError:
-            await message.answer("PRICE должен быть числом.")
+            await message.answer("VALUE, MAX_USES и DAYS_VALID должны быть числами.")
             return
-        title = parts[3].strip()
-
-        if not re.fullmatch(r"[a-z0-9_-]{2,48}", slug):
-            await message.answer("SLUG: только a-z, 0-9, _ и -, длина 2–48.")
-            return
-        if price < 1 or price > 1_000_000 or not title:
-            await message.answer("Проверь цену и название товара.")
-            return
-
-        await db.create_promo_product(slug, title, price)
-        role = await get_admin_role(message.from_user.id)
-        await send_screen(
-            message,
-            message.from_user,
-            f"✅ Товар <b>{html.escape(title)}</b> сохранён за <b>{price} 💎</b>.\n"
-            f"Теперь добавляй коды: <code>/promocode {html.escape(slug)} CODE</code>",
-            reply_markup=admin_main_keyboard(role or "full"),
-        )
-
-    @router.message(Command("promocode"))
-    async def admin_promo_code(message: Message) -> None:
-        if not await has_full_admin_access(message.from_user.id):
-            return
-
-        parts = (message.text or "").split(maxsplit=2)
-        if len(parts) != 3:
-            await message.answer("Использование: /promocode SLUG CODE")
-            return
-
-        slug = parts[1].strip().lower()
-        code = parts[2].strip()
-        if not code:
-            await message.answer("CODE пустой.")
-            return
-
-        added = await db.add_promo_code(slug, code)
-        if not added:
-            await message.answer(
-                "Не удалось добавить код: товар не найден или такой код уже есть."
+        expires_at = None
+        if valid_days > 0:
+            from db import to_iso
+            expires_at = to_iso(utcnow() + timedelta(days=valid_days))
+        try:
+            promo = await db.create_service_promo(
+                code=code,
+                promo_type=promo_type,
+                value=value,
+                max_uses=max_uses or None,
+                expires_at=expires_at,
+                applicable_plans=plans,
+                created_by=message.from_user.id,
             )
+        except (ValueError, aiosqlite.IntegrityError):
+            await message.answer("Проверьте параметры: код должен быть уникальным.")
             return
-
         role = await get_admin_role(message.from_user.id)
         await send_screen(
             message,
             message.from_user,
-            f"✅ Код добавлен в товар <code>{html.escape(slug)}</code>.",
+            f"🎟 Промокод <code>{html.escape(str(promo['code']))}</code> создан.\n"
+            f"Тип: <b>{html.escape(str(promo['type']))}</b> · значение: <b>{promo['value']}</b>",
             reply_markup=admin_main_keyboard(role or "full"),
         )
 
@@ -3167,7 +3346,7 @@ def build_router(
             telegram_id=telegram_id,
             days=days,
             plan_name=f"{days} дн.",
-            max_devices=5,
+            max_devices=BASE_DEVICES,
         )
         try:
             await provider.provision(user)
