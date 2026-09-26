@@ -33,6 +33,7 @@ class Config:
     display_tz: ZoneInfo
 
     miniapp_url: str
+    main_menu_banner_file_id: str
     miniapp_host: str
     miniapp_port: int
     miniapp_initdata_max_age: int
@@ -92,9 +93,19 @@ class Config:
             )
 
         domain = os.getenv("DOMAIN", "").strip()
-        miniapp_url = os.getenv("MINIAPP_URL", "").strip().rstrip("/")
-        if not miniapp_url and domain:
-            miniapp_url = f"https://{domain}"
+        explicit_miniapp_url = os.getenv("MINIAPP_URL", "").strip().rstrip("/")
+        public_base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+
+        # BotHost exposes DOMAIN automatically. Prefer the actually deployed
+        # public host over a stale MINIAPP_URL so the bot and Mini App always
+        # return the same stable /sub/<token> URL.
+        if not public_base_url and domain:
+            public_base_url = (
+                domain.rstrip("/")
+                if domain.startswith(("http://", "https://"))
+                else f"https://{domain.rstrip('/')}"
+            )
+        miniapp_url = public_base_url or explicit_miniapp_url
 
         return cls(
             bot_token=token,
@@ -102,6 +113,10 @@ class Config:
             db_path=os.getenv("DB_PATH", "mgn_vpn.sqlite3"),
             display_tz=ZoneInfo(os.getenv("DISPLAY_TZ", "Asia/Yekaterinburg")),
             miniapp_url=miniapp_url,
+            main_menu_banner_file_id=os.getenv(
+                "MAIN_MENU_BANNER_FILE_ID",
+                "",
+            ).strip(),
             miniapp_host=os.getenv("MINIAPP_HOST", "0.0.0.0").strip() or "0.0.0.0",
             miniapp_port=max(
                 1,
