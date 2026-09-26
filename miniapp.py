@@ -1185,7 +1185,6 @@ class MiniAppServer:
 
             response.headers.setdefault("X-Content-Type-Options", "nosniff")
             response.headers.setdefault("Referrer-Policy", "no-referrer")
-            response.headers.setdefault("X-Frame-Options", "DENY")
             response.headers.setdefault(
                 "Permissions-Policy",
                 "camera=(), microphone=(), geolocation=(), payment=()",
