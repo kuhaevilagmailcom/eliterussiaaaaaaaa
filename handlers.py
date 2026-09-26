@@ -559,43 +559,51 @@ def build_router(
     def is_owner(user_id: int) -> bool:
         return user_id in config.admin_ids
 
-    async def is_trial_channel_member(bot, user_id: int) -> bool:
-        try:
-            member = await bot.get_chat_member(
-                chat_id=config.trial_channel_username,
-                user_id=user_id,
-            )
-        except Exception as exc:
-            logger.exception(
-                "Trial channel membership check failed for user %s in %s: %s",
-                user_id,
-                config.trial_channel_username,
-                exc,
-            )
-            return False
+    async def is_trial_channel_member(
+        bot,
+        user_id: int,
+        *,
+        retries: int = 3,
+    ) -> bool:
+        retries = max(1, min(int(retries), 4))
+        for attempt in range(retries):
+            try:
+                member = await bot.get_chat_member(
+                    chat_id=config.trial_channel_username,
+                    user_id=user_id,
+                )
+                status = getattr(member.status, "value", str(member.status))
+                if status in {"member", "administrator", "creator"}:
+                    return True
+                if status == "restricted" and bool(getattr(member, "is_member", False)):
+                    return True
+            except Exception as exc:
+                logger.warning(
+                    "Trial channel membership check failed for user %s in %s: %s",
+                    user_id,
+                    config.trial_channel_username,
+                    exc,
+                )
 
-        status = getattr(member.status, "value", str(member.status))
-        if status in {"member", "administrator", "creator"}:
-            return True
-
-        # Restricted members may still be members of the channel.
-        if status == "restricted" and bool(getattr(member, "is_member", False)):
-            return True
+            # Telegram may need a short moment after the user joins a channel.
+            if attempt + 1 < retries:
+                await asyncio.sleep(0.6)
 
         return False
 
-    def trial_channel_keyboard() -> Any:
+    def trial_channel_keyboard(*, subscribed: bool = False) -> Any:
         kb = InlineKeyboardBuilder()
-        kb.row(
-            blue_inline_button(
-                "📢 Подписаться на канал",
-                url=config.trial_channel_url,
+        if not subscribed:
+            kb.row(
+                blue_inline_button(
+                    "📢 Подписаться на канал",
+                    url=config.trial_channel_url,
+                )
             )
-        )
         kb.row(
             blue_inline_button(
-                "✅ Проверить подписку",
-                callback_data="trialcheck",
+                "🎁 Забрать 1 день",
+                callback_data="trial:claim",
             )
         )
         add_nav_buttons(kb, back_data="home")
@@ -952,13 +960,26 @@ def build_router(
             ]
         elif not user.get("trial_used"):
             channel = html.escape(config.trial_channel_username)
+            channel_member = await is_trial_channel_member(
+                message.bot,
+                int(actor.id),
+                retries=1,
+            )
             lines += [
                 "└ Бесплатный день: <b>доступен</b>",
                 "",
                 "🎁 <b>Бесплатный день VPN</b>",
-                f"Чтобы активировать её, подпишитесь на канал <b>{channel}</b>.",
-                "После подписки нажмите <b>«🔗 Подключить VPN»</b>.",
             ]
+            if channel_member:
+                lines += [
+                    "✅ Подписка на канал подтверждена.",
+                    "Откройте <b>«🔗 Подключить VPN»</b> и нажмите <b>«🎁 Забрать 1 день»</b>.",
+                ]
+            else:
+                lines += [
+                    f"Подпишитесь на канал <b>{channel}</b>.",
+                    "Затем откройте <b>«🔗 Подключить VPN»</b> и нажмите <b>«🎁 Забрать 1 день»</b>.",
+                ]
         else:
             lines += [
                 "└ Бесплатный день: <b>уже использован</b>",
@@ -1086,13 +1107,28 @@ def build_router(
         user = await ensure_actor(callback.from_user)
         if not is_active(user):
             if not user.get("trial_used"):
+                subscribed = await is_trial_channel_member(
+                    callback.message.bot,
+                    callback.from_user.id,
+                    retries=2,
+                )
+                text = (
+                    "🎁 <b>Бесплатный день VPN</b>\n\n"
+                    + (
+                        "✅ Подписка на канал подтверждена.\n"
+                        "Нажмите <b>«🎁 Забрать 1 день»</b>."
+                        if subscribed
+                        else (
+                            f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
+                            "вернитесь в бот и нажмите <b>«🎁 Забрать 1 день»</b>."
+                        )
+                    )
+                )
                 await send_screen(
                     callback.message,
                     callback.from_user,
-                    "🎁 <b>Бесплатный день VPN</b>\n\n"
-                    f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
-                    "затем нажмите <b>«✅ Проверить подписку»</b>.",
-                    reply_markup=trial_channel_keyboard(),
+                    text,
+                    reply_markup=trial_channel_keyboard(subscribed=subscribed),
                 )
             else:
                 kb = InlineKeyboardBuilder()
@@ -2216,13 +2252,28 @@ def build_router(
         user = await ensure_actor(message.from_user)
         if not is_active(user):
             if not user.get("trial_used"):
+                subscribed = await is_trial_channel_member(
+                    message.bot,
+                    message.from_user.id,
+                    retries=2,
+                )
+                text = (
+                    "🎁 <b>Бесплатный день VPN</b>\n\n"
+                    + (
+                        "✅ Подписка на канал подтверждена.\n"
+                        "Нажмите <b>«🎁 Забрать 1 день»</b>."
+                        if subscribed
+                        else (
+                            f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
+                            "вернитесь в бот и нажмите <b>«🎁 Забрать 1 день»</b>."
+                        )
+                    )
+                )
                 await send_screen(
                     message,
                     message.from_user,
-                    "🎁 <b>Бесплатный день VPN</b>\n\n"
-                    f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
-                    "затем нажмите <b>«✅ Проверить подписку»</b>.",
-                    reply_markup=trial_channel_keyboard(),
+                    text,
+                    reply_markup=trial_channel_keyboard(subscribed=subscribed),
                 )
             else:
                 kb = InlineKeyboardBuilder()
@@ -2273,7 +2324,7 @@ def build_router(
             reply_markup=connection_keyboard(subscription_url),
         )
 
-    @router.callback_query(F.data.in_({"trial", "trialcheck"}))
+    @router.callback_query(F.data.in_({"trial", "trialcheck", "trial:claim"}))
     async def trial(callback: CallbackQuery) -> None:
         if not callback.message:
             return
@@ -2290,14 +2341,17 @@ def build_router(
             callback.from_user.id,
         )
         if not subscribed:
-            await callback.answer("Подписка пока не найдена.")
+            await callback.answer(
+                "Подписка пока не найдена. Если только что подписались — нажмите ещё раз через секунду.",
+                show_alert=True,
+            )
             await send_screen(
                 callback.message,
                 callback.from_user,
                 "🎁 <b>Бесплатный день VPN</b>\n\n"
                 f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
-                "затем нажмите <b>«✅ Проверить подписку»</b>.",
-                reply_markup=trial_channel_keyboard(),
+                "вернитесь сюда и нажмите <b>«🎁 Забрать 1 день»</b>.",
+                reply_markup=trial_channel_keyboard(subscribed=False),
             )
             return
 
@@ -2325,7 +2379,7 @@ def build_router(
             )
 
         await callback.answer("Бесплатный день активирован")
-        await show_profile(callback.message, callback.from_user)
+        await show_home(callback.message, callback.from_user)
 
     @router.message(F.text.in_({"📱 Устройства", "Устройства"}))
     async def devices(message: Message) -> None:
