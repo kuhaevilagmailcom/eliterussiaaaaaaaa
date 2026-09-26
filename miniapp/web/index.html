@@ -8,7 +8,7 @@
   <title>MGN VPN</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=14">
+  <link rel="stylesheet" href="/static/styles.css?v=15">
 </head>
 <body>
   <div class="app-shell">
@@ -63,7 +63,7 @@
           </div>
           <div class="link-value">
             <code id="linkMasked">mgnvpn.ru/••••••••</code>
-            <span class="link-copy-icon"><i data-lucide="copy"></i></span>
+            <button type="button" class="link-copy-icon" id="copySubscriptionInline" aria-label="Скопировать персональную ссылку"><i data-lucide="copy"></i></button>
           </div>
           <div class="link-actions">
             <button type="button" class="copy-button link-primary-action" id="copySubscriptionHome"><i data-lucide="copy"></i><span>Скопировать ссылку</span></button>
@@ -75,7 +75,7 @@
         <div class="section-title"><h3>Быстрый доступ</h3></div>
         <div class="quick-grid">
           <button type="button" data-nav="profile"><span><i data-lucide="user-round"></i></span><b>Профиль</b><small id="devicesActionNote">0 из 1 устройств</small></button>
-          <button type="button" data-nav="plans"><span><i data-lucide="crown"></i></span><b>Тарифы</b><small>Продлить или изменить</small></button>
+          <button type="button" data-nav="plans"><span><i data-lucide="crown"></i></span><b>Тарифы</b><small id="plansActionNote">Купить VPN</small></button>
           <button type="button" data-nav="bonuses"><span><i data-lucide="ticket-percent"></i></span><b>Промокод</b><small id="bonusActionNote">Скидка или бесплатные дни</small></button>
           <button type="button" data-nav="support"><span><i data-lucide="headphones"></i></span><b>Поддержка</b><small>Мы всегда на связи</small></button>
         </div>
@@ -148,6 +148,10 @@
         <article class="capacity-card profile-devices-card">
           <div class="progress capacity-progress"><span id="deviceCapacityBar"></span></div>
           <div class="device-list" id="deviceList"></div>
+          <div class="device-summary">
+            <span>Свободно слотов</span>
+            <b id="deviceFreeSlots">1</b>
+          </div>
           <button type="button" class="secondary-row" id="resetDevicesPage" hidden>
             <span class="icon-box"><i data-lucide="refresh-cw"></i></span>
             <span><b>Сбросить устройства</b><small>Отключить запомненные устройства</small></span>
@@ -292,6 +296,6 @@
   <div class="toast" id="toast"></div>
   <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"><span><i></i></span></div>
 
-  <script src="/static/app.js?v=14"></script>
+  <script src="/static/app.js?v=15"></script>
 </body>
 </html>
