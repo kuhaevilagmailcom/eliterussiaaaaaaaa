@@ -648,7 +648,10 @@ class H1CloudVpnProvider(VpnProvider):
                 "traffic_limit_gb": traffic_limit,
                 "device_limit": device_limit,
                 "manual": True,
-                "channels": [],
+                # H1 treats [] as "no standard channels", which produces no
+                # VLESS links. Keep all standard channels selected; H1 itself
+                # omits transports that are not configured on this node.
+                "channels": ["main", "reality", "bs", "wscdn"],
                 "inbound_ids": inbound_ids,
             }
             data = await self._request(
@@ -668,6 +671,9 @@ class H1CloudVpnProvider(VpnProvider):
                 "expires_at": expires_at,
                 "traffic_limit_gb": traffic_limit,
                 "device_limit": device_limit,
+                # Repair users created by older builds with channels=[].
+                "channels": ["main", "reality", "bs", "wscdn"],
+                "inbound_ids": inbound_ids,
             }
             data = await self._request(
                 "PATCH",
@@ -889,15 +895,21 @@ class H1CloudVpnProvider(VpnProvider):
         """
         name = self._name(user)
         main = await self._get_client(name)
-        if main is None:
-            # Keep the subscription endpoint fast: create the canonical main
-            # client here without waiting for every federated panel.
+        if main is None or main.get("channels") == []:
+            # Older MGN builds wrote channels=[] to H1. In H1 that explicitly
+            # disables all standard subscription links, so repair the main
+            # client before rendering /sub/<token>.
             desired_expiry = self._desired_expiry(user)
             if desired_expiry <= int(datetime.now().timestamp()):
                 desired_expiry = int(datetime.now().timestamp()) + 86400
+            existing_uuid = (
+                str(main.get("uuid") or "").strip()
+                if isinstance(main, dict)
+                else ""
+            )
             main = await self._upsert_location(
                 name=name,
-                client_uuid=str(uuid4()),
+                client_uuid=existing_uuid or str(uuid4()),
                 expires_at=desired_expiry,
                 traffic_limit=max(0, int(user.get("traffic_limit_gb") or 0)),
                 device_limit=max(1, int(user.get("max_devices") or 1)),
