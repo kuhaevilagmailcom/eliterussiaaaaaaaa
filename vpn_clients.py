@@ -73,6 +73,11 @@ def client_registry(subscription_url: str) -> list[dict[str, str | bool | None]]
             "icon": client.icon,
             "download_url": client.download_url,
             "import_url": client.import_url(subscription_url),
+            "redirect_url": (
+                client_redirect_url(subscription_url, client)
+                if client.supports_subscription_import
+                else None
+            ),
             "supports_subscription_import": client.supports_subscription_import,
         }
         for client in CLIENTS
