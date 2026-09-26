@@ -153,6 +153,21 @@ class Config:
             configured_public = DEFAULT_PUBLIC_BASE_URL
         miniapp_url = configured_public or DEFAULT_PUBLIC_BASE_URL
 
+        configured_subscription = _https_public_url(
+            os.getenv("VPN_SUB_BASE_URL", "").strip()
+        )
+        legacy_subscription_urls = {
+            "",
+            "https://vpn.example.com/sub",
+            "https://mgnvpn.ru/sub",
+            "https://bot-1789383103-4489-furadev.bothost.tech/sub",
+            "https://bot-1790078948-4568-furadev.bothost.tech/sub",
+        }
+        if configured_subscription.rstrip("/") in {
+            value.rstrip("/") for value in legacy_subscription_urls
+        }:
+            configured_subscription = DEFAULT_SUBSCRIPTION_BASE_URL
+
         return cls(
             bot_token=token,
             admin_ids=_ints(os.getenv("ADMIN_IDS", "8464597898")),
@@ -173,12 +188,7 @@ class Config:
                 int(os.getenv("MINIAPP_INITDATA_MAX_AGE", "3600")),
             ),
             vpn_mode=mode,
-            vpn_sub_base_url=_https_public_url(
-                os.getenv(
-                    "VPN_SUB_BASE_URL",
-                    DEFAULT_SUBSCRIPTION_BASE_URL,
-                )
-            ).rstrip("/"),
+            vpn_sub_base_url=configured_subscription.rstrip("/"),
             vpn_api_url=os.getenv("VPN_API_URL", "").rstrip("/"),
             vpn_api_token=os.getenv("VPN_API_TOKEN", ""),
             vpn_server_name=os.getenv("VPN_SERVER_NAME", "MGN VPN"),
