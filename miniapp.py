@@ -480,11 +480,7 @@ class MiniAppServer:
         *,
         request: web.Request | None = None,
     ) -> str:
-        base_url = (
-            self._external_base_url(request)
-            if request is not None
-            else self.config.miniapp_url.rstrip("/")
-        )
+        base_url = str(self.config.vpn_sub_base_url or "").strip().rstrip("/")
         if (
             getattr(self.provider, "mode_name", "") == "h1cloud"
             and base_url
@@ -492,7 +488,7 @@ class MiniAppServer:
             and _active(user)
         ):
             token = quote(str(user["sub_token"]), safe="")
-            return f"{base_url}/sub/{token}"
+            return f"{base_url}/{token}"
         return (state.subscription_url if state else "") or ""
 
 
@@ -527,6 +523,12 @@ class MiniAppServer:
                 "vpn_ready": bool(getattr(self.provider, "service_ready", True)),
             }
         )
+
+    async def subscription_root(self, request: web.Request) -> web.Response:
+        host = request.host.split(":", 1)[0].lower()
+        if host != "sub.mgnvpn.ru":
+            raise web.HTTPNotFound(text="Not found")
+        return await self.subscription(request)
 
     async def subscription(self, request: web.Request) -> web.Response:
         token = str(request.match_info.get("token") or "").strip()
@@ -646,8 +648,8 @@ class MiniAppServer:
         user = await self.db.get_user_by_sub_token(token)
         if client is None or user is None or not _active(user):
             raise web.HTTPNotFound(text="Client link not found")
-        base = self._external_base_url(request)
-        subscription_url = f"{base}/sub/{quote(token, safe='')}"
+        base = str(self.config.vpn_sub_base_url or "").strip().rstrip("/")
+        subscription_url = f"{base}/{quote(token, safe='')}"
         target = client.import_url(subscription_url)
         if not target:
             raise web.HTTPFound(client.download_url)
@@ -1189,7 +1191,12 @@ class MiniAppServer:
                 "Permissions-Policy",
                 "camera=(), microphone=(), geolocation=(), payment=()",
             )
-            if request.path.startswith("/api/") or request.path.startswith("/sub/"):
+            subscription_host = request.host.split(":", 1)[0].lower() == "sub.mgnvpn.ru"
+            if (
+                request.path.startswith("/api/")
+                or request.path.startswith("/sub/")
+                or subscription_host
+            ):
                 response.headers["Cache-Control"] = "private, no-store, max-age=0"
                 response.headers["Pragma"] = "no-cache"
             return response
@@ -1202,6 +1209,7 @@ class MiniAppServer:
         app.router.add_get("/miniapp", self.index)
         app.router.add_get("/miniapp/", self.index)
         app.router.add_get("/sub/{token}", self.subscription)
+        app.router.add_get("/{token}", self.subscription_root)
         app.router.add_get("/client/{client}/{token}", self.client_redirect)
         app.router.add_get("/api/miniapp/health", self.health)
         app.router.add_get("/api/miniapp/me", self.me)
