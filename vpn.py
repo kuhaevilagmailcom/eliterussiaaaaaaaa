@@ -529,49 +529,119 @@ class H1CloudVpnProvider(VpnProvider):
         return selected
 
     async def _federated_nodes(self) -> list[dict[str, Any]]:
-        # IMPORTANT: /fed/lproxy/<sid>/... works with BILLING-LINKED server IDs
-        # stored by /fed/link. /fed/registry is a different, manual federation
-        # store with its own node IDs/tokens and those IDs are NOT valid for
-        # lproxy. Mixing the two made subscriptions contain only the main NL
-        # node.
-        try:
-            data = await asyncio.wait_for(
-                self._request("GET", "/fed/link"),
-                timeout=1.5,
-            )
-            if isinstance(data, dict):
-                raw_links = data.get("links")
-                if isinstance(raw_links, list):
-                    nodes: list[dict[str, Any]] = []
-                    seen: set[str] = set()
-                    for value in raw_links:
-                        sid = str(value or "").strip()
-                        if sid and sid not in seen:
-                            seen.add(sid)
-                            nodes.append({"id": sid})
-                    return nodes
-        except Exception as exc:
-            logger.warning(
-                "H1Cloud /fed/link unavailable, trying lagg fallback: %s",
-                str(exc).strip() or type(exc).__name__,
-            )
+        """Return every H1 remote node with the correct proxy transport.
 
-        # Fallback for older H1 builds: lagg returns the same linked billing
-        # server IDs, but is heavier because it also probes the remote nodes.
-        try:
-            data = await asyncio.wait_for(
-                self._request("GET", "/fed/lagg"),
-                timeout=3.0,
-            )
-        except Exception:
-            return []
+        H1 has TWO federation stores:
+        - /fed/link -> billing-linked server IDs, accessed through /fed/lproxy/<sid>
+        - /fed/registry -> manual registry node IDs/tokens, accessed through /fed/proxy/<id>
 
-        if not isinstance(data, dict):
-            return []
-        raw = data.get("nodes")
-        if not isinstance(raw, list):
-            return []
-        return [dict(item) for item in raw if isinstance(item, dict)]
+        They are separate stores. Using only one store explains why a unified
+        subscription could contain NL + US while FI/DE/LT were missing.
+        """
+        nodes: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+
+        async def load_linked() -> None:
+            try:
+                data = await asyncio.wait_for(
+                    self._request("GET", "/fed/link"),
+                    timeout=1.5,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "H1Cloud /fed/link unavailable: %s",
+                    str(exc).strip() or type(exc).__name__,
+                )
+                return
+
+            if not isinstance(data, dict):
+                return
+            raw_links = data.get("links")
+            if not isinstance(raw_links, list):
+                return
+            for value in raw_links:
+                node_id = str(value or "").strip()
+                key = ("lproxy", node_id)
+                if node_id and key not in seen:
+                    seen.add(key)
+                    nodes.append(
+                        {
+                            "id": node_id,
+                            "proxy_kind": "lproxy",
+                        }
+                    )
+
+        async def load_registry() -> None:
+            try:
+                data = await asyncio.wait_for(
+                    self._request("GET", "/fed/registry"),
+                    timeout=1.5,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "H1Cloud /fed/registry unavailable: %s",
+                    str(exc).strip() or type(exc).__name__,
+                )
+                return
+
+            if not isinstance(data, dict):
+                return
+            raw_nodes = data.get("nodes")
+            if not isinstance(raw_nodes, list):
+                return
+            for item in raw_nodes:
+                if not isinstance(item, dict):
+                    continue
+                node_id = self._node_id(item)
+                key = ("proxy", node_id)
+                if node_id and key not in seen:
+                    seen.add(key)
+                    node = dict(item)
+                    node["proxy_kind"] = "proxy"
+                    nodes.append(node)
+
+        await asyncio.gather(load_linked(), load_registry())
+
+        if not nodes:
+            # Compatibility fallback for older H1 builds.
+            try:
+                data = await asyncio.wait_for(
+                    self._request("GET", "/fed/lagg"),
+                    timeout=3.0,
+                )
+                raw_nodes = data.get("nodes") if isinstance(data, dict) else None
+                if isinstance(raw_nodes, list):
+                    for item in raw_nodes:
+                        if not isinstance(item, dict):
+                            continue
+                        node_id = self._node_id(item)
+                        key = ("lproxy", node_id)
+                        if node_id and key not in seen:
+                            seen.add(key)
+                            node = dict(item)
+                            node["proxy_kind"] = "lproxy"
+                            nodes.append(node)
+            except Exception:
+                pass
+
+        logger.info(
+            "H1Cloud federation discovery: %s remote node(s): %s",
+            len(nodes),
+            [
+                f"{node.get('proxy_kind')}:{self._node_id(node)}"
+                for node in nodes
+            ],
+        )
+        return nodes
+
+    @staticmethod
+    def _node_prefix(node: dict[str, Any]) -> str:
+        node_id = H1CloudVpnProvider._node_id(node)
+        if not node_id:
+            return ""
+        kind = str(node.get("proxy_kind") or "lproxy").strip()
+        route = "proxy" if kind == "proxy" else "lproxy"
+        return f"/fed/{route}/{quote(node_id, safe='')}"
 
     @staticmethod
     def _node_id(node: dict[str, Any]) -> str:
@@ -774,20 +844,25 @@ class H1CloudVpnProvider(VpnProvider):
         )
 
         nodes = await self._federated_nodes()
-        node_ids = [
-            self._node_id(node)
+        remote_nodes = [
+            node
             for node in nodes
-            if self._node_id(node)
+            if self._node_id(node) and self._node_prefix(node)
         ]
         logger.info(
-            "H1Cloud federation: %s connected remote node(s) for %s; node_ids=%s",
-            len(node_ids),
+            "H1Cloud federation: %s connected remote node(s) for %s; nodes=%s",
+            len(remote_nodes),
             name,
-            node_ids,
+            [
+                f"{node.get('proxy_kind')}:{self._node_id(node)}"
+                for node in remote_nodes
+            ],
         )
 
-        async def sync_node(node_id: str) -> tuple[str, str | None]:
-            prefix = f"/fed/lproxy/{quote(node_id, safe='')}"
+        async def sync_node(node: dict[str, Any]) -> tuple[str, str | None]:
+            node_id = self._node_id(node)
+            prefix = self._node_prefix(node)
+            label = f"{node.get('proxy_kind')}:{node_id}"
             try:
                 await asyncio.wait_for(
                     self._upsert_location(
@@ -802,20 +877,20 @@ class H1CloudVpnProvider(VpnProvider):
                 )
                 logger.info(
                     "H1Cloud federation node %s synced for %s",
-                    node_id,
+                    label,
                     name,
                 )
-                return node_id, None
+                return label, None
             except asyncio.TimeoutError:
-                return node_id, "timeout"
+                return label, "timeout"
             except Exception as exc:
                 message = str(exc).strip() or type(exc).__name__
-                return node_id, message
+                return label, message
 
         # Remote panels are independent. Sync them concurrently so a slow or
         # broken country cannot hold the whole purchase/Mini App for 20+ sec.
         results = await asyncio.gather(
-            *(sync_node(node_id) for node_id in node_ids),
+            *(sync_node(node) for node in remote_nodes),
             return_exceptions=False,
         )
         errors = [
@@ -903,10 +978,16 @@ class H1CloudVpnProvider(VpnProvider):
         )
 
         nodes = await self._federated_nodes()
-        node_ids = [self._node_id(node) for node in nodes if self._node_id(node)]
+        remote_nodes = [
+            node
+            for node in nodes
+            if self._node_id(node) and self._node_prefix(node)
+        ]
 
-        async def reset_remote(node_id: str) -> tuple[str, str | None]:
-            prefix = f"/fed/lproxy/{quote(node_id, safe='')}"
+        async def reset_remote(node: dict[str, Any]) -> tuple[str, str | None]:
+            node_id = self._node_id(node)
+            prefix = self._node_prefix(node)
+            label = f"{node.get('proxy_kind')}:{node_id}"
             try:
                 await asyncio.wait_for(
                     self._request(
@@ -916,12 +997,12 @@ class H1CloudVpnProvider(VpnProvider):
                     ),
                     timeout=7.0,
                 )
-                return node_id, None
+                return label, None
             except Exception as exc:
-                return node_id, str(exc).strip() or type(exc).__name__
+                return label, str(exc).strip() or type(exc).__name__
 
         results = await asyncio.gather(
-            *(reset_remote(node_id) for node_id in node_ids),
+            *(reset_remote(node) for node in remote_nodes),
             return_exceptions=False,
         )
         errors = [f"{node_id}: {error}" for node_id, error in results if error]
@@ -1031,19 +1112,23 @@ class H1CloudVpnProvider(VpnProvider):
             )
             nodes = []
 
-        async def load_remote(node_id: str) -> tuple[str, list[str], str | None]:
-            prefix = f"/fed/lproxy/{quote(node_id, safe='')}"
+        async def load_remote(
+            node: dict[str, Any],
+        ) -> tuple[str, list[str], str | None]:
+            node_id = self._node_id(node)
+            prefix = self._node_prefix(node)
+            label = f"{node.get('proxy_kind')}:{node_id}"
             try:
                 client = await asyncio.wait_for(
                     self._get_client(name, prefix=prefix),
-                    timeout=2.0,
+                    timeout=2.5,
                 )
                 remote_links = self._client_vless_links(client)
                 if remote_links:
-                    return node_id, remote_links, None
+                    return label, remote_links, None
 
                 if not main_uuid:
-                    return node_id, [], "main_uuid_missing"
+                    return label, [], "main_uuid_missing"
 
                 desired_expiry = self._desired_expiry(user)
                 if desired_expiry <= int(datetime.now().timestamp()):
@@ -1058,17 +1143,21 @@ class H1CloudVpnProvider(VpnProvider):
                         device_limit=max(1, int(user.get("max_devices") or 1)),
                         prefix=prefix,
                     ),
-                    timeout=5.0,
+                    timeout=6.0,
                 )
-                return node_id, self._client_vless_links(repaired), None
+                return label, self._client_vless_links(repaired), None
             except Exception as exc:
-                return node_id, [], str(exc).strip() or type(exc).__name__
+                return label, [], str(exc).strip() or type(exc).__name__
 
         aggregate_task = asyncio.create_task(load_h1_aggregate())
-        node_ids = [self._node_id(node) for node in nodes if self._node_id(node)]
+        remote_nodes = [
+            node
+            for node in nodes
+            if self._node_id(node) and self._node_prefix(node)
+        ]
         remote_tasks = [
-            asyncio.create_task(load_remote(node_id))
-            for node_id in node_ids
+            asyncio.create_task(load_remote(node))
+            for node in remote_nodes
         ]
 
         # Keep the whole /sub response inside normal VPN-client timeouts.
@@ -1119,7 +1208,7 @@ class H1CloudVpnProvider(VpnProvider):
             "H1Cloud unified subscription built for %s with %s VLESS link(s) from %s linked node(s)",
             name,
             len(links),
-            len(node_ids),
+            len(remote_nodes),
         )
         payload = ("\n".join(links) + "\n").encode("utf-8")
         return base64.b64encode(payload), {}
