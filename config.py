@@ -13,6 +13,7 @@ load_dotenv()
 # mgnvpn.ru, so Mini App, API, client redirects and subscriptions all stay
 # under this host.
 DEFAULT_PUBLIC_BASE_URL = "https://mgnvpn.ru"
+DEFAULT_MINIAPP_URL = "https://mgnvpn.ru/app"
 DEFAULT_SUBSCRIPTION_BASE_URL = "https://mgnvpn.ru/sub"
 LEGACY_PUBLIC_BASE_URLS = {
     "https://bot-1789383103-4489-furadev.bothost.tech",
@@ -143,18 +144,23 @@ class Config:
                 return value
             return "https://" + value.lstrip("/")
 
-        # Telegram Mini Apps and public subscription links must always be HTTPS.
-        # A custom DOMAIN/PUBLIC_BASE_URL still wins. Known stale BotHost URLs
-        # are migrated automatically so an old hosting env does not keep
-        # generating dead Mini App or /sub links after a BotHost redeploy.
-        configured_public = _https_public_url(
-            public_base_url or domain or explicit_miniapp_url
-        )
-        if configured_public in {
-            _https_public_url(value) for value in LEGACY_PUBLIC_BASE_URLS
-        }:
+        # One HTTPS origin, separate paths:
+        # / = public website, /app = Telegram Mini App, /api = API, /sub = VPN links.
+        configured_public = _https_public_url(public_base_url or domain)
+        if not configured_public:
+            configured_public = _https_public_url(explicit_miniapp_url)
+            for suffix in ("/app", "/miniapp"):
+                if configured_public.endswith(suffix):
+                    configured_public = configured_public[:-len(suffix)]
+                    break
+        if (
+            not configured_public
+            or configured_public in {
+                _https_public_url(value) for value in LEGACY_PUBLIC_BASE_URLS
+            }
+        ):
             configured_public = DEFAULT_PUBLIC_BASE_URL
-        miniapp_url = configured_public or DEFAULT_PUBLIC_BASE_URL
+        miniapp_url = f"{configured_public.rstrip('/')}/app"
 
         configured_subscription = _https_public_url(
             os.getenv("VPN_SUB_BASE_URL", "").strip()
