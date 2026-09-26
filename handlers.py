@@ -738,7 +738,11 @@ def build_router(
         user = await ensure_actor(actor)
         last_id = user.get("last_menu_message_id")
         admin_role = await get_admin_role(int(actor.id))
-        home_markup = main_menu_inline_keyboard(\n            admin_role, config.miniapp_url, active=is_active(user)\n        )
+        home_markup = main_menu_inline_keyboard(
+            admin_role,
+            config.miniapp_url,
+            active=is_active(user),
+        )
         if reply_markup is None:
             reply_markup = home_markup
 
@@ -3549,80 +3553,6 @@ def build_router(
             telegram_id,
         )
 
-    @router.message(F.text)
-    async def support_text_router(message: Message) -> None:
-        if not message.from_user:
-            return
-        user_id = int(message.from_user.id)
-        raw_text = str(message.text or "").strip()
-
-        ticket_id = pending_support_admins.get(user_id)
-        if ticket_id is not None and await has_admin_access(user_id):
-            if len(raw_text) > 3000:
-                await message.answer("Ответ слишком длинный. Максимум 3000 символов.")
-                return
-            ticket = await db.get_support_ticket(ticket_id)
-            if not ticket:
-                pending_support_admins.pop(user_id, None)
-                await message.answer("Обращение больше не найдено.")
-                return
-            try:
-                await message.bot.send_message(
-                    chat_id=int(ticket["telegram_id"]),
-                    text=(
-                        f"<b>Ответ поддержки · обращение #{ticket_id}</b>\n\n"
-                        f"{html.escape(raw_text)}"
-                    ),
-                )
-            except Exception as exc:
-                logger.warning("Could not deliver support answer %s: %s", ticket_id, exc)
-                await message.answer(
-                    "Не удалось доставить ответ пользователю. Обращение оставлено открытым."
-                )
-                return
-
-            await db.answer_support_ticket(
-                ticket_id=ticket_id,
-                answered_by=user_id,
-                answer_text=raw_text,
-            )
-            pending_support_admins.pop(user_id, None)
-            await message.answer(f"Ответ по обращению #{ticket_id} отправлен.")
-            return
-
-        if user_id not in pending_support_users:
-            return
-
-        if not raw_text:
-            return
-        if len(raw_text) > 3000:
-            await message.answer("Сообщение слишком длинное. Максимум 3000 символов.")
-            return
-
-        now_mono = asyncio.get_running_loop().time()
-        last = support_cooldowns.get(user_id, 0.0)
-        if now_mono - last < 30.0:
-            await message.answer("Подождите немного перед новым обращением.")
-            return
-
-        actor = await ensure_actor(message.from_user)
-        ticket = await db.create_support_ticket(
-            telegram_id=user_id,
-            username=message.from_user.username,
-            first_name=message.from_user.first_name,
-            message=raw_text,
-        )
-        pending_support_users.discard(user_id)
-        support_cooldowns[user_id] = now_mono
-        await notify_support_admins(message.bot, ticket)
-        await send_screen(
-            message,
-            message.from_user,
-            f"<b>Обращение #{int(ticket['id'])} создано</b>\n\n"
-            "Администраторы получили сообщение. Ответ придёт сюда, в этот чат.",
-            reply_markup=support_keyboard(),
-        )
-
     @router.message(Command("user"))
     async def admin_user_command(message: Message) -> None:
         if not await has_admin_access(message.from_user.id):
@@ -3742,5 +3672,80 @@ def build_router(
             f"✅ Пользователю <code>{telegram_id}</code> добавлено <b>{days}</b> дней.",
             reply_markup=admin_main_keyboard(role or "full"),
         )
+
+    @router.message(F.text)
+    async def support_text_router(message: Message) -> None:
+        if not message.from_user:
+            return
+        user_id = int(message.from_user.id)
+        raw_text = str(message.text or "").strip()
+
+        ticket_id = pending_support_admins.get(user_id)
+        if ticket_id is not None and await has_admin_access(user_id):
+            if len(raw_text) > 3000:
+                await message.answer("Ответ слишком длинный. Максимум 3000 символов.")
+                return
+            ticket = await db.get_support_ticket(ticket_id)
+            if not ticket:
+                pending_support_admins.pop(user_id, None)
+                await message.answer("Обращение больше не найдено.")
+                return
+            try:
+                await message.bot.send_message(
+                    chat_id=int(ticket["telegram_id"]),
+                    text=(
+                        f"<b>Ответ поддержки · обращение #{ticket_id}</b>\n\n"
+                        f"{html.escape(raw_text)}"
+                    ),
+                )
+            except Exception as exc:
+                logger.warning("Could not deliver support answer %s: %s", ticket_id, exc)
+                await message.answer(
+                    "Не удалось доставить ответ пользователю. Обращение оставлено открытым."
+                )
+                return
+
+            await db.answer_support_ticket(
+                ticket_id=ticket_id,
+                answered_by=user_id,
+                answer_text=raw_text,
+            )
+            pending_support_admins.pop(user_id, None)
+            await message.answer(f"Ответ по обращению #{ticket_id} отправлен.")
+            return
+
+        if user_id not in pending_support_users:
+            return
+
+        if not raw_text:
+            return
+        if len(raw_text) > 3000:
+            await message.answer("Сообщение слишком длинное. Максимум 3000 символов.")
+            return
+
+        now_mono = asyncio.get_running_loop().time()
+        last = support_cooldowns.get(user_id, 0.0)
+        if now_mono - last < 30.0:
+            await message.answer("Подождите немного перед новым обращением.")
+            return
+
+        actor = await ensure_actor(message.from_user)
+        ticket = await db.create_support_ticket(
+            telegram_id=user_id,
+            username=message.from_user.username,
+            first_name=message.from_user.first_name,
+            message=raw_text,
+        )
+        pending_support_users.discard(user_id)
+        support_cooldowns[user_id] = now_mono
+        await notify_support_admins(message.bot, ticket)
+        await send_screen(
+            message,
+            message.from_user,
+            f"<b>Обращение #{int(ticket['id'])} создано</b>\n\n"
+            "Администраторы получили сообщение. Ответ придёт сюда, в этот чат.",
+            reply_markup=support_keyboard(),
+        )
+
 
     return router
