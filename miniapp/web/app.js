@@ -306,7 +306,7 @@
       root.innerHTML='<div class="empty">Happ станет доступен после активации подписки.</div>';
       return;
     }
-    const target=client.import_url||client.download_url||'';
+    const target=client.redirect_url||client.import_url||client.download_url||'';
     root.innerHTML=
       '<button type="button" data-client="'+esc(target)+'">'+
       '<span class="icon-box"><i data-lucide="shield-check"></i></span>'+
@@ -593,7 +593,7 @@
   }
   function openHapp(){
     const client=(state.data?.clients||[]).find(item=>String(item.name||'').toLowerCase()==='happ');
-    const url=client?.import_url||client?.download_url||'';
+    const url=client?.redirect_url||client?.import_url||client?.download_url||'';
     if(!url){
       toast(state.data?.subscription?.active?'Happ пока недоступен':'Сначала активируй подписку');
       return;
