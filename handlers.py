@@ -67,28 +67,37 @@ def main_menu_banner() -> BufferedInputFile:
     global _main_menu_banner_bytes
 
     if _main_menu_banner_bytes is None:
-        encoded = "".join(
-            (MAIN_MENU_BANNER_DIR / f"{index:02d}.txt")
-            .read_text(encoding="utf-8")
-            .strip()
-            for index in range(1, 19)
-        )
-        webp_bytes = base64.b64decode(encoded, validate=True)
-
-        with Image.open(BytesIO(webp_bytes)) as image:
-            image = image.convert("RGB")
-            if image.size != (1600, 900):
-                image = image.resize((1600, 900), Image.Resampling.LANCZOS)
-            output = BytesIO()
-            image.save(
-                output,
-                format="JPEG",
-                quality=95,
-                subsampling=0,
-                optimize=False,
-                progressive=False,
+        try:
+            encoded = "".join(
+                (MAIN_MENU_BANNER_DIR / f"{index:02d}.txt")
+                .read_text(encoding="utf-8")
+                .strip()
+                for index in range(1, 19)
             )
-            _main_menu_banner_bytes = output.getvalue()
+            webp_bytes = base64.b64decode(encoded, validate=True)
+
+            with Image.open(BytesIO(webp_bytes)) as source:
+                image = source.convert("RGB")
+                if image.size != (1600, 900):
+                    image = image.resize((1600, 900), Image.Resampling.LANCZOS)
+        except Exception as exc:
+            # A broken bundled banner must never take the whole bot down.
+            # Keep the menu usable even if one of the base64 asset chunks is
+            # malformed or was partially committed.
+            logger.error("Bundled main-menu banner is invalid: %s", exc)
+            image = Image.new("RGB", (1600, 900), (7, 7, 9))
+            image.paste((244, 90, 184), (0, 0, 1600, 10))
+
+        output = BytesIO()
+        image.save(
+            output,
+            format="JPEG",
+            quality=95,
+            subsampling=0,
+            optimize=False,
+            progressive=False,
+        )
+        _main_menu_banner_bytes = output.getvalue()
 
         logger.info(
             "Main menu HQ banner loaded: 1600x900, %s bytes",
