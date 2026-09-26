@@ -473,6 +473,15 @@ def profile_text(
     return "\n".join(lines)
 
 
+def _https_public_base_url(value: str) -> str:
+    value = str(value or "").strip().rstrip("/")
+    if value.startswith("http://"):
+        value = "https://" + value[len("http://"):]
+    elif value and not value.startswith("https://"):
+        value = "https://" + value.lstrip("/")
+    return value if value.startswith("https://") else ""
+
+
 def _saved_public_base_url(config: Config) -> str:
     path = Path(config.db_path).with_name("public_base_url.txt")
     try:
@@ -482,7 +491,7 @@ def _saved_public_base_url(config: Config) -> str:
     except Exception:
         logger.exception("Could not read saved public base URL")
         return ""
-    return value if value.startswith(("http://", "https://")) else ""
+    return _https_public_base_url(value)
 
 
 async def public_subscription_url(
@@ -493,7 +502,7 @@ async def public_subscription_url(
     bot=None,
 ) -> str:
     if config.vpn_mode == "h1cloud" and user.get("sub_token") and is_active(user):
-        base_url = config.miniapp_url.rstrip("/") or _saved_public_base_url(config)
+        base_url = _https_public_base_url(config.miniapp_url) or _saved_public_base_url(config)
 
         # If BotHost did not expose DOMAIN/MINIAPP_URL to the process, Telegram
         # may still have the previously configured Mini App menu button. Reuse
@@ -503,7 +512,8 @@ async def public_subscription_url(
                 menu_button = await bot.get_chat_menu_button()
                 web_app = getattr(menu_button, "web_app", None)
                 menu_url = str(getattr(web_app, "url", "") or "").strip().rstrip("/")
-                if menu_url.startswith(("http://", "https://")):
+                menu_url = _https_public_base_url(menu_url)
+                if menu_url:
                     base_url = menu_url
             except Exception as exc:
                 logger.warning("Could not resolve Mini App URL from Telegram menu: %s", exc)
@@ -519,12 +529,15 @@ def connection_text(
     user: dict[str, Any],
     state: VpnState,
     emoji: EmojiBank,
+    subscription_url: str,
 ) -> str:
     e_link = emoji.icon(2, pack=PACK_NEWS)
     server = html.escape(state.server or "MGN VPN")
+    safe_url = html.escape(subscription_url)
     return (
         f"{e_link} <b>Подключение</b>\n\n"
-        "Ваша персональная ссылка готова.\n"
+        "Ваша персональная HTTPS-ссылка готова.\n"
+        f"<code>{safe_url}</code>\n\n"
         f"Сервер — <b>{server}</b>\n"
         f"Можно использовать на <b>{int(user.get('max_devices') or 1)}</b> устройствах."
     )
@@ -1224,7 +1237,7 @@ def build_router(
         await send_screen(
             callback.message,
             callback.from_user,
-            connection_text(user, state, emoji),
+            connection_text(user, state, emoji, subscription_url),
             reply_markup=connection_keyboard(subscription_url),
         )
 
