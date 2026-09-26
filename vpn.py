@@ -643,9 +643,13 @@ class H1CloudVpnProvider(VpnProvider):
             # Sending expires_at makes the panel reject creation as bad_days.
             payload: dict[str, Any] = {
                 "name": name,
+                "uuid": client_uuid,
                 "days": self._days_until(expires_at),
                 "traffic_limit_gb": traffic_limit,
                 "device_limit": device_limit,
+                "manual": True,
+                "channels": [],
+                "inbound_ids": inbound_ids,
             }
             data = await self._request(
                 "POST",
@@ -653,23 +657,21 @@ class H1CloudVpnProvider(VpnProvider):
                 json=payload,
             )
         else:
+            existing_uuid = str(existing.get("uuid") or "").strip()
+            if existing_uuid and existing_uuid != client_uuid:
+                raise RuntimeError(
+                    f"H1Cloud UUID mismatch for {name} at {prefix or 'main'}"
+                )
             payload = {
-                "name": name,
+                # Absolute expiry makes retries idempotent. PATCH with `days`
+                # would add the same duration again after an uncertain reply.
+                "expires_at": expires_at,
                 "traffic_limit_gb": traffic_limit,
                 "device_limit": device_limit,
             }
-            current_expiry = self._expiry_timestamp(existing)
-            # PATCH /edit adds days to the current expiry. Only send days when
-            # the requested subscription is actually later, otherwise retries
-            # would silently extend access over and over.
-            if current_expiry + 60 < expires_at:
-                payload["days"] = self._days_until(
-                    expires_at,
-                    since=max(current_expiry, int(datetime.now().timestamp())),
-                )
             data = await self._request(
                 "PATCH",
-                f"{prefix}/edit",
+                f"{prefix}/clients/{quote(name, safe='')}",
                 json=payload,
             )
 
