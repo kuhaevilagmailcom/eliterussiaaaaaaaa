@@ -117,6 +117,58 @@ class MiniAppServer:
         self._last_reconcile: dict[int, float] = {}
         self._reconcile_tasks: dict[int, asyncio.Task] = {}
         self._subscription_cache: dict[str, dict] = {}
+        self._subscription_cache_dir = Path(self.config.db_path).with_name(
+            "subscription_cache"
+        )
+
+    def _subscription_cache_path(self, token: str) -> Path:
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        return self._subscription_cache_dir / f"{digest}.json"
+
+    def _read_persistent_subscription_cache(self, token: str) -> dict | None:
+        path = self._subscription_cache_path(token)
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            body = base64.b64decode(str(raw.get("body_b64") or ""), validate=True)
+            headers = raw.get("headers")
+            created_at = float(raw.get("created_at") or 0)
+            if not body or not isinstance(headers, dict) or created_at <= 0:
+                return None
+            return {
+                "created_at": created_at,
+                "body": body,
+                "headers": {str(k): str(v) for k, v in headers.items()},
+            }
+        except FileNotFoundError:
+            return None
+        except Exception as exc:
+            logger.warning("Could not read persistent subscription cache: %s", exc)
+            return None
+
+    def _write_persistent_subscription_cache(
+        self,
+        token: str,
+        body: bytes,
+        headers: dict[str, str],
+    ) -> None:
+        try:
+            self._subscription_cache_dir.mkdir(parents=True, exist_ok=True)
+            path = self._subscription_cache_path(token)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(
+                    {
+                        "created_at": time.time(),
+                        "body_b64": base64.b64encode(body).decode("ascii"),
+                        "headers": headers,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            tmp.replace(path)
+        except Exception:
+            logger.exception("Could not persist subscription cache")
 
     def _telegram_user(self, request: web.Request) -> dict:
         raw = request.headers.get("X-Telegram-Init-Data", "")
@@ -412,6 +464,18 @@ class MiniAppServer:
                 headers=dict(cached["headers"]),
             )
 
+        persistent_cached = self._read_persistent_subscription_cache(token)
+        if (
+            persistent_cached
+            and time.time() - float(persistent_cached["created_at"]) <= 300.0
+        ):
+            # A recent successful payload is safer and dramatically faster than
+            # rebuilding the federation list for every VPN-client refresh.
+            return web.Response(
+                body=persistent_cached["body"],
+                headers=dict(persistent_cached["headers"]),
+            )
+
         async def load_payload() -> tuple[bytes, dict[str, str], int]:
             body, upstream_headers = await self.provider.fetch_subscription(user)
             rendered, count = prettify_subscription_payload(body)
@@ -422,7 +486,7 @@ class MiniAppServer:
             # second full federation provision made clients wait 30+ seconds.
             body, upstream_headers, count = await asyncio.wait_for(
                 load_payload(),
-                15.0,
+                8.5,
             )
             if count < 1:
                 raise RuntimeError("H1Cloud subscription contains no VLESS nodes")
@@ -449,6 +513,7 @@ class MiniAppServer:
                 "body": body,
                 "headers": headers,
             }
+            self._write_persistent_subscription_cache(token, body, headers)
             logger.info(
                 "MGN subscription served for %s with %s node(s)",
                 user["telegram_id"],
@@ -460,13 +525,26 @@ class MiniAppServer:
             # Serve a recently cached copy rather than turning the profile empty.
             if cached and now - float(cached["created"]) <= 600.0:
                 logger.warning(
-                    "MGN subscription upstream unavailable for %s; serving stale cache: %s",
+                    "MGN subscription upstream unavailable for %s; serving stale memory cache: %s",
                     user["telegram_id"],
                     exc,
                 )
                 return web.Response(
                     body=cached["body"],
                     headers=dict(cached["headers"]),
+                )
+            if (
+                persistent_cached
+                and time.time() - float(persistent_cached["created_at"]) <= 86400.0
+            ):
+                logger.warning(
+                    "MGN subscription upstream unavailable for %s; serving persistent cache: %s",
+                    user["telegram_id"],
+                    exc,
+                )
+                return web.Response(
+                    body=persistent_cached["body"],
+                    headers=dict(persistent_cached["headers"]),
                 )
             logger.warning(
                 "MGN subscription unavailable for %s: %s",
