@@ -129,6 +129,7 @@
     $('b',$('#homeSubscriptionAction')).textContent=active?'Продлить VPN':'Купить VPN';
 
     $('#devicesActionNote').textContent=active?(used+' из '+limit+' устройств'):'Профиль и настройки';
+    $('#plansActionNote').textContent=active?'Продлить VPN':'Купить VPN';
 
     $('#bonusActionNote').textContent=active?'Промокод и скидка':'Скидка или бесплатные дни';
 
@@ -182,7 +183,7 @@
         '<div class="plan-info"><h3>'+esc(plan.name)+'</h3><p>1 устройство включено</p>'+
         (Number(plan.savings||0)>0?'<em>Выгода '+Number(plan.savings)+' ₽</em>':'')+'</div>'+
         '<div class="plan-price"><b>'+Number(plan.rub||0).toLocaleString('ru-RU')+' ₽</b><small>'+Number(plan.stars||0).toLocaleString('ru-RU')+' Stars</small></div>'+
-        '<button type="button" data-buy="'+esc(plan.code)+'">'+(active?'Продлить':'Выбрать')+'</button>'+
+        '<button type="button" data-buy="'+esc(plan.code)+'">'+(active?'Продлить VPN':'Купить VPN')+'</button>'+
       '</article>';
     }).join('');
     $$('[data-buy]',root).forEach(btn=>btn.onclick=()=>openPayment(btn.dataset.buy));
@@ -204,6 +205,7 @@
     if($('#deviceCount'))$('#deviceCount').textContent=used;
     if($('#deviceLimit'))$('#deviceLimit').textContent=limit;
     if($('#deviceCapacityBar'))$('#deviceCapacityBar').style.width=Math.min(100,(used/limit)*100)+'%';
+    if($('#deviceFreeSlots'))$('#deviceFreeSlots').textContent=Math.max(0,limit-used);
     $('#buyDevicePrice').textContent='+1 постоянный слот · '+Number(d.shop.extra_device_price_rub||100)+' ₽';
 
     const root=$('#deviceList');
@@ -584,6 +586,7 @@
   }
   $$('[data-nav]').forEach(btn=>btn.addEventListener('click',()=>go(btn.dataset.nav)));
   $('#copySubscriptionHome').onclick=copySubscription;
+  $('#copySubscriptionInline').onclick=copySubscription;
   $('#openHappHome').onclick=openHapp;
   $('#copySubscriptionPlans').onclick=copySubscription;
   $('#trialBtn').onclick=activateTrial;
