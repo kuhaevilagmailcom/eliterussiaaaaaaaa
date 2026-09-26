@@ -524,12 +524,6 @@ class MiniAppServer:
             }
         )
 
-    async def subscription_root(self, request: web.Request) -> web.Response:
-        host = request.host.split(":", 1)[0].lower()
-        if host != "sub.mgnvpn.ru":
-            raise web.HTTPNotFound(text="Not found")
-        return await self.subscription(request)
-
     async def subscription(self, request: web.Request) -> web.Response:
         token = str(request.match_info.get("token") or "").strip()
         user = await self.db.get_user_by_sub_token(token)
@@ -1191,12 +1185,7 @@ class MiniAppServer:
                 "Permissions-Policy",
                 "camera=(), microphone=(), geolocation=(), payment=()",
             )
-            subscription_host = request.host.split(":", 1)[0].lower() == "sub.mgnvpn.ru"
-            if (
-                request.path.startswith("/api/")
-                or request.path.startswith("/sub/")
-                or subscription_host
-            ):
+            if request.path.startswith("/api/") or request.path.startswith("/sub/"):
                 response.headers["Cache-Control"] = "private, no-store, max-age=0"
                 response.headers["Pragma"] = "no-cache"
             return response
@@ -1209,7 +1198,6 @@ class MiniAppServer:
         app.router.add_get("/miniapp", self.index)
         app.router.add_get("/miniapp/", self.index)
         app.router.add_get("/sub/{token}", self.subscription)
-        app.router.add_get("/{token}", self.subscription_root)
         app.router.add_get("/client/{client}/{token}", self.client_redirect)
         app.router.add_get("/api/miniapp/health", self.health)
         app.router.add_get("/api/miniapp/me", self.me)
