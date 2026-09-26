@@ -291,9 +291,30 @@ class MiniAppServer:
             return self._fallback_state(user), False
 
 
+    def _remember_public_base_url(self, value: str) -> str:
+        value = str(value or "").strip().rstrip("/")
+        if not value.startswith(("http://", "https://")):
+            return ""
+        path = Path(self.config.db_path).with_name("public_base_url.txt")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            current = ""
+            try:
+                current = path.read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
+                pass
+            if current != value:
+                path.write_text(value + "\n", encoding="utf-8")
+                logger.info("Public Mini App base URL learned from request host: %s", value)
+        except Exception:
+            logger.exception("Could not persist public Mini App base URL")
+        return value
+
     def _external_base_url(self, request: web.Request) -> str:
         if self.config.miniapp_url:
-            return self.config.miniapp_url.rstrip("/")
+            return self._remember_public_base_url(
+                self.config.miniapp_url.rstrip("/")
+            )
 
         forwarded_proto = (
             request.headers.get("X-Forwarded-Proto", "")
@@ -314,7 +335,9 @@ class MiniAppServer:
             # hosts unless the proxy explicitly supplied another scheme.
             if not forwarded_proto and host not in {"localhost", "127.0.0.1"}:
                 scheme = "https"
-            return f"{scheme}://{host}".rstrip("/")
+            return self._remember_public_base_url(
+                f"{scheme}://{host}".rstrip("/")
+            )
         return ""
 
     def _public_subscription_url(
