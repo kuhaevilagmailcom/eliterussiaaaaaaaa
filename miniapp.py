@@ -126,7 +126,7 @@ class MiniAppServer:
         # Version the on-disk cache so a deployment that fixes subscription
         # composition never keeps serving an older NL-only payload.
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        return self._subscription_cache_dir / f"v3-{digest}.json"
+        return self._subscription_cache_dir / f"v4-{digest}.json"
 
     def _read_persistent_subscription_cache(self, token: str) -> dict | None:
         path = self._subscription_cache_path(token)
@@ -495,7 +495,7 @@ class MiniAppServer:
             {
                 "ok": True,
                 "service": "MGN VPN Mini App",
-                "build": "h1cloud-v21-fast-sub",
+                "build": "h1cloud-v26-h1-unified-sub",
                 "vpn_mode": getattr(self.provider, "mode_name", "vpn"),
                 "vpn_ready": bool(getattr(self.provider, "service_ready", True)),
             }
