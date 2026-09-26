@@ -11,7 +11,12 @@
   <link rel="stylesheet" href="/static/styles.css?v=19">
 </head>
 <body>
-  <div class="app-shell">
+  <section id="appError" class="app-error" hidden role="status">
+    <h1>MGN VPN</h1><p id="appErrorText"></p>
+    <a href="https://t.me/mgnvpn_bot?startapp">Открыть в Telegram</a>
+    <button type="button" id="retryLoad">Повторить загрузку</button>
+  </section>
+  <div class="app-shell" inert>
     <header class="topbar">
       <button type="button" class="brand" data-nav="home" aria-label="MGN VPN">
         <img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN">
@@ -80,12 +85,6 @@
           <button type="button" data-nav="support"><span><i data-lucide="headphones"></i></span><b>Поддержка</b><small>Мы всегда на связи</small></button>
         </div>
 
-        <article class="notice" id="trialCard" hidden>
-          <span><i data-lucide="gift"></i></span>
-          <div><b>Бесплатный день</b><p>Подпишись на канал MGN VPN и получи 1 день VPN.</p></div>
-          <button type="button" id="trialBtn">Получить</button>
-        </article>
-
         <article class="notice neutral" id="serverWaitCard" hidden>
           <span><i data-lucide="server"></i></span>
           <div><b>Серверы готовятся</b><p>Подписка сохранена. Ссылка появится автоматически после подключения серверов.</p></div>
@@ -117,6 +116,7 @@
         </div>
         <div class="plans" id="plans"></div>
 
+        <button type="button" class="sheet-primary" id="pendingPaymentCheck" hidden>Проверить последнюю оплату</button>
         <button type="button" class="secondary-row link-row" id="copySubscriptionPlans">
           <span class="icon-box"><i data-lucide="link-2"></i></span>
           <span><b>Ссылка подключения</b><small>Скопировать персональную VPN-ссылку</small></span>
@@ -197,7 +197,7 @@
           <div><button type="button" id="copyReferral"><i data-lucide="copy"></i>Скопировать</button><button type="button" class="soft-primary" id="shareReferral"><i data-lucide="share-2"></i>Поделиться</button></div>
         </article>
         <div class="reward-list">
-          <div><span class="icon-box"><i data-lucide="gift"></i></span><span><b>Друг активировал бесплатный день</b><small>Новый пользователь и подписка на канал</small></span><em>+1 день</em></div>
+          <div><span class="icon-box"><i data-lucide="gift"></i></span><span><b>Новый друг</b><small>За каждого нового пользователя</small></span><em>+1 день</em></div>
           <div><span class="icon-box"><i data-lucide="users-round"></i></span><span><b>Максимум</b><small>Пожизненный лимит награды</small></span><em>3 дня</em></div>
         </div>
       </section>
@@ -243,12 +243,17 @@
           <h1>Создать обращение</h1>
           <p>Опишите проблему — администратор ответит вам прямо в Telegram.</p>
         </div>
+        <div class="page-section-head compact-head"><div><small>ИСТОРИЯ</small><h3>Мои обращения</h3></div></div>
+        <button type="button" class="sheet-secondary" id="supportNew">Новое обращение</button>
+        <div class="menu-list" id="supportTickets"><p class="promo-hint">Загружаем обращения…</p></div>
+        <article class="terms-card" id="supportThread" hidden></article>
         <label class="support-field">
           <span>Сообщение</span>
           <textarea id="supportMessage" maxlength="3000" rows="6" placeholder="Например: не обновляется подписка после оплаты"></textarea>
           <small><span id="supportCounter">0</span> / 3000</small>
         </label>
-        <button type="button" class="sheet-primary" id="supportSubmit">Отправить обращение</button>
+        <button type="button" class="sheet-primary" id="supportSubmit">Создать обращение</button>
+        <button type="button" class="sheet-secondary" id="supportClose" hidden>Закрыть обращение</button>
         <p class="promo-hint" id="supportResult"></p>
         <article class="notice neutral support-note">
           <span><i data-lucide="shield-check"></i></span>
@@ -267,7 +272,7 @@
   </div>
 
   <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
-  <section class="sheet" id="paymentSheet" hidden>
+  <section class="sheet" id="paymentSheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" hidden>
     <div class="sheet-handle"></div>
     <button type="button" class="sheet-close" id="sheetClose" aria-label="Закрыть"><i data-lucide="x"></i></button>
     <span class="eyebrow">ОПЛАТА</span>
@@ -283,7 +288,7 @@
     <button type="button" class="sheet-primary" id="checkPayment" hidden>Проверить оплату</button>
   </section>
 
-  <section class="sheet" id="deviceSheet" hidden>
+  <section class="sheet" id="deviceSheet" role="dialog" aria-modal="true" aria-label="Дополнительное устройство" hidden>
     <div class="sheet-handle"></div>
     <button type="button" class="sheet-close" id="deviceSheetClose" aria-label="Закрыть"><i data-lucide="x"></i></button>
     <span class="eyebrow">ДОП. УСТРОЙСТВО</span>
@@ -293,7 +298,7 @@
     <button type="button" class="sheet-primary" id="confirmDevicePurchase">Оплатить 100 ₽</button>
   </section>
 
-  <div class="toast" id="toast"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"><span><i></i></span></div>
 
   <script src="/static/app.js?v=19"></script>

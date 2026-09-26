@@ -1,14 +1,17 @@
 import asyncio
 from datetime import timedelta
 
+import pytest
+
 from db import Database, from_iso, utcnow
+from catalog import rub_to_stars
 
 
 def run(coro):
     return asyncio.run(coro)
 
 
-def test_trial_and_referral_rewards_are_atomic_and_capped(tmp_path):
+def test_referral_rewards_are_atomic_and_capped(tmp_path):
     async def scenario():
         db = Database(str(tmp_path / "mgn.sqlite3"))
         await db.init()
@@ -17,8 +20,6 @@ def test_trial_and_referral_rewards_are_atomic_and_capped(tmp_path):
             await db.ensure_user(referred_id, f"u{referred_id}", "Friend")
             assert await db.set_referrer_once(referred_id, 1)
             assert not await db.set_referrer_once(referred_id, 999)
-            assert await db.activate_trial(referred_id, 1440, 1)
-            assert not await db.activate_trial(referred_id, 1440, 1)
         stats = await db.referral_stats(1)
         assert stats == {"invited": 4, "rewarded": 3}
         owner = await db.get_user(1)
@@ -101,9 +102,73 @@ def test_payment_events_are_idempotent(tmp_path):
             discount_amount_rub=0,
             final_amount_rub=149,
             currency="XTR",
-            currency_amount=86,
+            currency_amount=94,
         )
         assert await db.mark_payment_intent_paid("intent-1")
         assert not await db.mark_payment_intent_paid("intent-1")
+
+    run(scenario())
+
+
+def test_referrer_assignment_rejects_self_and_is_race_safe(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "referral-race.sqlite3"))
+        await db.init()
+        for telegram_id in (1, 2, 3):
+            await db.ensure_user(telegram_id, f"u{telegram_id}", "User")
+        assert not await db.set_referrer_once(1, 1)
+        results = await asyncio.gather(
+            db.set_referrer_once(3, 1),
+            db.set_referrer_once(3, 2),
+            db.set_referrer_once(3, 1),
+        )
+        assert results.count(True) == 1
+        referred = await db.get_user(3)
+        assert referred["referrer_id"] in {1, 2}
+        total_rewards = (await db.referral_stats(1))["rewarded"] + (await db.referral_stats(2))["rewarded"]
+        assert total_rewards == 1
+
+    run(scenario())
+
+
+def test_star_conversion_uses_single_50_to_80_rate():
+    assert {
+        amount: rub_to_stars(amount)
+        for amount in (80, 100, 150, 200, 300, 400, 500, 600, 1000)
+    } == {80: 50, 100: 63, 150: 94, 200: 125, 300: 188, 400: 250, 500: 313, 600: 375, 1000: 625}
+
+
+def test_support_threads_persist_messages_permissions_and_soft_delete(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "support.sqlite3"))
+        await db.init()
+        await db.ensure_user(50, "owner", "Owner")
+        await db.ensure_user(51, "other", "Other")
+        ticket = await db.create_support_thread(
+            telegram_id=50, username="owner", first_name="Owner",
+            message_type="text", text="Первое сообщение",
+        )
+        ticket_id = int(ticket["id"])
+        assert await db.add_support_message(
+            ticket_id=ticket_id, sender_type="user", sender_telegram_id=50,
+            message_type="photo", file_id="photo-id", file_unique_id="photo-unique",
+            caption="Снимок ошибки", owner_id=50,
+        )
+        assert await db.add_support_message(
+            ticket_id=ticket_id, sender_type="admin", sender_telegram_id=1,
+            message_type="text", text="Проверяем", is_admin=True,
+        )
+        assert len(await db.list_support_messages(ticket_id, owner_id=50)) == 3
+        assert await db.list_support_messages(ticket_id, owner_id=51) == []
+        assert await db.set_support_status(ticket_id, "closed", 50, is_admin=False)
+        with pytest.raises(ValueError):
+            await db.add_support_message(
+                ticket_id=ticket_id, sender_type="user", sender_telegram_id=50,
+                message_type="text", text="После закрытия", owner_id=50,
+            )
+        assert await db.set_support_status(ticket_id, "open", 1, is_admin=True)
+        assert await db.soft_delete_support_ticket(ticket_id, 1)
+        assert await db.get_support_ticket(ticket_id, owner_id=50) is None
+        assert await db.get_support_ticket(ticket_id, is_admin=True, include_deleted=True)
 
     run(scenario())

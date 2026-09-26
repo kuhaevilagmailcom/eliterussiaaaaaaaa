@@ -9,7 +9,7 @@
   });
 
   document.querySelectorAll('[data-bot-link]').forEach(function(link){
-    link.href='https://t.me/'+botUsername+'/mgnvpn';
+    link.href='https://t.me/'+botUsername+'?startapp';
     link.target='_blank';
     link.rel='noopener noreferrer';
   });

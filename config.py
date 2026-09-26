@@ -72,11 +72,6 @@ class Config:
     xui_subscription_template: str
     xui_verify_ssl: bool
 
-    trial_minutes: int
-    trial_max_devices: int
-    trial_channel_username: str
-    trial_channel_url: str
-
     emoji_packs: tuple[str, ...]
 
     rollypay_api_base: str
@@ -103,7 +98,7 @@ class Config:
         if not token:
             raise RuntimeError("Telegram bot token is empty.")
 
-        mode = os.getenv("VPN_MODE", "demo").strip().lower()
+        mode = os.getenv("VPN_MODE", "h1cloud").strip().lower()
         if mode not in {"demo", "webhook", "h1cloud", "3xui"}:
             raise RuntimeError(
                 "VPN_MODE must be demo, webhook, h1cloud or 3xui"
@@ -130,57 +125,9 @@ class Config:
         else:
             db_path = raw_db_path or "mgn_vpn.sqlite3"
 
-        domain = os.getenv("DOMAIN", "").strip()
-        explicit_miniapp_url = os.getenv("MINIAPP_URL", "").strip().rstrip("/")
-        public_base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
-
-        def _https_public_url(value: str) -> str:
-            value = str(value or "").strip().rstrip("/")
-            if not value:
-                return ""
-            if value.startswith("http://"):
-                return "https://" + value[len("http://"):]
-            if value.startswith("https://"):
-                return value
-            return "https://" + value.lstrip("/")
-
-        # One HTTPS origin, separate paths:
-        # / = public website, /app = Telegram Mini App, /api = API, /sub = VPN links.
-        configured_public = _https_public_url(public_base_url or domain)
-        if not configured_public:
-            configured_public = _https_public_url(explicit_miniapp_url)
-            for suffix in ("/app", "/miniapp"):
-                if configured_public.endswith(suffix):
-                    configured_public = configured_public[:-len(suffix)]
-                    break
-        if (
-            not configured_public
-            or configured_public in {
-                _https_public_url(value) for value in LEGACY_PUBLIC_BASE_URLS
-            }
-        ):
-            configured_public = DEFAULT_PUBLIC_BASE_URL
-        miniapp_url = f"{configured_public.rstrip('/')}/app"
-
-        configured_subscription = _https_public_url(
-            os.getenv("VPN_SUB_BASE_URL", "").strip()
-        )
-        legacy_subscription_urls = {
-            "",
-            "https://vpn.example.com/sub",
-            "https://sub.mgnvpn.ru",
-            "http://sub.mgnvpn.ru",
-            "https://sub.mgnvpn.ru/sub",
-            "http://sub.mgnvpn.ru/sub",
-            "https://bot-1789383103-4489-furadev.bothost.tech/sub",
-            "http://bot-1789383103-4489-furadev.bothost.tech/sub",
-            "https://bot-1790078948-4568-furadev.bothost.tech/sub",
-            "http://bot-1790078948-4568-furadev.bothost.tech/sub",
-        }
-        if configured_subscription.rstrip("/") in {
-            value.rstrip("/") for value in legacy_subscription_urls
-        }:
-            configured_subscription = DEFAULT_SUBSCRIPTION_BASE_URL
+        # Public credentials must never inherit a hosting or request domain.
+        miniapp_url = DEFAULT_MINIAPP_URL
+        configured_subscription = DEFAULT_SUBSCRIPTION_BASE_URL
 
         return cls(
             bot_token=token,
@@ -221,17 +168,6 @@ class Config:
                 "",
             ).strip(),
             xui_verify_ssl=_bool(os.getenv("XUI_VERIFY_SSL", "true")),
-            # One channel bonus per Telegram account: exactly one day.
-            trial_minutes=1440,
-            trial_max_devices=max(1, int(os.getenv("TRIAL_MAX_DEVICES", "1"))),
-            trial_channel_username=os.getenv(
-                "TRIAL_CHANNEL_USERNAME",
-                "@mgnvpnn",
-            ).strip(),
-            trial_channel_url=os.getenv(
-                "TRIAL_CHANNEL_URL",
-                "https://t.me/mgnvpnn",
-            ).strip(),
             emoji_packs=tuple(
                 dict.fromkeys(
                     [

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import secrets
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+
+from catalog import PLANS, MAX_DEVICES
 
 
 def utcnow() -> datetime:
@@ -152,6 +155,31 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_support_tickets_user_created
                 ON support_tickets(telegram_id, created_at DESC);
 
+                CREATE TABLE IF NOT EXISTS support_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticket_id INTEGER NOT NULL,
+                    sender_type TEXT NOT NULL CHECK(sender_type IN ('user', 'admin')),
+                    sender_telegram_id INTEGER NOT NULL,
+                    message_type TEXT NOT NULL CHECK(message_type IN ('text', 'photo', 'video')),
+                    text TEXT,
+                    file_id TEXT,
+                    file_unique_id TEXT,
+                    caption TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(ticket_id) REFERENCES support_tickets(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_support_messages_ticket_created
+                ON support_messages(ticket_id, created_at, id);
+
+                CREATE TABLE IF NOT EXISTS support_sessions (
+                    telegram_id INTEGER PRIMARY KEY,
+                    mode TEXT NOT NULL CHECK(mode IN ('new', 'user_reply', 'admin_reply', 'admin_search', 'admin_days')),
+                    ticket_id INTEGER,
+                    payload TEXT,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS payment_intents (
                     intent_id TEXT PRIMARY KEY,
                     buyer_telegram_id INTEGER NOT NULL,
@@ -187,6 +215,7 @@ class Database:
                 await db.execute(
                     "ALTER TABLE users ADD COLUMN bonus_devices INTEGER NOT NULL DEFAULT 0"
                 )
+                await db.execute("UPDATE users SET bonus_devices=MIN(4, MAX(0, max_devices-1))")
 
             sbp_columns = {
                 row[1]
@@ -209,9 +238,63 @@ class Database:
                         f"ALTER TABLE sbp_payments ADD COLUMN {name} {declaration}"
                     )
 
+            support_columns = {
+                row[1]
+                for row in await (
+                    await db.execute("PRAGMA table_info(support_tickets)")
+                ).fetchall()
+            }
+            for name, declaration in (
+                ("updated_at", "TEXT"),
+                ("closed_at", "TEXT"),
+                ("closed_by", "INTEGER"),
+                ("deleted_at", "TEXT"),
+                ("deleted_by", "INTEGER"),
+            ):
+                if name not in support_columns:
+                    await db.execute(
+                        f"ALTER TABLE support_tickets ADD COLUMN {name} {declaration}"
+                    )
+            await db.execute(
+                "UPDATE support_tickets SET updated_at=COALESCE(updated_at, answered_at, created_at)"
+            )
+            # Preserve legacy support data while making it available through
+            # the new threaded model. INSERT OR IGNORE keeps migration idempotent.
+            legacy_rows = await (
+                await db.execute(
+                    "SELECT id, telegram_id, message, created_at, answer_text, answered_by, answered_at "
+                    "FROM support_tickets"
+                )
+            ).fetchall()
+            for row in legacy_rows:
+                existing = await (
+                    await db.execute(
+                        "SELECT 1 FROM support_messages WHERE ticket_id=? LIMIT 1",
+                        (row[0],),
+                    )
+                ).fetchone()
+                if existing:
+                    continue
+                if row[2]:
+                    await db.execute(
+                        "INSERT INTO support_messages (ticket_id, sender_type, sender_telegram_id, message_type, text, created_at) "
+                        "VALUES (?, 'user', ?, 'text', ?, ?)",
+                        (row[0], row[1], row[2], row[3]),
+                    )
+                if row[4]:
+                    await db.execute(
+                        "INSERT INTO support_messages (ticket_id, sender_type, sender_telegram_id, message_type, text, created_at) "
+                        "VALUES (?, 'admin', ?, 'text', ?, ?)",
+                        (row[0], row[5] or 0, row[4], row[6] or row[3]),
+                    )
+
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_users_referrer_id "
                 "ON users(referrer_id)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_username_nocase "
+                "ON users(username COLLATE NOCASE)"
             )
 
             # One device is included in every plan. Preserve only explicit
@@ -260,6 +343,7 @@ class Database:
                 ON CONFLICT(telegram_id) DO UPDATE SET
                     username=excluded.username,
                     first_name=excluded.first_name
+                WHERE users.username IS NOT excluded.username OR users.first_name IS NOT excluded.first_name
                 """,
                 (telegram_id, username, first_name or "", now, token),
             )
@@ -287,7 +371,7 @@ class Database:
         sub_token: str,
     ) -> dict[str, Any] | None:
         token = str(sub_token or "").strip()
-        if not token:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", token):
             return None
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
@@ -322,6 +406,79 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
+    async def list_users_page(self, page: int = 0, page_size: int = 12) -> tuple[list[dict[str, Any]], int]:
+        page_size = max(1, min(int(page_size), 20))
+        page = max(0, int(page))
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            total = int((await (await db.execute("SELECT COUNT(*) FROM users")).fetchone())[0])
+            rows = await (
+                await db.execute(
+                    "SELECT * FROM users ORDER BY created_at DESC, telegram_id DESC LIMIT ? OFFSET ?",
+                    (page_size, page * page_size),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows], total
+
+    async def get_last_payment(self, telegram_id: int) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (
+                await db.execute(
+                    """
+                    SELECT method, amount, currency, created_at FROM (
+                        SELECT 'СБП' AS method, amount_rub AS amount, 'RUB' AS currency, created_at
+                        FROM sbp_payments WHERE target_telegram_id=? OR telegram_id=?
+                        UNION ALL
+                        SELECT 'Telegram Stars', stars, 'XTR', created_at
+                        FROM star_payments WHERE target_telegram_id=? OR buyer_telegram_id=?
+                    ) ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (telegram_id, telegram_id, telegram_id, telegram_id),
+                )
+            ).fetchone()
+        return dict(row) if row else None
+
+    async def adjust_subscription_days(self, telegram_id: int, days_delta: int) -> dict[str, Any]:
+        if not isinstance(days_delta, int) or days_delta == 0 or abs(days_delta) > 3650:
+            raise ValueError("invalid days delta")
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (await db.execute(
+                "SELECT subscription_until, plan_name FROM users WHERE telegram_id=?", (telegram_id,)
+            )).fetchone()
+            if row is None:
+                raise KeyError(telegram_id)
+            current = from_iso(row["subscription_until"])
+            if days_delta > 0:
+                start = max(utcnow(), current) if current else utcnow()
+                until = start + timedelta(days=days_delta)
+            else:
+                start = current if current and current > utcnow() else utcnow()
+                until = max(utcnow(), start + timedelta(days=days_delta))
+            active = until > utcnow()
+            await db.execute(
+                "UPDATE users SET subscription_until=?, plan_name=CASE WHEN ? "
+                "THEN COALESCE(NULLIF(plan_name, ''), 'Ручная подписка') ELSE '' END WHERE telegram_id=?",
+                (to_iso(until) if active else None, int(active), telegram_id),
+            )
+            await db.commit()
+        return await self.get_user(telegram_id)
+
+    async def set_device_limit(self, telegram_id: int, limit: int) -> dict[str, Any]:
+        if type(limit) is not int or not 1 <= limit <= MAX_DEVICES:
+            raise ValueError("device limit must be 1..5")
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                "UPDATE users SET max_devices=?, bonus_devices=? WHERE telegram_id=?",
+                (limit, limit - 1, telegram_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(telegram_id)
+            await db.commit()
+        return await self.get_user(telegram_id)
+
     async def set_referrer_once(
         self,
         telegram_id: int,
@@ -341,14 +498,44 @@ class Database:
                 (referrer_id, telegram_id, referrer_id),
             )
             if cursor.rowcount == 1:
-                await db.execute(
+                inserted = await db.execute(
                     """
                     INSERT OR IGNORE INTO referrals (
-                        referrer_id, referred_id, created_at
-                    ) VALUES (?, ?, ?)
+                        referrer_id, referred_id, created_at, qualified_at
+                    ) VALUES (?, ?, ?, ?)
                     """,
-                    (referrer_id, telegram_id, to_iso(utcnow())),
+                    (referrer_id, telegram_id, to_iso(utcnow()), to_iso(utcnow())),
                 )
+                rewarded = await (
+                    await db.execute(
+                        "SELECT COUNT(*) FROM referrals WHERE referrer_id=? AND rewarded_at IS NOT NULL",
+                        (referrer_id,),
+                    )
+                ).fetchone()
+                if inserted.rowcount == 1 and int(rewarded[0]) < 3:
+                    now = utcnow()
+                    reward = await db.execute(
+                        "UPDATE referrals SET rewarded_at=? WHERE referrer_id=? AND referred_id=? AND rewarded_at IS NULL",
+                        (to_iso(now), referrer_id, telegram_id),
+                    )
+                    if reward.rowcount == 1:
+                        owner = await (
+                            await db.execute(
+                                "SELECT subscription_until FROM users WHERE telegram_id=?",
+                                (referrer_id,),
+                            )
+                        ).fetchone()
+                        owner_until = from_iso(owner[0]) if owner else None
+                        start = max(now, owner_until) if owner_until else now
+                        await db.execute(
+                            """
+                            UPDATE users SET subscription_until=?,
+                                plan_name=CASE WHEN subscription_until IS NULL OR subscription_until<=?
+                                    THEN 'Реферальный бонус' ELSE plan_name END
+                            WHERE telegram_id=?
+                            """,
+                            (to_iso(start + timedelta(days=1)), to_iso(now), referrer_id),
+                        )
             await db.commit()
             return cursor.rowcount == 1
 
@@ -390,89 +577,6 @@ class Database:
             )
             await db.commit()
 
-    async def activate_trial(
-        self,
-        telegram_id: int,
-        minutes: int,
-        max_devices: int,
-    ) -> bool:
-        async with aiosqlite.connect(self.path) as db:
-            db.row_factory = aiosqlite.Row
-            await db.execute("BEGIN IMMEDIATE")
-            user = await (
-                await db.execute(
-                    "SELECT * FROM users WHERE telegram_id=?",
-                    (telegram_id,),
-                )
-            ).fetchone()
-            if user is None or int(user["trial_used"] or 0):
-                await db.rollback()
-                return False
-            current = from_iso(user["subscription_until"])
-            start = max(utcnow(), current) if current else utcnow()
-            until = to_iso(start + timedelta(minutes=minutes))
-            device_limit = min(5, max(1, int(user["max_devices"] or max_devices)))
-            cursor = await db.execute(
-                """
-                UPDATE users
-                SET trial_used=1,
-                    subscription_until=?,
-                    plan_name='Бесплатный доступ',
-                    traffic_limit_gb=0,
-                    max_devices=?
-                WHERE telegram_id=? AND trial_used=0
-                """,
-                (until, device_limit, telegram_id),
-            )
-            referrer_id = user["referrer_id"]
-            if cursor.rowcount == 1 and referrer_id:
-                rewarded = await (
-                    await db.execute(
-                        "SELECT COUNT(*) FROM referrals WHERE referrer_id=? AND rewarded_at IS NOT NULL",
-                        (int(referrer_id),),
-                    )
-                ).fetchone()
-                referral = await (
-                    await db.execute(
-                        "SELECT rewarded_at FROM referrals WHERE referrer_id=? AND referred_id=?",
-                        (int(referrer_id), telegram_id),
-                    )
-                ).fetchone()
-                if referral is not None and referral[0] is None and int(rewarded[0]) < 3:
-                    now = to_iso(utcnow())
-                    await db.execute(
-                        "UPDATE referrals SET qualified_at=?, rewarded_at=? WHERE referrer_id=? AND referred_id=? AND rewarded_at IS NULL",
-                        (now, now, int(referrer_id), telegram_id),
-                    )
-                    owner = await (
-                        await db.execute(
-                            "SELECT subscription_until FROM users WHERE telegram_id=?",
-                            (int(referrer_id),),
-                        )
-                    ).fetchone()
-                    if owner is not None:
-                        owner_until = from_iso(owner[0])
-                        owner_start = max(utcnow(), owner_until) if owner_until else utcnow()
-                        await db.execute(
-                            """
-                            UPDATE users
-                            SET subscription_until=?,
-                                plan_name=CASE
-                                    WHEN subscription_until IS NULL OR subscription_until <= ?
-                                    THEN 'Реферальный бонус'
-                                    ELSE plan_name
-                                END
-                            WHERE telegram_id=?
-                            """,
-                            (
-                                to_iso(owner_start + timedelta(days=1)),
-                                to_iso(utcnow()),
-                                int(referrer_id),
-                            ),
-                        )
-            await db.commit()
-            return cursor.rowcount == 1
-
     async def extend_subscription(
         self,
         telegram_id: int,
@@ -480,32 +584,22 @@ class Database:
         plan_name: str,
         max_devices: int,
     ) -> dict[str, Any]:
-        user = await self.get_user(telegram_id)
-        current = from_iso(user["subscription_until"])
-        start = max(utcnow(), current) if current else utcnow()
-        until = start + timedelta(days=days)
-
-        bonus_devices = min(
-            4,
-            max(0, int(user.get("bonus_devices") or 0)),
-        )
-        effective_devices = min(5, 1 + bonus_devices)
-
         async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (await db.execute(
+                "SELECT * FROM users WHERE telegram_id=?", (telegram_id,)
+            )).fetchone()
+            if row is None:
+                raise KeyError(telegram_id)
+            current = from_iso(row["subscription_until"])
+            until = max(utcnow(), current or utcnow()) + timedelta(days=days)
             await db.execute(
-                """
-                UPDATE users
-                SET subscription_until=?,
-                    plan_name=?,
-                    traffic_limit_gb=0,
-                    max_devices=?
-                WHERE telegram_id=?
-                """,
-                (to_iso(until), plan_name, effective_devices, telegram_id),
+                "UPDATE users SET subscription_until=?, plan_name=?, traffic_limit_gb=0 WHERE telegram_id=?",
+                (to_iso(until), plan_name, telegram_id),
             )
             await db.commit()
         return await self.get_user(telegram_id)
-
 
     async def change_device_slots(
         self,
@@ -866,7 +960,7 @@ class Database:
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 """
-                INSERT OR REPLACE INTO sbp_payments (
+                INSERT INTO sbp_payments (
                     payment_id, order_id, telegram_id, target_telegram_id,
                     plan_code, amount_rub, original_amount_rub,
                     discount_amount_rub, promo_id, promo_code,
@@ -903,7 +997,7 @@ class Database:
     async def set_sbp_status(self, payment_id: str, status: str) -> None:
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
-                "UPDATE sbp_payments SET status=? WHERE payment_id=?",
+                "UPDATE sbp_payments SET status=? WHERE payment_id=? AND status!='paid'",
                 (status[:32], payment_id),
             )
             await db.commit()
@@ -952,6 +1046,106 @@ class Database:
             )
             await db.commit()
             return cursor.rowcount == 1
+
+    async def _apply_product(self, db, target_id: int, code: str) -> None:
+        row = await (await db.execute(
+            "SELECT * FROM users WHERE telegram_id=?", (target_id,)
+        )).fetchone()
+        if row is None:
+            raise ValueError("Payment recipient does not exist")
+        user = dict(row)
+        if code == "device":
+            if int(user["max_devices"]) >= MAX_DEVICES:
+                raise ValueError("Device limit reached; payment requires support")
+            await db.execute(
+                "UPDATE users SET bonus_devices=bonus_devices+1, max_devices=max_devices+1 WHERE telegram_id=?",
+                (target_id,),
+            )
+        else:
+            plan = PLANS[code]
+            current = from_iso(user["subscription_until"])
+            until = max(utcnow(), current or utcnow()) + timedelta(days=plan["days"])
+            await db.execute(
+                "UPDATE users SET subscription_until=?, plan_name=?, traffic_limit_gb=0 WHERE telegram_id=?",
+                (to_iso(until), plan["name"], target_id),
+            )
+
+    async def _record_paid_promo(self, db, promo_id, buyer_id, payment_id) -> None:
+        if promo_id is None:
+            return
+        # The provider already charged the quoted amount. Honour the purchase,
+        # and record redemption in the same transaction as the entitlement.
+        cursor = await db.execute(
+            "INSERT OR IGNORE INTO promo_uses (promo_id, telegram_id, payment_id, used_at) VALUES (?, ?, ?, ?)",
+            (promo_id, buyer_id, payment_id, to_iso(utcnow())),
+        )
+        if cursor.rowcount:
+            await db.execute(
+                "UPDATE service_promo_codes SET used_count=used_count+1 WHERE id=?", (promo_id,)
+            )
+
+    async def settle_sbp_payment(self, payment_id: str) -> bool:
+        """Commit verified payment and access together; replay is a no-op."""
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (await db.execute(
+                "SELECT * FROM sbp_payments WHERE payment_id=?", (payment_id,)
+            )).fetchone()
+            if row is None or row["status"] == "paid":
+                return False
+            await self._apply_product(db, row["target_telegram_id"] or row["telegram_id"], row["plan_code"])
+            await self._record_paid_promo(db, row["promo_id"], row["telegram_id"], payment_id)
+            await db.execute(
+                "UPDATE sbp_payments SET status='paid', paid_at=? WHERE payment_id=?",
+                (to_iso(utcnow()), payment_id),
+            )
+            await db.commit()
+            return True
+
+    async def settle_star_payment(
+        self, telegram_payment_charge_id: str, buyer_telegram_id: int,
+        target_telegram_id: int, plan_code: str, stars: int,
+        intent_id: str | None = None,
+    ) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            existing = await (await db.execute(
+                "SELECT 1 FROM star_payments WHERE telegram_payment_charge_id=?",
+                (telegram_payment_charge_id,),
+            )).fetchone()
+            if existing:
+                return False
+            intent = None
+            if intent_id:
+                intent = await (await db.execute(
+                    "SELECT * FROM payment_intents WHERE intent_id=?", (intent_id,)
+                )).fetchone()
+                if intent is None or (
+                    intent["buyer_telegram_id"] != buyer_telegram_id
+                    or intent["target_telegram_id"] != target_telegram_id
+                    or intent["product_code"] != plan_code
+                    or intent["currency"] != "XTR"
+                    or intent["currency_amount"] != stars
+                ):
+                    raise ValueError("Invalid payment intent")
+                if intent["status"] == "paid":
+                    return False
+            await self._apply_product(db, target_telegram_id, plan_code)
+            await db.execute(
+                "INSERT INTO star_payments VALUES (?, ?, ?, ?, ?, ?)",
+                (telegram_payment_charge_id, buyer_telegram_id, target_telegram_id,
+                 plan_code, stars, to_iso(utcnow())),
+            )
+            if intent:
+                await self._record_paid_promo(db, intent["promo_id"], buyer_telegram_id, telegram_payment_charge_id)
+                await db.execute(
+                    "UPDATE payment_intents SET status='paid', paid_at=? WHERE intent_id=?",
+                    (to_iso(utcnow()), intent_id),
+                )
+            await db.commit()
+            return True
 
     async def get_admin_role(self, telegram_id: int) -> str | None:
         async with aiosqlite.connect(self.path) as db:
@@ -1027,68 +1221,34 @@ class Database:
         first_name: str | None,
         message: str,
     ) -> dict[str, Any]:
-        text = str(message or "").strip()
-        if not text:
-            raise ValueError("support message is empty")
-        if len(text) > 3000:
-            raise ValueError("support message is too long")
-
-        created_at = to_iso(utcnow())
-        async with aiosqlite.connect(self.path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                """
-                INSERT INTO support_tickets (
-                    telegram_id, username, first_name, message,
-                    status, created_at
-                ) VALUES (?, ?, ?, ?, 'open', ?)
-                """,
-                (
-                    int(telegram_id),
-                    (str(username).lstrip("@").strip() or None)
-                    if username
-                    else None,
-                    str(first_name or "")[:128],
-                    text,
-                    created_at,
-                ),
-            )
-            ticket_id = int(cursor.lastrowid)
-            await db.commit()
-            row = await (
-                await db.execute(
-                    "SELECT * FROM support_tickets WHERE id=?",
-                    (ticket_id,),
-                )
-            ).fetchone()
-        return dict(row)
-
-    async def get_support_ticket(self, ticket_id: int) -> dict[str, Any] | None:
-        async with aiosqlite.connect(self.path) as db:
-            db.row_factory = aiosqlite.Row
-            row = await (
-                await db.execute(
-                    "SELECT * FROM support_tickets WHERE id=?",
-                    (int(ticket_id),),
-                )
-            ).fetchone()
-        return dict(row) if row else None
+        return await self.create_support_thread(
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            message_type="text",
+            text=message,
+        )
 
     async def list_support_tickets(
         self,
         *,
-        limit: int = 20,
+        page: int = 0,
+        page_size: int = 10,
         status: str | None = None,
-    ) -> list[dict[str, Any]]:
-        limit = max(1, min(int(limit), 100))
+    ) -> tuple[list[dict[str, Any]], int]:
+        page = max(0, int(page))
+        page_size = max(1, min(int(page_size), 20))
         params: list[Any] = []
-        where = ""
+        clauses = ["deleted_at IS NULL"]
         if status in {"open", "answered", "closed"}:
-            where = "WHERE status=?"
+            clauses.append("status=?")
             params.append(status)
-        params.append(limit)
+        where = "WHERE " + " AND ".join(clauses)
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
+            total = int((await (await db.execute(
+                f"SELECT COUNT(*) FROM support_tickets {where}", tuple(params)
+            )).fetchone())[0])
             rows = await (
                 await db.execute(
                     f"""
@@ -1098,12 +1258,12 @@ class Database:
                     ORDER BY
                         CASE status WHEN 'open' THEN 0 WHEN 'answered' THEN 1 ELSE 2 END,
                         created_at DESC
-                    LIMIT ?
+                    LIMIT ? OFFSET ?
                     """,
-                    tuple(params),
+                    (*params, page_size, page * page_size),
                 )
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [dict(row) for row in rows], total
 
     async def answer_support_ticket(
         self,
@@ -1112,41 +1272,216 @@ class Database:
         answered_by: int,
         answer_text: str,
     ) -> dict[str, Any] | None:
-        text = str(answer_text or "").strip()
-        if not text:
-            raise ValueError("support answer is empty")
-        if len(text) > 3000:
-            raise ValueError("support answer is too long")
+        return await self.add_support_message(
+            ticket_id=ticket_id,
+            sender_type="admin",
+            sender_telegram_id=answered_by,
+            message_type="text",
+            text=answer_text,
+            is_admin=True,
+        )
 
+    async def set_support_session(
+        self, telegram_id: int, mode: str, ticket_id: int | None = None, payload: str | None = None
+    ) -> None:
+        if mode not in {"new", "user_reply", "admin_reply", "admin_search", "admin_days"}:
+            raise ValueError("invalid support session")
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO support_sessions (telegram_id, mode, ticket_id, payload, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(telegram_id) DO UPDATE SET mode=excluded.mode,
+                    ticket_id=excluded.ticket_id, payload=excluded.payload, updated_at=excluded.updated_at
+                """,
+                (telegram_id, mode, ticket_id, payload, to_iso(utcnow())),
+            )
+            await db.commit()
+
+    async def get_support_session(self, telegram_id: int) -> dict[str, Any] | None:
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
+            row = await (await db.execute(
+                "SELECT * FROM support_sessions WHERE telegram_id=?", (telegram_id,)
+            )).fetchone()
+        return dict(row) if row else None
+
+    async def clear_support_session(self, telegram_id: int) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("DELETE FROM support_sessions WHERE telegram_id=?", (telegram_id,))
+            await db.commit()
+
+    async def create_support_thread(
+        self, *, telegram_id: int, username: str | None, first_name: str | None,
+        message_type: str, text: str | None = None, file_id: str | None = None,
+        file_unique_id: str | None = None, caption: str | None = None,
+    ) -> dict[str, Any]:
+        created = to_iso(utcnow())
+        preview = (text or caption or {"photo": "Фото", "video": "Видео"}.get(message_type, "Обращение")).strip()
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
-                """
-                UPDATE support_tickets
-                SET status='answered',
-                    answered_at=?,
-                    answered_by=?,
-                    answer_text=?
-                WHERE id=?
-                """,
-                (
-                    to_iso(utcnow()),
-                    int(answered_by),
-                    text,
-                    int(ticket_id),
-                ),
+                "INSERT INTO support_tickets (telegram_id, username, first_name, message, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'open', ?, ?)",
+                (telegram_id, username, first_name or "", preview[:3000], created, created),
             )
-            if cursor.rowcount != 1:
+            ticket_id = int(cursor.lastrowid)
+            await self._insert_support_message(
+                db, ticket_id, "user", telegram_id, message_type, text, file_id,
+                file_unique_id, caption, created,
+            )
+            await db.commit()
+        return await self.get_support_ticket(ticket_id)
+
+    async def _insert_support_message(
+        self, db, ticket_id: int, sender_type: str, sender_id: int, message_type: str,
+        text: str | None, file_id: str | None, file_unique_id: str | None,
+        caption: str | None, created_at: str,
+    ) -> None:
+        if sender_type not in {"user", "admin"} or message_type not in {"text", "photo", "video"}:
+            raise ValueError("unsupported support message")
+        clean_text = str(text or "").strip() or None
+        clean_caption = str(caption or "").strip() or None
+        if clean_text and len(clean_text) > 3000:
+            raise ValueError("support text too long")
+        if clean_caption and len(clean_caption) > 1024:
+            raise ValueError("support caption too long")
+        if message_type == "text" and not clean_text:
+            raise ValueError("support text required")
+        if message_type != "text" and (not file_id or len(file_id) > 512 or not file_unique_id or len(file_unique_id) > 256):
+            raise ValueError("support media metadata required")
+        await db.execute(
+            """
+            INSERT INTO support_messages (
+                ticket_id, sender_type, sender_telegram_id, message_type,
+                text, file_id, file_unique_id, caption, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (ticket_id, sender_type, sender_id, message_type, clean_text,
+             file_id, file_unique_id, clean_caption, created_at),
+        )
+
+    async def add_support_message(
+        self, *, ticket_id: int, sender_type: str, sender_telegram_id: int,
+        message_type: str, text: str | None = None, file_id: str | None = None,
+        file_unique_id: str | None = None, caption: str | None = None,
+        owner_id: int | None = None, is_admin: bool = False,
+    ) -> dict[str, Any] | None:
+        now = to_iso(utcnow())
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            ticket = await (await db.execute(
+                "SELECT * FROM support_tickets WHERE id=? AND deleted_at IS NULL", (ticket_id,)
+            )).fetchone()
+            if ticket is None or (not is_admin and int(ticket["telegram_id"]) != int(owner_id or 0)):
                 await db.rollback()
                 return None
+            if ticket["status"] == "closed":
+                await db.rollback()
+                raise ValueError("ticket closed")
+            await self._insert_support_message(
+                db, ticket_id, sender_type, sender_telegram_id, message_type,
+                text, file_id, file_unique_id, caption, now,
+            )
+            status = "answered" if sender_type == "admin" else "open"
+            await db.execute(
+                "UPDATE support_tickets SET status=?, updated_at=? WHERE id=?",
+                (status, now, ticket_id),
+            )
             await db.commit()
-            row = await (
-                await db.execute(
-                    "SELECT * FROM support_tickets WHERE id=?",
-                    (int(ticket_id),),
-                )
-            ).fetchone()
+        return await self.get_support_ticket(ticket_id, include_deleted=is_admin)
+
+    async def get_support_ticket(
+        self, ticket_id: int, *, owner_id: int | None = None,
+        is_admin: bool = False, include_deleted: bool = False,
+    ) -> dict[str, Any] | None:
+        clauses = ["id=?"]
+        params: list[Any] = [int(ticket_id)]
+        if not include_deleted:
+            clauses.append("deleted_at IS NULL")
+        if not is_admin:
+            if owner_id is None:
+                # Compatibility for trusted internal callers.
+                pass
+            else:
+                clauses.append("telegram_id=?")
+                params.append(int(owner_id))
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute(
+                f"SELECT * FROM support_tickets WHERE {' AND '.join(clauses)}", tuple(params)
+            )).fetchone()
         return dict(row) if row else None
+
+    async def list_support_messages(
+        self, ticket_id: int, *, owner_id: int | None = None, is_admin: bool = False,
+    ) -> list[dict[str, Any]]:
+        ticket = await self.get_support_ticket(ticket_id, owner_id=owner_id, is_admin=is_admin)
+        if not ticket:
+            return []
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(
+                "SELECT * FROM support_messages WHERE ticket_id=? ORDER BY created_at, id", (ticket_id,)
+            )).fetchall()
+        return [dict(row) for row in rows]
+
+    async def list_user_support_tickets(self, telegram_id: int, page: int = 0, page_size: int = 10) -> tuple[list[dict[str, Any]], int]:
+        page, page_size = max(0, int(page)), max(1, min(int(page_size), 20))
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            total = int((await (await db.execute(
+                "SELECT COUNT(*) FROM support_tickets WHERE telegram_id=? AND deleted_at IS NULL", (telegram_id,)
+            )).fetchone())[0])
+            rows = await (await db.execute(
+                "SELECT * FROM support_tickets WHERE telegram_id=? AND deleted_at IS NULL "
+                "ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+                (telegram_id, page_size, page * page_size),
+            )).fetchall()
+        return [dict(row) for row in rows], total
+
+    async def recent_support_ticket_count(self, telegram_id: int, minutes: int = 10) -> int:
+        since = to_iso(utcnow() - timedelta(minutes=max(1, int(minutes))))
+        async with aiosqlite.connect(self.path) as db:
+            row = await (await db.execute(
+                "SELECT COUNT(*) FROM support_tickets WHERE telegram_id=? AND created_at>=?",
+                (telegram_id, since),
+            )).fetchone()
+        return int(row[0])
+
+    async def set_support_status(
+        self, ticket_id: int, status: str, actor_id: int, *, is_admin: bool,
+    ) -> dict[str, Any] | None:
+        if status not in {"open", "closed"}:
+            raise ValueError("invalid status")
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            ticket = await (await db.execute(
+                "SELECT * FROM support_tickets WHERE id=? AND deleted_at IS NULL", (ticket_id,)
+            )).fetchone()
+            if ticket is None or (not is_admin and int(ticket["telegram_id"]) != actor_id):
+                return None
+            if not is_admin and status != "closed":
+                return None
+            now = to_iso(utcnow())
+            await db.execute(
+                "UPDATE support_tickets SET status=?, updated_at=?, closed_at=?, closed_by=? WHERE id=?",
+                (status, now, now if status == "closed" else None,
+                 actor_id if status == "closed" else None, ticket_id),
+            )
+            await db.commit()
+        return await self.get_support_ticket(ticket_id, owner_id=actor_id, is_admin=is_admin)
+
+    async def soft_delete_support_ticket(self, ticket_id: int, admin_id: int) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                "UPDATE support_tickets SET deleted_at=?, deleted_by=? WHERE id=? AND deleted_at IS NULL",
+                (to_iso(utcnow()), admin_id, ticket_id),
+            )
+            await db.commit()
+        return cursor.rowcount == 1
 
     async def admin_overview(self) -> dict[str, int]:
         now = to_iso(utcnow())

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import re
+
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.client.session.middlewares.base import BaseRequestMiddleware
 
 
 class EmojiBank:
@@ -55,3 +59,25 @@ class EmojiBank:
         # A normal Unicode emoji is used only as the hidden fallback;
         # the visible emoji comes from custom_emoji_id.
         return f'<tg-emoji emoji-id="{custom_id}">⭐</tg-emoji>'
+
+
+class EmojiFallbackMiddleware(BaseRequestMiddleware):
+    async def __call__(self, make_request, bot, method):
+        try:
+            return await make_request(bot, method)
+        except TelegramBadRequest as exc:
+            if "emoji" not in str(exc).lower():
+                raise
+            def clean(value):
+                if isinstance(value, dict):
+                    return {k: clean(v) for k, v in value.items() if k != "icon_custom_emoji_id"}
+                if isinstance(value, list):
+                    return [clean(v) for v in value]
+                if isinstance(value, str):
+                    return re.sub(r'<tg-emoji[^>]*>(.*?)</tg-emoji>', r'\1', value, flags=re.DOTALL)
+                return value
+            payload = method.model_dump(exclude_unset=True)
+            fallback = clean(payload)
+            if fallback == payload:
+                raise
+            return await make_request(bot, type(method).model_validate(fallback))

@@ -19,6 +19,7 @@
     selectedPlan:null,
     promoCode:'',
     sbpPayment:null,
+    supportTicketId:null,
     busy:false,
   };
 
@@ -26,6 +27,16 @@
   const notify=(type='success')=>{try{tg?.HapticFeedback?.notificationOccurred(type)}catch(_){}};
 
   function icons(){try{window.lucide?.createIcons()}catch(_){}}
+
+  function updateSafeArea(){
+    for(const side of ['top','bottom']){
+      const inset=Number(tg?.safeAreaInset?.[side]||0)+Number(tg?.contentSafeAreaInset?.[side]||0);
+      document.documentElement.style.setProperty('--safe-'+side,'max(env(safe-area-inset-'+side+', 0px), '+inset+'px)');
+    }
+  }
+  updateSafeArea();
+  tg?.onEvent?.('safeAreaChanged',updateSafeArea);
+  tg?.onEvent?.('contentSafeAreaChanged',updateSafeArea);
 
   const reduceMotion=()=>window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches===true;
 
@@ -80,7 +91,7 @@
     if(!(options.body instanceof FormData))headers['Content-Type']='application/json';
     if(tg?.initData)headers['X-Telegram-Init-Data']=tg.initData;
     const controller=new AbortController();
-    const timer=setTimeout(()=>controller.abort(),9000);
+    const timer=setTimeout(()=>controller.abort(),path.includes("devices/reset")?35000:15000);
     try{
       const response=await fetch(path,{cache:'no-store',...options,headers,signal:controller.signal});
       let data={}; try{data=await response.json()}catch(_){}
@@ -133,9 +144,7 @@
   }
   function subscriptionNote(d){
     if(!d.subscription.active){
-      return d.subscription.trial_available
-        ? 'Бесплатный день можно активировать после подписки на канал.'
-        : 'Выбери тариф, чтобы снова получить доступ.';
+      return 'Выбери тариф или пригласи друзей, чтобы снова получить доступ.';
     }
     if(!d.vpn.ready)return 'Подписка активна. VPN-серверы пока готовятся.';
     if(!d.vpn.ok)return 'Подписка сохранена. Сервер временно недоступен.';
@@ -172,6 +181,7 @@
 
     const hasLink=!!d.vpn.subscription_url;
     $('#copySubscriptionHome').disabled=!hasLink;
+    $('#copySubscriptionInline').disabled=!hasLink;
     $('#openHappHome').disabled=!hasLink;
     $('#linkTitle').textContent=hasLink?'Ваш VPN готов':'Ссылка подключения';
     $('#linkActionNote').textContent=hasLink
@@ -187,16 +197,6 @@
     $('#linkMasked').textContent=masked;
     $('#vpnLinkCard').classList.toggle('unavailable',!hasLink);
 
-    const trialAvailable=!active&&!!d.subscription.trial_available;
-    const trialMember=!!d.subscription.trial_channel_member;
-    $('#trialCard').hidden=!trialAvailable;
-    if(trialAvailable){
-      $('#trialTitle').textContent=trialMember?'1 день готов':'Бесплатный день';
-      $('#trialText').textContent=trialMember
-        ? 'Подписка на канал подтверждена. Забери бесплатный день VPN.'
-        : 'Подпишись на канал MGN VPN, затем вернись сюда.';
-      $('#trialBtn').textContent=trialMember?'Забрать 1 день':'Подписаться';
-    }
     $('#serverWaitCard').hidden=!(active&&!d.vpn.ready);
   }
 
@@ -328,15 +328,21 @@
   let initialMotionDone=false;
   function render(){
     if(!state.data)return;
+    $('.app-shell').inert=false;
+    $('.app-shell').hidden=false;
+    $('#appError').hidden=true;
     setAvatar('avatar',state.data.user);
     renderHome();
     renderPlans();
+    try{state.sbpPayment=localStorage.getItem('mgn-payment-'+state.data.user.id)||state.sbpPayment}catch(_){}
+    $('#pendingPaymentCheck').hidden=!state.sbpPayment;
     renderDevices();
     renderProfile();
     renderReferrals();
     renderBonuses();
     renderClients();
     icons();
+    if(page==='support')loadSupport();
     const loader=$('#loader');
     loader.classList.add('hidden');
     if(!initialMotionDone){
@@ -378,20 +384,36 @@
       render();
     }catch(error){
       $('#loader').classList.add('hidden');
-      if(!silent)toast(error.message||'Не удалось загрузить данные');
+      if(!state.data)showLoadError(error.message||'Не удалось загрузить данные');
+      else if(!silent)toast(error.message||'Не удалось загрузить данные');
     }
   }
 
+  let sheetReturnFocus=null;
   function showBackdrop(){
+    sheetReturnFocus=document.activeElement;
     $('#sheetBackdrop').hidden=false;
     document.body.style.overflow='hidden';
+    requestAnimationFrame(()=>document.querySelector('.sheet:not([hidden]) button:not([hidden])')?.focus());
   }
   function closeSheets(){
     $('#paymentSheet').hidden=true;
     $('#deviceSheet').hidden=true;
     $('#sheetBackdrop').hidden=true;
     document.body.style.overflow='';
+    sheetReturnFocus?.focus();
   }
+
+  document.addEventListener('keydown',event=>{
+    const sheet=document.querySelector('.sheet:not([hidden])');
+    if(!sheet)return;
+    if(event.key==='Escape'){closeSheets();return}
+    if(event.key!=='Tab')return;
+    const focusables=[...sheet.querySelectorAll('button:not(:disabled),input,a[href]')].filter(el=>el.getClientRects().length);
+    const first=focusables[0],last=focusables[focusables.length-1];
+    if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus()}
+    else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus()}
+  });
 
   function openPayment(code){
     const plan=state.data?.plans?.find(x=>x.code===code);
@@ -399,7 +421,6 @@
     closeSheets();
     state.selectedPlan=plan;
     state.promoCode='';
-    state.sbpPayment=null;
     $('#sheetTitle').textContent=plan.name+' · '+Number(plan.rub).toLocaleString('ru-RU')+' ₽';
     $('#sheetText').textContent='1 устройство включено. Дополнительный слот — 100 ₽.';
     $('#paymentPromoCode').value='';
@@ -408,6 +429,8 @@
     $('#sbpPrice').textContent=Number(plan.rub).toLocaleString('ru-RU')+' ₽';
     $('#paySbp').disabled=!state.data.payments.sbp_enabled;
     $('#checkPayment').hidden=true;
+    $('#payStars').hidden=false;
+    $('#paySbp').hidden=false;
     $('#paymentSheet').hidden=false;
     showBackdrop();
     icons();
@@ -419,15 +442,24 @@
     if(!d)return;
     closeSheets();
     const limit=Number(d.subscription.max_devices||1);
-    const max=Number(d.shop.max_devices||10);
+    const max=Number(d.shop.max_devices||5);
     $('#deviceSheetPrice').textContent=Number(d.shop.extra_device_price_rub||100)+' ₽';
     $('#deviceSheetBalance').textContent='Оплата через СБП';
-    $('#confirmDevicePurchase').disabled=limit>=max;
+    $('#confirmDevicePurchase').disabled=limit>=max||!d.payments.sbp_enabled;
     $('#confirmDevicePurchase').textContent=limit>=max?'Лимит устройств достигнут':'Купить слот';
     $('#deviceSheet').hidden=false;
     showBackdrop();
     icons();
     haptic('medium');
+  }
+
+  function rememberPayment(id){
+    state.sbpPayment=id;
+    try{
+      const key='mgn-payment-'+state.data.user.id;
+      if(id)localStorage.setItem(key,id);else localStorage.removeItem(key);
+    }catch(_){}
+    $('#pendingPaymentCheck').hidden=!id;
   }
 
   async function payStars(){
@@ -450,7 +482,7 @@
     state.busy=true; $('#paySbp').disabled=true;
     try{
       const result=await request('/api/miniapp/payment/sbp',{method:'POST',body:JSON.stringify({plan_code:state.selectedPlan.code,promo_code:state.promoCode})});
-      state.sbpPayment=result.payment_id;
+      rememberPayment(result.payment_id);
       $('#checkPayment').hidden=false;
       if(tg?.openLink)tg.openLink(result.pay_url); else window.open(result.pay_url,'_blank');
       toast('После оплаты вернись и нажми «Проверить оплату»');
@@ -463,7 +495,7 @@
     $('#checkPayment').disabled=true;
     try{
       const result=await request('/api/miniapp/payment/sbp/'+encodeURIComponent(state.sbpPayment));
-      if(result.status==='paid'){notify();toast('Оплата получена');closeSheets();await load(true);go('home')}
+      if(result.status==='paid'){rememberPayment(null);notify();toast('Оплата получена');closeSheets();await load(true);go('home')}
       else toast('Оплата пока не подтверждена');
     }catch(error){toast(error.message)}
     finally{$('#checkPayment').disabled=false}
@@ -497,9 +529,17 @@
     state.busy=true; $('#confirmDevicePurchase').disabled=true;
     try{
       const result=await request('/api/miniapp/shop/device',{method:'POST',body:'{}'});
-      state.sbpPayment=result.payment_id;
+      rememberPayment(result.payment_id);
       if(tg?.openLink)tg.openLink(result.pay_url); else window.open(result.pay_url,'_blank');
-      closeSheets();toast('После оплаты проверьте платёж в разделе подписки');
+      $('#payStars').hidden=true;
+      $('#paySbp').hidden=true;
+      $('#deviceSheet').hidden=true;
+      $('#paymentSheet').hidden=false;
+      $('#sheetTitle').textContent='Дополнительное устройство';
+      $('#sheetText').textContent='После оплаты нажмите «Проверить оплату»';
+      $('#checkPayment').hidden=false;
+      showBackdrop();
+      toast('После оплаты нажмите «Проверить оплату»');
       [3000,8000,15000].forEach(delay=>setTimeout(()=>{
         if(state.sbpPayment===result.payment_id)checkSbp();
       },delay));
@@ -532,46 +572,6 @@
     }catch(error){$('#promoPageResult').textContent=error.message;notify('error')}
   }
 
-  async function activateTrial(){
-    const d=state.data;if(!d||!d.subscription.trial_available)return;
-
-    if(!d.subscription.trial_channel_member){
-      if(d.trial_channel_url){
-        try{
-          tg?.openTelegramLink
-            ? tg.openTelegramLink(d.trial_channel_url)
-            : window.open(d.trial_channel_url,'_blank');
-        }catch(_){}
-      }
-      toast('Подпишись на канал и вернись сюда');
-      return;
-    }
-
-    if(state.busy)return;
-    state.busy=true;
-    $('#trialBtn').disabled=true;
-    try{
-      await request('/api/miniapp/trial',{method:'POST',body:'{}'});
-      notify();
-      toast('1 день VPN активирован');
-      await load(true);
-    }catch(error){
-      notify('error');
-      toast(error.message);
-      await load(true);
-    }finally{
-      state.busy=false;
-      $('#trialBtn').disabled=false;
-    }
-  }
-
-  let trialRefreshTimer=0;
-  function refreshTrialState(){
-    if(state.data?.subscription?.active||!state.data?.subscription?.trial_available)return;
-    clearTimeout(trialRefreshTimer);
-    trialRefreshTimer=setTimeout(()=>load(true),250);
-  }
-
   async function copyText(text,success){
     if(!text)return;
     try{
@@ -593,12 +593,66 @@
   }
   function openHapp(){
     const client=(state.data?.clients||[]).find(item=>String(item.name||'').toLowerCase()==='happ');
-    const url=client?.redirect_url||client?.import_url||client?.download_url||'';
+    const url=client?.redirect_url||'';
     if(!url){
       toast(state.data?.subscription?.active?'Happ пока недоступен':'Сначала активируй подписку');
       return;
     }
     openClientUrl(url);
+  }
+
+  async function loadSupport(){
+    const list=$('#supportTickets');
+    if(!list)return;
+    try{
+      const result=await request('/api/miniapp/support?page=0&_='+Date.now());
+      const tickets=result.tickets||[];
+      list.innerHTML=tickets.length?tickets.map(ticket=>
+        '<button type="button" data-support-id="'+Number(ticket.id)+'"><span class="icon-box"><i data-lucide="message-square"></i></span><span><b>Обращение #'+Number(ticket.id)+'</b><small>'+esc(ticket.preview||'Без текста')+'</small></span><em>'+esc(ticket.status==='closed'?'Закрыто':'Открыто')+'</em></button>'
+      ).join(''):'<p class="promo-hint">Обращений пока нет.</p>';
+      icons();
+      if(state.supportTicketId)await openSupportThread(state.supportTicketId);
+    }catch(error){list.innerHTML='<p class="promo-hint">'+esc(error.message||'Не удалось загрузить обращения')+'</p>'}
+  }
+
+  async function openSupportThread(ticketId){
+    try{
+      const result=await request('/api/miniapp/support/'+Number(ticketId)+'?_='+Date.now());
+      const ticket=result.ticket;
+      state.supportTicketId=Number(ticket.id);
+      const thread=$('#supportThread');
+      thread.hidden=false;
+      thread.innerHTML='<h3>Обращение #'+state.supportTicketId+'</h3>'+(ticket.messages||[]).map(item=>
+        '<p><b>'+(item.sender_type==='admin'?'Поддержка':'Вы')+':</b> '+esc(item.text||(item.message_type==='photo'?'Фото':'Видео'))+'</p>'
+      ).join('');
+      const closed=ticket.status==='closed';
+      $('#supportMessage').disabled=closed;
+      $('#supportSubmit').hidden=closed;
+      $('#supportSubmit').textContent='Отправить сообщение';
+      $('#supportClose').hidden=closed;
+      $('#supportResult').textContent=closed?'Обращение закрыто. Создать новое можно после возврата к списку.':'';
+    }catch(error){toast(error.message||'Не удалось открыть обращение')}
+  }
+
+  function resetSupportComposer(){
+    state.supportTicketId=null;
+    $('#supportThread').hidden=true;
+    $('#supportMessage').disabled=false;
+    $('#supportSubmit').hidden=false;
+    $('#supportSubmit').textContent='Создать обращение';
+    $('#supportClose').hidden=true;
+    $('#supportResult').textContent='';
+  }
+
+  async function closeSupport(){
+    if(!state.supportTicketId||state.busy)return;
+    state.busy=true;
+    try{
+      await request('/api/miniapp/support/'+state.supportTicketId+'/close',{method:'POST',body:'{}'});
+      notify();
+      await openSupportThread(state.supportTicketId);
+      await loadSupport();
+    }catch(error){notify('error');toast(error.message)}finally{state.busy=false}
   }
 
   async function submitSupport(){
@@ -615,15 +669,20 @@
     const button=$('#supportSubmit');
     if(button)button.disabled=true;
     try{
-      const result=await request('/api/miniapp/support',{
+      const endpoint=state.supportTicketId
+        ? '/api/miniapp/support/'+state.supportTicketId+'/messages'
+        : '/api/miniapp/support';
+      const result=await request(endpoint,{
         method:'POST',
         body:JSON.stringify({message})
       });
       if(field)field.value='';
       const counter=$('#supportCounter');if(counter)counter.textContent='0';
-      if(resultEl)resultEl.textContent='Обращение #'+Number(result.ticket?.id||0)+' отправлено. Ответ придёт в Telegram.';
+      state.supportTicketId=Number(result.ticket?.id||state.supportTicketId||0);
+      if(resultEl)resultEl.textContent='Сообщение сохранено. Ответ придёт в Telegram.';
       notify();
-      toast('Обращение отправлено');
+      toast('Сообщение отправлено');
+      await loadSupport();
     }catch(error){
       if(resultEl)resultEl.textContent=error.message||'Не удалось отправить обращение';
       notify('error');
@@ -643,7 +702,6 @@
   $('#copySubscriptionInline').onclick=event=>{pulseElement(event.currentTarget);copySubscription()};
   $('#openHappHome').onclick=event=>{pulseElement(event.currentTarget);openHapp()};
   $('#copySubscriptionPlans').onclick=copySubscription;
-  $('#trialBtn').onclick=activateTrial;
   $('#buyDevicePage').onclick=openDeviceSheet;
   $('#resetDevicesPage').onclick=resetDevices;
   $('#copyReferral').onclick=()=>copyText(state.data?.user?.referral_url||'','Реферальная ссылка скопирована');
@@ -656,10 +714,17 @@
   $('#payStars').onclick=payStars;
   $('#paySbp').onclick=paySbp;
   $('#checkPayment').onclick=checkSbp;
+  $('#pendingPaymentCheck').onclick=checkSbp;
   $('#confirmDevicePurchase').onclick=buyExtraDevice;
   $('#applyPaymentPromo').onclick=applyPaymentPromo;
   $('#redeemPromo').onclick=redeemPromo;
   $('#supportSubmit').onclick=submitSupport;
+  $('#supportNew').onclick=resetSupportComposer;
+  $('#supportClose').onclick=closeSupport;
+  $('#supportTickets').addEventListener('click',event=>{
+    const button=event.target.closest('[data-support-id]');
+    if(button)openSupportThread(Number(button.dataset.supportId));
+  });
   $('#supportMessage').addEventListener('input',event=>{
     const counter=$('#supportCounter');
     if(counter)counter.textContent=String(event.target.value.length);
@@ -679,11 +744,6 @@
   document.addEventListener('pointerup',clearPress,{passive:true});
   document.addEventListener('pointercancel',clearPress,{passive:true});
 
-    window.addEventListener('focus',refreshTrialState);
-  document.addEventListener('visibilitychange',()=>{
-    if(document.visibilityState==='visible')refreshTrialState();
-  });
-
   try{
     tg?.BackButton?.onClick(()=>{
       if(!$('#paymentSheet').hidden||!$('#deviceSheet').hidden){closeSheets();return}
@@ -694,10 +754,18 @@
 
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state.data)load(true)});
 
+  function showLoadError(message){
+    $('.app-shell').inert=true;
+    $('.app-shell').hidden=true;
+    $('#appError').hidden=false;
+    $('#appErrorText').textContent=message;
+    $('#retryLoad').hidden=!tg?.initData;
+  }
+  $('#retryLoad').onclick=()=>load();
   icons();
   if(!tg?.initData){
     $('#loader').classList.add('hidden');
-    toast('Открой Mini App внутри Telegram');
+    showLoadError('Открой Mini App внутри Telegram');
   }else{
     load();
   }

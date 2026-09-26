@@ -8,3 +8,9 @@ __pycache__/
 .idea/
 .vscode/
 .DS_Store
+
+.pytest_cache/
+subscription_cache/
+public_base_url.txt
+*.sqlite3-wal
+*.sqlite3-shm

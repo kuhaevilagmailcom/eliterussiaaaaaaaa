@@ -6,6 +6,8 @@ import hashlib
 import hmac
 import json
 import logging
+import re
+import secrets
 import time
 from html import escape
 from decimal import Decimal, InvalidOperation
@@ -43,6 +45,7 @@ def _json_error(status: int, message: str) -> web.HTTPException:
         409: web.HTTPConflict,
         429: web.HTTPTooManyRequests,
         503: web.HTTPServiceUnavailable,
+        500: web.HTTPInternalServerError,
     }.get(status, web.HTTPBadRequest)
     return cls(
         text=json.dumps({"message": message}, ensure_ascii=False),
@@ -51,12 +54,15 @@ def _json_error(status: int, message: str) -> web.HTTPException:
 
 
 def validate_init_data(raw: str, bot_token: str, max_age: int = 3600) -> dict:
-    if not raw:
+    if not isinstance(raw, str) or not raw or len(raw) > 16384:
         raise _json_error(401, "Открой MGN VPN внутри Telegram")
 
-    pairs = dict(parse_qsl(raw, keep_blank_values=True))
+    parsed = parse_qsl(raw, keep_blank_values=True)
+    pairs = dict(parsed)
+    if len(pairs) != len(parsed):
+        raise _json_error(401, "Некорректная сессия Telegram")
     received_hash = pairs.pop("hash", "")
-    if not received_hash:
+    if not re.fullmatch(r"[0-9a-f]{64}", received_hash):
         raise _json_error(401, "Telegram не передал подпись")
 
     data_check = "\n".join(f"{key}={value}" for key, value in sorted(pairs.items()))
@@ -70,7 +76,7 @@ def validate_init_data(raw: str, bot_token: str, max_age: int = 3600) -> dict:
     except ValueError as exc:
         raise _json_error(401, "Некорректная сессия Telegram") from exc
 
-    if max_age > 0 and (not auth_date or abs(int(time.time()) - auth_date) > max_age):
+    if not auth_date or int(time.time()) - auth_date > max(60, max_age) or auth_date > int(time.time()) + 30:
         raise _json_error(401, "Сессия устарела. Открой Mini App заново")
 
     try:
@@ -78,7 +84,7 @@ def validate_init_data(raw: str, bot_token: str, max_age: int = 3600) -> dict:
     except json.JSONDecodeError as exc:
         raise _json_error(401, "Не удалось прочитать Telegram-профиль") from exc
 
-    if not isinstance(user, dict) or not int(user.get("id", 0) or 0):
+    if not isinstance(user, dict) or type(user.get("id")) is not int or not 0 < user["id"] < 2**63:
         raise _json_error(401, "Telegram-пользователь не найден")
     return user
 
@@ -120,6 +126,7 @@ class MiniAppServer:
         self._subscription_refresh_tasks: dict[int, asyncio.Task] = {}
         self._subscription_cache: dict[str, dict] = {}
         self._rate_events: dict[str, list[float]] = {}
+        self._last_rate_cleanup = 0.0
         self._subscription_cache_dir = Path(self.config.db_path).with_name(
             "subscription_cache"
         )
@@ -183,6 +190,9 @@ class MiniAppServer:
         window_seconds: float,
     ) -> None:
         now = time.monotonic()
+        if now - self._last_rate_cleanup > 60:
+            self._rate_events = {k: v for k, v in self._rate_events.items() if v and v[-1] > now - 600}
+            self._last_rate_cleanup = now
         window_start = now - float(window_seconds)
         events = [
             value
@@ -211,6 +221,10 @@ class MiniAppServer:
             limit=120,
             window_seconds=60.0,
         )
+        if request.method != "GET":
+            self._rate_limit(f"mutation:{user_id}:{request.path}", limit=8, window_seconds=60)
+        elif "/payment/" in request.path:
+            self._rate_limit(f"payment-check:{user_id}", limit=20, window_seconds=60)
         row = await self.db.ensure_user(
             user_id,
             tg_user.get("username"),
@@ -223,41 +237,6 @@ class MiniAppServer:
             me = await self.bot.get_me()
             self._bot_username = me.username or "mgnvpn_bot"
         return self._bot_username
-
-    async def _is_trial_channel_member(
-        self,
-        user_id: int,
-        *,
-        retries: int = 1,
-    ) -> bool:
-        retries = max(1, min(int(retries), 4))
-        for attempt in range(retries):
-            try:
-                member = await self.bot.get_chat_member(
-                    chat_id=self.config.trial_channel_username,
-                    user_id=user_id,
-                )
-                status = getattr(
-                    getattr(member, "status", ""),
-                    "value",
-                    getattr(member, "status", ""),
-                )
-                status = str(status)
-                if status in {"member", "administrator", "creator"}:
-                    return True
-                if status == "restricted" and bool(getattr(member, "is_member", False)):
-                    return True
-            except Exception as exc:
-                logger.warning(
-                    "Mini App channel membership check failed for %s: %s",
-                    user_id,
-                    exc,
-                )
-
-            if attempt + 1 < retries:
-                await asyncio.sleep(0.6)
-
-        return False
 
     async def _sync_bot_subscription_menu(self, user: dict) -> None:
         message_id = user.get("last_menu_message_id")
@@ -424,54 +403,20 @@ class MiniAppServer:
             return self._fallback_state(user), False
 
 
-    def _remember_public_base_url(self, value: str) -> str:
-        value = str(value or "").strip().rstrip("/")
-        if value.startswith("http://"):
-            value = "https://" + value[len("http://"):]
-        elif value and not value.startswith("https://"):
-            value = "https://" + value.lstrip("/")
-        if not value.startswith("https://"):
-            return ""
-        path = Path(self.config.db_path).with_name("public_base_url.txt")
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            current = ""
-            try:
-                current = path.read_text(encoding="utf-8").strip()
-            except FileNotFoundError:
-                pass
-            if current != value:
-                path.write_text(value + "\n", encoding="utf-8")
-                logger.info("Public Mini App base URL learned from request host: %s", value)
-        except Exception:
-            logger.exception("Could not persist public Mini App base URL")
-        return value
-
     def _external_base_url(self, request: web.Request) -> str:
-        if self.config.miniapp_url:
-            return self._remember_public_base_url(
-                self.config.miniapp_url.rstrip("/")
-            )
+        return "https://mgnvpn.ru"
 
-        forwarded_proto = (
-            request.headers.get("X-Forwarded-Proto", "")
-            .split(",", 1)[0]
-            .strip()
-        )
-        forwarded_host = (
-            request.headers.get("X-Forwarded-Host", "")
-            .split(",", 1)[0]
-            .strip()
-        )
-        host = forwarded_host or request.headers.get("Host", "").strip()
-
-        if host:
-            # The public Bothost/Telegram endpoint is HTTPS even when the
-            # reverse proxy talks to aiohttp over plain HTTP internally.
-            return self._remember_public_base_url(
-                f"https://{host}".rstrip("/")
-            )
-        return ""
+    async def _json_body(self, request: web.Request) -> dict:
+        try:
+            data = await request.json()
+        except (ValueError, UnicodeError):
+            raise _json_error(400, "Некорректный JSON")
+        if not isinstance(data, dict):
+            raise _json_error(400, "Ожидается объект JSON")
+        for key, limit in (("plan_code", 16), ("code", 64), ("promo_code", 64), ("message", 3000)):
+            if key in data and (not isinstance(data[key], str) or len(data[key]) > limit):
+                raise _json_error(400, "Некорректное поле запроса")
+        return data
 
     def _public_subscription_url(
         self,
@@ -493,13 +438,7 @@ class MiniAppServer:
 
 
     async def _activate_paid(self, buyer_id: int, target_id: int, code: str, event_key: str) -> None:
-        plan = PLANS[code]
-        target = await self.db.extend_subscription(
-            telegram_id=target_id,
-            days=int(plan["days"]),
-            plan_name=str(plan["name"]),
-            max_devices=int(plan["devices"]),
-        )
+        target = await self.db.get_user(target_id)
         if getattr(self.provider, "service_ready", True):
             try:
                 await asyncio.wait_for(self.provider.provision(target), 7.0)
@@ -511,10 +450,12 @@ class MiniAppServer:
         index = self.web_dir / "site" / "index.html"
         if not index.exists():
             raise web.HTTPNotFound(text="MGN VPN site files are missing")
-        return web.FileResponse(
-            index,
-            headers={"Cache-Control": "public, max-age=60"},
-        )
+        html = await asyncio.to_thread(index.read_text, encoding="utf-8")
+        for code in PLANS:
+            html = html.replace(f'<strong data-plan-price="{code}"></strong>',
+                                f'<strong data-plan-price="{code}">{plan_price_rub(self.config, code)} ₽</strong>')
+        return web.Response(text=html, content_type="text/html",
+                            headers={"Cache-Control": "public, max-age=60"})
 
     async def index(self, request: web.Request) -> web.StreamResponse:
         index = self.web_dir / "index.html"
@@ -534,6 +475,7 @@ class MiniAppServer:
         )
 
     async def subscription(self, request: web.Request) -> web.Response:
+        self._rate_limit(f"subscription-ip:{request.remote}", limit=120, window_seconds=60)
         token = str(request.match_info.get("token") or "").strip()
         user = await self.db.get_user_by_sub_token(token)
         if user is None:
@@ -551,7 +493,7 @@ class MiniAppServer:
                 headers=dict(cached["headers"]),
             )
 
-        persistent_cached = self._read_persistent_subscription_cache(token)
+        persistent_cached = await asyncio.to_thread(self._read_persistent_subscription_cache, token)
         if (
             persistent_cached
             and time.time() - float(persistent_cached["created_at"]) <= 300.0
@@ -598,12 +540,14 @@ class MiniAppServer:
                 if value:
                     headers[key.title()] = value
 
+            if len(self._subscription_cache) >= 512:
+                self._subscription_cache.pop(next(iter(self._subscription_cache)))
             self._subscription_cache[token] = {
                 "created": now,
                 "body": body,
                 "headers": headers,
             }
-            self._write_persistent_subscription_cache(token, body, headers)
+            await asyncio.to_thread(self._write_persistent_subscription_cache, token, body, headers)
             logger.info(
                 "MGN subscription served for %s with %s node(s)",
                 user["telegram_id"],
@@ -656,6 +600,7 @@ class MiniAppServer:
         target = client.import_url(subscription_url)
         if not target:
             raise web.HTTPFound(client.download_url)
+        nonce = secrets.token_urlsafe(24)
         safe_target = escape(target, quote=True)
         safe_download = escape(client.download_url, quote=True)
         safe_name = escape(client.name)
@@ -669,9 +614,10 @@ class MiniAppServer:
 <p style=\"color:#a1a1aa\">Подписка MGN VPN будет добавлена автоматически.</p>
 <a href=\"{safe_target}\" style=\"display:block;padding:16px;border-radius:14px;background:#ff3dbb;color:#fff;text-decoration:none;font-weight:700\">Открыть {safe_name}</a>
 <a href=\"{safe_download}\" style=\"display:block;margin-top:18px;color:#a1a1aa\">Установить приложение</a></main>
-<script>location.href={json.dumps(target)};</script></body></html>""",
+<script nonce="{nonce}">location.href={json.dumps(target)};</script></body></html>""",
             content_type="text/html",
-            headers={"Cache-Control": "no-store"},
+            headers={"Cache-Control": "private, no-store", "Content-Security-Policy":
+                     f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"},
         )
 
     async def me(self, request: web.Request) -> web.Response:
@@ -679,13 +625,6 @@ class MiniAppServer:
         state, vpn_ok = await self._load_state(row)
         referral_stats = await self.db.referral_stats(uid)
         username = await self._username()
-        trial_available = not bool(row.get("trial_used")) and not _active(row)
-        trial_channel_member = (
-            await self._is_trial_channel_member(uid, retries=1)
-            if trial_available
-            else False
-        )
-
         until = from_iso(row.get("subscription_until"))
         until_text = ""
         if until:
@@ -710,8 +649,6 @@ class MiniAppServer:
                     "remaining_seconds": _remaining_seconds(row),
                     "max_devices": int(row.get("max_devices") or 1),
                     "trial_used": bool(row.get("trial_used")),
-                    "trial_available": trial_available,
-                    "trial_channel_member": trial_channel_member,
                 },
                 "vpn": {
                     "ready": bool(getattr(self.provider, "service_ready", True)),
@@ -746,49 +683,13 @@ class MiniAppServer:
                     "extra_device_price_stars": rub_to_stars(EXTRA_DEVICE_PRICE_RUB),
                     "max_devices": MAX_DEVICES,
                 },
-                "trial_channel_url": self.config.trial_channel_url,
                 "bot_url": f"https://t.me/{username}",
-            }
-        )
-
-    async def activate_trial(self, request: web.Request) -> web.Response:
-        uid, _tg_user, row = await self._auth(request)
-        if row.get("trial_used"):
-            raise _json_error(409, "Бесплатный день уже использован")
-        subscribed = await self._is_trial_channel_member(uid, retries=3)
-        if not subscribed:
-            raise _json_error(
-                403,
-                "Подписка на канал пока не найдена. Вернитесь из канала и нажмите «Забрать 1 день» ещё раз.",
-            )
-
-        activated = await self.db.activate_trial(
-            uid,
-            self.config.trial_minutes,
-            self.config.trial_max_devices,
-        )
-        if not activated:
-            raise _json_error(409, "Бесплатный день уже использован")
-
-        row = await self.db.get_user(uid)
-        if getattr(self.provider, "service_ready", True):
-            try:
-                await asyncio.wait_for(self.provider.provision(row), 7.0)
-            except Exception as exc:
-                logger.warning("Trial provisioning deferred for %s: %s", uid, exc)
-
-        await self._sync_bot_subscription_menu(row)
-        return web.json_response(
-            {
-                "ok": True,
-                "subscription_until": row.get("subscription_until"),
-                "plan": row.get("plan_name") or "Бесплатный доступ",
             }
         )
 
     async def stars_invoice(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
-        data = await request.json()
+        data = await self._json_body(request)
         code = str(data.get("plan_code") or "")
         plan = PLANS.get(code)
         if not plan:
@@ -848,7 +749,7 @@ class MiniAppServer:
         if not self.config.rollypay_enabled:
             raise _json_error(503, "СБП пока не настроена")
 
-        data = await request.json()
+        data = await self._json_body(request)
         code = str(data.get("plan_code") or "")
         plan = PLANS.get(code)
         if not plan:
@@ -934,24 +835,19 @@ class MiniAppServer:
             remote_payment == payment_id
             and remote_order == str(local["order_id"])
             and remote_currency == "RUB"
+            and remote_amount.is_finite()
             and remote_amount == Decimal(int(local["amount_rub"]))
         )
         if not matches:
             raise _json_error(409, "Данные платежа не совпали")
 
         if status == "paid":
-            fresh = await self.db.mark_sbp_paid(payment_id)
+            fresh = await self.db.settle_sbp_payment(payment_id)
             if fresh:
-                if local.get("promo_id"):
-                    await self.db.consume_promo(
-                        promo_id=int(local["promo_id"]),
-                        telegram_id=uid,
-                        payment_id=payment_id,
-                    )
                 if str(local["plan_code"]) == "device":
-                    updated = await self.db.grant_extra_device(uid, MAX_DEVICES)
+                    updated = await self.db.get_user(uid)
                     if updated and getattr(self.provider, "service_ready", True):
-                        await self.provider.provision(updated)
+                        await asyncio.wait_for(self.provider.provision(updated), 7.0)
                     if updated:
                         await self._sync_bot_subscription_menu(updated)
                 else:
@@ -1008,7 +904,7 @@ class MiniAppServer:
 
     async def promo_quote(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
-        data = await request.json()
+        data = await self._json_body(request)
         code = str(data.get("code") or "")
         plan_code = str(data.get("plan_code") or "")
         plan = PLANS.get(plan_code)
@@ -1034,7 +930,7 @@ class MiniAppServer:
 
     async def promo_redeem(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
-        data = await request.json()
+        data = await self._json_body(request)
         code = str(data.get("code") or "")
         updated = await self.db.redeem_free_days_promo(code, uid)
         if not updated:
@@ -1057,7 +953,7 @@ class MiniAppServer:
         if not self.provider.capabilities.supports_device_removal:
             raise _json_error(
                 409,
-                "H1Cloud не поддерживает отключение одного устройства. Используйте сброс всех устройств.",
+                "VPN-система не поддерживает отключение одного устройства. Используйте сброс всех устройств.",
             )
 
         device_id = str(request.match_info.get("device_id") or "")
@@ -1080,10 +976,7 @@ class MiniAppServer:
             limit=3,
             window_seconds=600.0,
         )
-        try:
-            payload = await request.json()
-        except Exception as exc:
-            raise _json_error(400, "Некорректный запрос") from exc
+        payload = await self._json_body(request)
 
         message = str(payload.get("message") or "").strip()
         if not message:
@@ -1091,11 +984,12 @@ class MiniAppServer:
         if len(message) > 3000:
             raise _json_error(400, "Максимальная длина обращения — 3000 символов")
 
-        ticket = await self.db.create_support_ticket(
+        ticket = await self.db.create_support_thread(
             telegram_id=uid,
             username=tg_user.get("username"),
             first_name=tg_user.get("first_name"),
-            message=message,
+            message_type="text",
+            text=message,
         )
 
         username = (
@@ -1163,6 +1057,102 @@ class MiniAppServer:
             }
         )
 
+    @staticmethod
+    def _support_ticket_payload(ticket: dict, messages: list[dict] | None = None) -> dict:
+        result = {
+            "id": int(ticket["id"]),
+            "status": str(ticket.get("status") or "open"),
+            "preview": str(ticket.get("message") or "")[:160],
+            "created_at": str(ticket.get("created_at") or ""),
+            "updated_at": str(ticket.get("updated_at") or ticket.get("created_at") or ""),
+        }
+        if messages is not None:
+            result["messages"] = [
+                {
+                    "id": int(item["id"]),
+                    "sender_type": str(item["sender_type"]),
+                    "message_type": str(item["message_type"]),
+                    "text": str(item.get("text") or item.get("caption") or ""),
+                    "created_at": str(item.get("created_at") or ""),
+                }
+                for item in messages
+            ]
+        return result
+
+    async def list_support_threads(self, request: web.Request) -> web.Response:
+        uid, _tg_user, _row = await self._auth(request)
+        raw_page = request.query.get("page", "0")
+        page = int(raw_page) if raw_page.isdigit() else 0
+        tickets, total = await self.db.list_user_support_tickets(uid, page, 10)
+        return web.json_response(
+            {
+                "tickets": [self._support_ticket_payload(ticket) for ticket in tickets],
+                "page": page,
+                "total": total,
+            }
+        )
+
+    async def get_support_thread(self, request: web.Request) -> web.Response:
+        uid, _tg_user, _row = await self._auth(request)
+        raw_id = request.match_info.get("ticket_id", "")
+        if not raw_id.isdigit():
+            raise _json_error(404, "Обращение не найдено")
+        ticket_id = int(raw_id)
+        ticket = await self.db.get_support_ticket(ticket_id, owner_id=uid)
+        if not ticket:
+            raise _json_error(404, "Обращение не найдено")
+        messages = await self.db.list_support_messages(ticket_id, owner_id=uid)
+        return web.json_response({"ticket": self._support_ticket_payload(ticket, messages)})
+
+    async def add_support_thread_message(self, request: web.Request) -> web.Response:
+        uid, _tg_user, _row = await self._auth(request)
+        raw_id = request.match_info.get("ticket_id", "")
+        if not raw_id.isdigit():
+            raise _json_error(404, "Обращение не найдено")
+        payload = await self._json_body(request)
+        message = str(payload.get("message") or "").strip()
+        if not message or len(message) > 3000:
+            raise _json_error(400, "Введите сообщение до 3000 символов")
+        ticket_id = int(raw_id)
+        try:
+            ticket = await self.db.add_support_message(
+                ticket_id=ticket_id,
+                sender_type="user",
+                sender_telegram_id=uid,
+                message_type="text",
+                text=message,
+                owner_id=uid,
+            )
+        except ValueError:
+            raise _json_error(409, "Обращение закрыто")
+        if not ticket:
+            raise _json_error(404, "Обращение не найдено")
+        recipients = set(int(value) for value in self.config.admin_ids)
+        recipients.update(int(item["telegram_id"]) for item in await self.db.list_admin_roles())
+        markup = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Открыть", callback_data=f"support:view:{ticket_id}")
+        ]])
+        for admin_id in recipients:
+            try:
+                await self.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"<b>Новое сообщение в обращении #{ticket_id}</b>\n\n{escape(message)}",
+                    reply_markup=markup,
+                )
+            except Exception as exc:
+                logger.warning("Could not notify admin %s about support message: %s", admin_id, type(exc).__name__)
+        return web.json_response({"ok": True, "ticket": self._support_ticket_payload(ticket)})
+
+    async def close_support_thread(self, request: web.Request) -> web.Response:
+        uid, _tg_user, _row = await self._auth(request)
+        raw_id = request.match_info.get("ticket_id", "")
+        if not raw_id.isdigit():
+            raise _json_error(404, "Обращение не найдено")
+        ticket = await self.db.set_support_status(int(raw_id), "closed", uid, is_admin=False)
+        if not ticket:
+            raise _json_error(404, "Обращение не найдено")
+        return web.json_response({"ok": True, "ticket": self._support_ticket_payload(ticket)})
+
     async def reset_devices(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
         if not _active(row):
@@ -1174,6 +1164,9 @@ class MiniAppServer:
 
         try:
             state = await asyncio.wait_for(self.provider.reset_devices(row), 30.0)
+            token = str(row["sub_token"])
+            self._subscription_cache.pop(token, None)
+            await asyncio.to_thread(self._subscription_cache_path(token).unlink, missing_ok=True)
         except Exception as exc:
             logger.warning("Mini App device reset failed for %s: %s", uid, exc)
             raise _json_error(503, "Не удалось сбросить устройства")
@@ -1186,7 +1179,13 @@ class MiniAppServer:
             try:
                 response = await handler(request)
             except web.HTTPException as exc:
-                response = exc
+                response = web.Response(body=exc.body, status=exc.status, headers=exc.headers)
+                if request.path.startswith("/api/") and exc.content_type != "application/json":
+                    response = web.json_response({"message": "Некорректный запрос"}, status=exc.status)
+            except Exception as exc:
+                # Do not include request paths, payloads or provider exception URLs.
+                logger.error("HTTP handler failed: %s", type(exc).__name__)
+                response = web.json_response({"message": "Сервис временно недоступен"}, status=500)
 
             response.headers.setdefault("X-Content-Type-Options", "nosniff")
             response.headers.setdefault("Referrer-Policy", "no-referrer")
@@ -1194,7 +1193,11 @@ class MiniAppServer:
                 "Permissions-Policy",
                 "camera=(), microphone=(), geolocation=(), payment=()",
             )
-            if request.path.startswith("/api/") or request.path.startswith("/sub/"):
+            response.headers.setdefault("Content-Security-Policy",
+                "default-src 'self'; script-src 'self' https://telegram.org https://cdn.jsdelivr.net; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; "
+                "connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'")
+            if request.path.startswith(("/api/", "/sub/", "/client/")):
                 response.headers["Cache-Control"] = "private, no-store, max-age=0"
                 response.headers["Pragma"] = "no-cache"
             return response
@@ -1213,7 +1216,6 @@ class MiniAppServer:
         app.router.add_get("/client/{client}/{token}", self.client_redirect)
         app.router.add_get("/api/miniapp/health", self.health)
         app.router.add_get("/api/miniapp/me", self.me)
-        app.router.add_post("/api/miniapp/trial", self.activate_trial)
         app.router.add_post("/api/miniapp/payment/stars", self.stars_invoice)
         app.router.add_post("/api/miniapp/payment/sbp", self.sbp_create)
         app.router.add_get("/api/miniapp/payment/sbp/{payment_id}", self.sbp_check)
@@ -1221,6 +1223,10 @@ class MiniAppServer:
         app.router.add_post("/api/miniapp/promo/quote", self.promo_quote)
         app.router.add_post("/api/miniapp/promo/redeem", self.promo_redeem)
         app.router.add_post("/api/miniapp/support", self.create_support_ticket)
+        app.router.add_get("/api/miniapp/support", self.list_support_threads)
+        app.router.add_get("/api/miniapp/support/{ticket_id}", self.get_support_thread)
+        app.router.add_post("/api/miniapp/support/{ticket_id}/messages", self.add_support_thread_message)
+        app.router.add_post("/api/miniapp/support/{ticket_id}/close", self.close_support_thread)
         app.router.add_delete("/api/miniapp/devices/{device_id}", self.delete_device)
         app.router.add_post("/api/miniapp/devices/reset", self.reset_devices)
         app.router.add_static("/static/", str(self.web_dir), show_index=False)
@@ -1240,12 +1246,13 @@ class MiniAppServer:
         )
 
     async def close(self) -> None:
-        tasks = list(self._reconcile_tasks.values())
+        tasks = list(self._reconcile_tasks.values()) + list(self._subscription_refresh_tasks.values())
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._reconcile_tasks.clear()
+        self._subscription_refresh_tasks.clear()
 
         if self.runner is not None:
             await self.runner.cleanup()

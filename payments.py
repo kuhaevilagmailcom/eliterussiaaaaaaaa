@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from uuid import uuid4
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -12,17 +13,21 @@ class RollyPayError(RuntimeError):
     pass
 
 
-def _error_message(response: httpx.Response) -> str:
+async def _request(config: Config, method: str, path: str, **kwargs) -> dict:
     try:
-        data = response.json()
-        return str(
-            data.get("detail")
-            or data.get("message")
-            or data.get("error")
-            or "request failed"
-        )[:300]
-    except ValueError:
-        return "request failed"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(7, connect=3)) as client:
+            response = await client.request(method, f"{config.rollypay_api_base}{path}", **kwargs)
+    except httpx.RequestError as exc:
+        raise RollyPayError("Payment provider unavailable") from exc
+    if response.is_error:
+        raise RollyPayError(f"Payment provider HTTP {response.status_code}")
+    try:
+        result = response.json()
+    except ValueError as exc:
+        raise RollyPayError("Payment provider returned invalid JSON") from exc
+    if not isinstance(result, dict):
+        raise RollyPayError("Payment provider returned invalid object")
+    return result
 
 
 async def create_payment(
@@ -53,25 +58,13 @@ async def create_payment(
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.post(
-            f"{config.rollypay_api_base}/api/v1/payments",
-            json=payload,
-            headers=headers,
-        )
-
-    if response.is_error:
-        raise RollyPayError(
-            f"RollyPay returned HTTP {response.status_code}: {_error_message(response)}"
-        )
-
-    try:
-        result = response.json()
-    except ValueError as exc:
-        raise RollyPayError("RollyPay returned invalid JSON") from exc
-
-    if not result.get("payment_id") or not result.get("pay_url"):
-        raise RollyPayError("RollyPay response has no payment link")
+    result = await _request(config, "POST", "/api/v1/payments", json=payload, headers=headers)
+    pay_url = result.get("pay_url")
+    if not isinstance(result.get("payment_id"), str) or not isinstance(pay_url, str):
+        raise RollyPayError("Payment provider returned invalid payment link")
+    parsed = urlsplit(pay_url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise RollyPayError("Payment provider returned unsafe payment link")
     return result
 
 
@@ -84,18 +77,6 @@ async def get_payment(config: Config, payment_id: str) -> dict:
         "X-Nonce": str(uuid4()),
     }
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.get(
-            f"{config.rollypay_api_base}/api/v1/payments/{payment_id}",
-            headers=headers,
-        )
-
-    if response.is_error:
-        raise RollyPayError(
-            f"RollyPay returned HTTP {response.status_code}: {_error_message(response)}"
-        )
-
-    try:
-        return response.json()
-    except ValueError as exc:
-        raise RollyPayError("RollyPay returned invalid JSON") from exc
+    if not payment_id or len(payment_id) > 200:
+        raise RollyPayError("Invalid payment ID")
+    return await _request(config, "GET", f"/api/v1/payments/{quote(payment_id, safe='')}", headers=headers)

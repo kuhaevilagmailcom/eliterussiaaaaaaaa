@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +14,7 @@ from aiogram.types import MenuButtonWebApp, WebAppInfo
 
 from config import Config
 from db import Database
-from emoji import EmojiBank
+from emoji import EmojiBank, EmojiFallbackMiddleware
 from handlers import build_router
 from miniapp import MiniAppServer
 from vpn import (
@@ -23,6 +24,22 @@ from vpn import (
     WebhookVpnProvider,
     XuiVpnProvider,
 )
+
+
+class SecretSafeFormatter(logging.Formatter):
+    def __init__(self, config):
+        super().__init__("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+        self.secrets = tuple(value for key, value in vars(config).items()
+                             if isinstance(value, str) and value and
+                             any(word in key for word in ("token", "secret", "api_key")))
+
+    def format(self, record):
+        text = super().format(record)
+        for value in self.secrets:
+            text = text.replace(value, "[REDACTED]")
+        text = re.sub(r"(?:https?|vless|vmess|trojan)://[^\s<>\"']+", "[URL REDACTED]", text)
+        text = re.sub(r"/(?:sub|client/[^/]+)/[A-Za-z0-9_%=-]+", "/[PRIVATE LINK]", text)
+        return re.sub(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b", "[BOT TOKEN]", text)
 
 
 def _sqlite_backup(source: Path, target: Path) -> None:
@@ -147,6 +164,8 @@ async def main() -> None:
     )
 
     config = Config.from_env()
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(SecretSafeFormatter(config))
     logging.getLogger(__name__).info(
         "MGN VPN build: h1cloud-v27-dual-federation | vpn_mode=%s",
         config.vpn_mode,
@@ -174,6 +193,7 @@ async def main() -> None:
         token=config.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    bot.session.middleware(EmojiFallbackMiddleware())
     emoji = EmojiBank(config.emoji_packs)
     provider = make_provider(config)
     miniapp = MiniAppServer(bot, config, db, provider)

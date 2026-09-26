@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from aiogram import F, Router
 import aiosqlite
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery,
@@ -226,6 +226,7 @@ def main_keyboard(
     *,
     custom_icons: bool = True,
     active: bool = False,
+    admin: bool = False,
 ) -> ReplyKeyboardMarkup:
     bank = emoji or _button_emoji_bank
 
@@ -243,19 +244,10 @@ def main_keyboard(
     purchase_label = "Продлить VPN" if active else "Купить VPN"
     return ReplyKeyboardMarkup(
         keyboard=[
-            [button("Подключить VPN", 2)],
-            [
-                button("Профиль", 0),
-                button("Информация", 5),
-            ],
-            [
-                button(purchase_label, 1),
-                button("Друзья", 8),
-            ],
-            [
-                button("Промокод", 7),
-                button("Поддержка", 6),
-            ],
+            [button("Подключить VPN", 2), button(purchase_label, 1)],
+            [button("Профиль", 0), button("Рефералы", 8)],
+            [button("Поддержка", 6)],
+            *([[button("Админ-панель", 10)]] if admin else []),
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -529,18 +521,11 @@ def profile_text(
         else:
             lines.append("└ Подключённых устройств пока нет.")
     else:
-        if not user.get("trial_used"):
-            lines += [
-                "└ Для нового аккаунта доступен <b>1 бесплатный день</b> после подписки на канал.",
-                "",
-                "Вы также можете сразу выбрать платный тариф.",
-            ]
-        else:
-            lines += [
-                "└ Бесплатный день уже использован.",
-                "",
-                "Выберите тариф, чтобы снова подключиться к VPN.",
-            ]
+        lines += [
+            "└ Подписка не активна.",
+            "",
+            "Выберите тариф или пригласите друзей.",
+        ]
 
     if not provider_ok and active:
         lines += [
@@ -615,6 +600,28 @@ def build_router(
     _button_emoji_bank = emoji
 
     router = Router()
+    callback_events: dict[int, list[float]] = {}
+
+    async def callback_guard(handler, event, data):
+        now = asyncio.get_running_loop().time()
+        if len(callback_events) > 4096:
+            for key in list(callback_events):
+                if not callback_events[key] or callback_events[key][-1] < now - 60:
+                    callback_events.pop(key, None)
+        uid = event.from_user.id
+        recent = [stamp for stamp in callback_events.get(uid, []) if stamp > now - 60]
+        callback_events[uid] = recent
+        if len(recent) >= 40:
+            await event.answer("Слишком много запросов. Подождите немного.")
+            return
+        recent.append(now)
+        try:
+            return await handler(event, data)
+        except TelegramForbiddenError:
+            logger.info("Telegram delivery unavailable for user %s", uid)
+            return
+
+    router.callback_query.outer_middleware(callback_guard)
     pending_gift_plans: dict[int, str] = {}
     pending_support_users: set[int] = set()
     pending_support_admins: dict[int, int] = {}
@@ -671,56 +678,6 @@ def build_router(
 
     def is_owner(user_id: int) -> bool:
         return user_id in config.admin_ids
-
-    async def is_trial_channel_member(
-        bot,
-        user_id: int,
-        *,
-        retries: int = 3,
-    ) -> bool:
-        retries = max(1, min(int(retries), 4))
-        for attempt in range(retries):
-            try:
-                member = await bot.get_chat_member(
-                    chat_id=config.trial_channel_username,
-                    user_id=user_id,
-                )
-                status = getattr(member.status, "value", str(member.status))
-                if status in {"member", "administrator", "creator"}:
-                    return True
-                if status == "restricted" and bool(getattr(member, "is_member", False)):
-                    return True
-            except Exception as exc:
-                logger.warning(
-                    "Trial channel membership check failed for user %s in %s: %s",
-                    user_id,
-                    config.trial_channel_username,
-                    exc,
-                )
-
-            # Telegram may need a short moment after the user joins a channel.
-            if attempt + 1 < retries:
-                await asyncio.sleep(0.6)
-
-        return False
-
-    def trial_channel_keyboard(*, subscribed: bool = False) -> Any:
-        kb = InlineKeyboardBuilder()
-        if not subscribed:
-            kb.row(
-                blue_inline_button(
-                    "📢 Подписаться на канал",
-                    url=config.trial_channel_url,
-                )
-            )
-        kb.row(
-            blue_inline_button(
-                "🎁 Забрать 1 день",
-                callback_data="trial:claim",
-            )
-        )
-        add_nav_buttons(kb, back_data="home")
-        return kb.as_markup()
 
     async def _send_screen_unlocked(
         message: Message,
@@ -1054,6 +1011,7 @@ def build_router(
         *,
         recover_on_edit_failure: bool = False,
         force_new: bool = False,
+        ensure_reply_keyboard: bool = False,
     ) -> None:
         user = await ensure_actor(actor)
         active = is_active(user)
@@ -1075,33 +1033,14 @@ def build_router(
                 f"├ До: <b>{format_until(user, config)}</b>",
                 f"└ Устройства: <b>до {int(user.get('max_devices') or 1)}</b>",
             ]
-        elif not user.get("trial_used"):
-            channel = html.escape(config.trial_channel_username)
-            channel_member = await is_trial_channel_member(
-                message.bot,
-                int(actor.id),
-                retries=1,
-            )
-            lines += [
-                "└ Бесплатный день: <b>доступен</b>",
-                "",
-                "🎁 <b>Бесплатный день VPN</b>",
-            ]
-            if channel_member:
-                lines += [
-                    "✅ Подписка на канал подтверждена.",
-                    "Откройте <b>«🔗 Подключить VPN»</b> и нажмите <b>«🎁 Забрать 1 день»</b>.",
-                ]
-            else:
-                lines += [
-                    f"Подпишитесь на канал <b>{channel}</b>.",
-                    "Затем откройте <b>«🔗 Подключить VPN»</b> и нажмите <b>«🎁 Забрать 1 день»</b>.",
-                ]
         else:
+            stats = await db.referral_stats(int(actor.id))
             lines += [
-                "└ Бесплатный день: <b>уже использован</b>",
+                "└ Выберите тариф или пригласите друзей.",
                 "",
-                "Выберите платную подписку кнопкой <b>«💳 Купить VPN»</b>.",
+                "<b>Нет подписки?</b>",
+                "Пригласите 3 друзей и получите до 3 дней VPN бесплатно.",
+                f"Приглашено: <b>{min(stats['invited'], 3)} / 3</b>",
             ]
 
         if active and not getattr(provider, "service_ready", True):
@@ -1115,6 +1054,12 @@ def build_router(
             recover_on_edit_failure=recover_on_edit_failure,
             force_new=force_new,
         )
+        if ensure_reply_keyboard:
+            role = await get_admin_role(int(actor.id))
+            await message.answer(
+                "Выберите раздел:",
+                reply_markup=main_keyboard(emoji, active=active, admin=bool(role)),
+            )
 
     async def show_profile(message: Message, actor) -> None:
         user = await ensure_actor(actor)
@@ -1151,32 +1096,17 @@ def build_router(
             reply_markup=kb.as_markup(),
         )
 
-    async def activate_paid_plan(telegram_id: int, code: str) -> dict[str, Any]:
-        plan = PLANS[code]
-        user = await db.extend_subscription(
-            telegram_id=telegram_id,
-            days=plan["days"],
-            plan_name=plan["name"],
-            max_devices=plan["devices"],
-        )
-        try:
-            await provider.provision(user)
-        except Exception as exc:
-            logger.warning(
-                "VPN provisioning deferred for user %s: %s",
-                telegram_id,
-                exc,
-            )
-        return user
-
-
     async def apply_paid_purchase(
         buyer_telegram_id: int,
         target_telegram_id: int,
         code: str,
         payment_event_key: str,
     ) -> tuple[dict[str, Any], int]:
-        user = await activate_paid_plan(target_telegram_id, code)
+        user = await db.get_user(target_telegram_id)
+        try:
+            await asyncio.wait_for(provider.provision(user), 7.0)
+        except Exception as exc:
+            logger.warning("Paid VPN provisioning deferred for %s: %s", target_telegram_id, type(exc).__name__)
         return user, 0
 
     @router.message(Command("setbanner"))
@@ -1230,6 +1160,7 @@ def build_router(
             message.from_user,
             recover_on_edit_failure=True,
             force_new=True,
+            ensure_reply_keyboard=True,
         )
 
     @router.message(F.text.in_({"🏠 Главное", "Главное", "🏠 Главное меню", "Главное меню"}))
@@ -1256,41 +1187,16 @@ def build_router(
             return
         user = await ensure_actor(callback.from_user)
         if not is_active(user):
-            if not user.get("trial_used"):
-                subscribed = await is_trial_channel_member(
-                    callback.message.bot,
-                    callback.from_user.id,
-                    retries=2,
-                )
-                text = (
-                    "🎁 <b>Бесплатный день VPN</b>\n\n"
-                    + (
-                        "✅ Подписка на канал подтверждена.\n"
-                        "Нажмите <b>«🎁 Забрать 1 день»</b>."
-                        if subscribed
-                        else (
-                            f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
-                            "вернитесь в бот и нажмите <b>«🎁 Забрать 1 день»</b>."
-                        )
-                    )
-                )
-                await send_screen(
-                    callback.message,
-                    callback.from_user,
-                    text,
-                    reply_markup=trial_channel_keyboard(subscribed=subscribed),
-                )
-            else:
-                kb = InlineKeyboardBuilder()
-                kb.row(blue_inline_button("💳 Купить подписку", callback_data="plans"))
-                add_nav_buttons(kb, back_data="home")
-                await send_screen(
-                    callback.message,
-                    callback.from_user,
-                    "🔗 <b>Подключение VPN</b>\n\n"
-                    "Бесплатный день уже использован. Выберите подписку.",
-                    reply_markup=kb.as_markup(),
-                )
+            kb = InlineKeyboardBuilder()
+            kb.row(blue_inline_button("Купить VPN", callback_data="plans"))
+            kb.row(blue_inline_button("Пригласить друзей", callback_data="menu:friends"))
+            add_nav_buttons(kb, back_data="home")
+            await send_screen(
+                callback.message,
+                callback.from_user,
+                "🔗 <b>Подключение VPN</b>\n\nВыберите тариф или пригласите друзей.",
+                reply_markup=kb.as_markup(),
+            )
             return
 
         state, ok = await load_state(user, provider, config)
@@ -1368,6 +1274,7 @@ def build_router(
                 icon_index=6,
             )
         )
+        kb.row(blue_inline_button("Мои обращения", callback_data="support:list:0"))
         add_nav_buttons(kb, back_data="home")
         return kb.as_markup()
 
@@ -1380,7 +1287,55 @@ def build_router(
                 icon_index=6,
             )
         )
+        kb.row(blue_inline_button("Открыть обращение", callback_data=f"support:view:{int(ticket_id)}"))
+        kb.row(blue_inline_button("Закрыть", callback_data=f"support:close:{int(ticket_id)}"))
         return kb.as_markup()
+
+    def support_user_ticket_keyboard(ticket: dict[str, Any]) -> Any:
+        ticket_id = int(ticket["id"])
+        kb = InlineKeyboardBuilder()
+        if ticket.get("status") != "closed":
+            kb.row(blue_inline_button("Написать сообщение", callback_data=f"support:write:{ticket_id}"))
+            kb.row(blue_inline_button("Закрыть обращение", callback_data=f"support:close:{ticket_id}"))
+        kb.row(blue_inline_button("Назад", callback_data="support:list:0", premium_icon=False))
+        return kb.as_markup()
+
+    def support_admin_ticket_keyboard(ticket: dict[str, Any]) -> Any:
+        ticket_id = int(ticket["id"])
+        kb = InlineKeyboardBuilder()
+        if ticket.get("status") == "closed":
+            kb.row(blue_inline_button("Переоткрыть", callback_data=f"support:reopen:{ticket_id}"))
+        else:
+            kb.row(blue_inline_button("Ответить", callback_data=f"support:reply:{ticket_id}"))
+            kb.row(blue_inline_button("Закрыть", callback_data=f"support:close:{ticket_id}"))
+        kb.row(blue_inline_button("Удалить", callback_data=f"support:deleteconfirm:{ticket_id}"))
+        kb.row(blue_inline_button("Назад", callback_data="admin:support", premium_icon=False))
+        return kb.as_markup()
+
+    async def show_support_ticket(message: Message, actor, ticket_id: int, *, admin: bool = False) -> None:
+        ticket = await db.get_support_ticket(
+            ticket_id, owner_id=int(actor.id), is_admin=admin
+        )
+        if not ticket:
+            await send_screen(message, actor, "Обращение не найдено.", reply_markup=support_keyboard())
+            return
+        messages = await db.list_support_messages(
+            ticket_id, owner_id=int(actor.id), is_admin=admin
+        )
+        status = "Закрыто" if ticket.get("status") == "closed" else "Открыто"
+        created = format_joined(ticket.get("created_at"))
+        lines = [f"<b>Обращение #{ticket_id}</b>", f"Статус: <b>{status}</b>", f"Создано: <b>{created}</b>", ""]
+        if admin:
+            username = f"@{ticket['username']}" if ticket.get("username") else "без username"
+            lines += [f"Пользователь: <b>{html.escape(username)}</b>", f"Telegram ID: <code>{ticket['telegram_id']}</code>", ""]
+        for item in messages[-12:]:
+            sender = "Поддержка" if item["sender_type"] == "admin" else "Пользователь"
+            content = item.get("text") or item.get("caption") or ("Фото" if item["message_type"] == "photo" else "Видео")
+            lines.append(f"<b>{sender}:</b> {html.escape(str(content)[:500])}")
+        await send_screen(
+            message, actor, "\n".join(lines),
+            reply_markup=(support_admin_ticket_keyboard(ticket) if admin else support_user_ticket_keyboard(ticket)),
+        )
 
     def support_ticket_admin_text(ticket: dict[str, Any]) -> str:
         username = (
@@ -1445,7 +1400,6 @@ def build_router(
             return
         user = await ensure_actor(callback.from_user)
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("Канал MGN VPN", url=config.trial_channel_url, icon_index=5))
         kb.row(blue_inline_button("Пользовательское соглашение", callback_data="menu:terms", icon_index=11))
         add_nav_buttons(kb, back_data="home")
         e = emoji.icon(5, pack=PACK_NEWS)
@@ -1457,15 +1411,22 @@ def build_router(
             "Управление подпиской и подключёнными устройствами находится в <b>Профиле</b>.",
         ]
         if not is_active(user):
-            if not user.get("trial_used"):
-                lines += ["", "Новому пользователю доступен <b>1 бесплатный день</b> после подписки на канал."]
-            else:
-                lines += ["", "Для подключения выберите платный тариф."]
+            lines += ["", "Для подключения выберите тариф или пригласите друзей."]
         await send_screen(
             callback.message,
             callback.from_user,
             "\n".join(lines),
             reply_markup=kb.as_markup(),
+        )
+
+    async def refresh_main_keyboard(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        role = await get_admin_role(int(actor.id))
+        await message.answer(
+            "Нижнее меню обновлено.",
+            reply_markup=main_keyboard(
+                emoji, active=is_active(user), admin=bool(role)
+            ),
         )
 
     @router.callback_query(F.data == "menu:support")
@@ -1487,13 +1448,13 @@ def build_router(
         await callback.answer()
         if not callback.message:
             return
-        pending_support_users.add(int(callback.from_user.id))
+        await db.set_support_session(int(callback.from_user.id), "new")
         await send_screen(
             callback.message,
             callback.from_user,
             "<b>Новое обращение</b>\n\n"
-            "Отправьте следующим сообщением описание проблемы. "
-            "До 3000 символов. Не отправляйте пароли, API-токены и другие секреты.",
+            "Опишите проблему одним или несколькими сообщениями. Можно отправить текст, фото или видео. "
+            "Текст — до 3000 символов. Не отправляйте пароли и другие секреты.",
             reply_markup=section_nav_keyboard(back_data="menu:support"),
         )
 
@@ -1506,17 +1467,132 @@ def build_router(
         if not raw.isdigit():
             await callback.answer("Некорректное обращение", show_alert=True)
             return
-        ticket = await db.get_support_ticket(int(raw))
-        if not ticket:
+        ticket = await db.get_support_ticket(int(raw), is_admin=True)
+        if not ticket or ticket.get("status") == "closed":
             await callback.answer("Обращение не найдено", show_alert=True)
             return
-        pending_support_admins[int(callback.from_user.id)] = int(raw)
+        await db.set_support_session(int(callback.from_user.id), "admin_reply", int(raw))
         await callback.answer()
         if callback.message:
             await callback.message.answer(
                 f"Ответ на обращение <b>#{int(raw)}</b>. "
-                "Отправьте текст следующим сообщением. До 3000 символов."
+                "Отправьте текст, фото или видео следующим сообщением."
             )
+
+    @router.callback_query(F.data.startswith("support:list:"))
+    async def support_list(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        raw = callback.data.rsplit(":", 1)[-1]
+        page = int(raw) if raw.isdigit() else 0
+        tickets, total = await db.list_user_support_tickets(callback.from_user.id, page, 8)
+        pages = max(1, (total + 7) // 8)
+        kb = InlineKeyboardBuilder()
+        lines = ["<b>Мои обращения</b>", ""]
+        for ticket in tickets:
+            status = "Закрыто" if ticket.get("status") == "closed" else "Открыто"
+            preview = html.escape(str(ticket.get("message") or "Обращение")[:45])
+            lines.append(f"#{ticket['id']} · {status}\n{preview}\n{format_joined(ticket.get('updated_at') or ticket.get('created_at'))}\n")
+            kb.row(blue_inline_button(f"#{ticket['id']} · {status}", callback_data=f"support:view:{ticket['id']}"))
+        nav = []
+        if page > 0:
+            nav.append(blue_inline_button("←", callback_data=f"support:list:{page - 1}"))
+        if page + 1 < pages:
+            nav.append(blue_inline_button("→", callback_data=f"support:list:{page + 1}"))
+        if nav:
+            kb.row(*nav)
+        kb.row(blue_inline_button("Новое обращение", callback_data="support:new"))
+        kb.row(blue_inline_button("Назад", callback_data="menu:support", premium_icon=False))
+        await callback.answer()
+        await send_screen(callback.message, callback.from_user, "\n".join(lines) if tickets else "<b>Мои обращения</b>\n\nОбращений пока нет.", reply_markup=kb.as_markup())
+
+    @router.callback_query(F.data.startswith("support:view:"))
+    async def support_view(callback: CallbackQuery) -> None:
+        raw = callback.data.rsplit(":", 1)[-1]
+        if not raw.isdigit() or not callback.message:
+            await callback.answer("Некорректное обращение", show_alert=True)
+            return
+        admin = await has_admin_access(callback.from_user.id)
+        ticket = await db.get_support_ticket(int(raw), owner_id=callback.from_user.id, is_admin=admin)
+        if not ticket:
+            await callback.answer("Обращение не найдено", show_alert=True)
+            return
+        await callback.answer()
+        await show_support_ticket(callback.message, callback.from_user, int(raw), admin=admin)
+
+    @router.callback_query(F.data.startswith("support:write:"))
+    async def support_write(callback: CallbackQuery) -> None:
+        raw = callback.data.rsplit(":", 1)[-1]
+        if not raw.isdigit():
+            await callback.answer("Некорректное обращение", show_alert=True)
+            return
+        ticket = await db.get_support_ticket(int(raw), owner_id=callback.from_user.id)
+        if not ticket or ticket.get("status") == "closed":
+            await callback.answer("Обращение закрыто", show_alert=True)
+            return
+        await db.set_support_session(callback.from_user.id, "user_reply", int(raw))
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer(f"Напишите сообщение в обращение #{raw}. Можно отправить текст, фото или видео.")
+
+    @router.callback_query(F.data.startswith("support:close:"))
+    async def support_close(callback: CallbackQuery) -> None:
+        raw = callback.data.rsplit(":", 1)[-1]
+        if not raw.isdigit():
+            await callback.answer("Некорректное обращение", show_alert=True)
+            return
+        admin = await has_admin_access(callback.from_user.id)
+        ticket = await db.set_support_status(int(raw), "closed", callback.from_user.id, is_admin=admin)
+        if not ticket:
+            await callback.answer("Обращение не найдено", show_alert=True)
+            return
+        await db.clear_support_session(callback.from_user.id)
+        await callback.answer("Обращение закрыто")
+        if callback.message:
+            await show_support_ticket(callback.message, callback.from_user, int(raw), admin=admin)
+
+    @router.callback_query(F.data.startswith("support:reopen:"))
+    async def support_reopen(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        raw = callback.data.rsplit(":", 1)[-1]
+        if not raw.isdigit():
+            await callback.answer("Некорректное обращение", show_alert=True)
+            return
+        ticket = await db.set_support_status(int(raw), "open", callback.from_user.id, is_admin=True)
+        await callback.answer("Обращение переоткрыто" if ticket else "Обращение не найдено")
+        if ticket and callback.message:
+            await show_support_ticket(callback.message, callback.from_user, int(raw), admin=True)
+
+    @router.callback_query(F.data.startswith("support:deleteconfirm:"))
+    async def support_delete_confirm(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        raw = callback.data.rsplit(":", 1)[-1]
+        if not raw.isdigit() or not callback.message:
+            await callback.answer("Некорректное обращение", show_alert=True)
+            return
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("Удалить", callback_data=f"support:delete:{raw}"))
+        kb.row(blue_inline_button("Отмена", callback_data=f"support:view:{raw}", premium_icon=False))
+        await callback.answer()
+        await send_screen(callback.message, callback.from_user, f"<b>Удалить обращение #{raw}?</b>\n\nЭто действие нельзя отменить.", reply_markup=kb.as_markup())
+
+    @router.callback_query(F.data.startswith("support:delete:"))
+    async def support_delete(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        raw = callback.data.rsplit(":", 1)[-1]
+        if not raw.isdigit():
+            await callback.answer("Некорректное обращение", show_alert=True)
+            return
+        deleted = await db.soft_delete_support_ticket(int(raw), callback.from_user.id)
+        await callback.answer("Обращение удалено" if deleted else "Обращение не найдено")
+        if deleted and callback.message:
+            await show_admin_support(callback.message, callback.from_user)
 
     @router.callback_query(F.data == "menu:promo")
     async def menu_promo(callback: CallbackQuery) -> None:
@@ -1555,14 +1631,16 @@ def build_router(
             + "&text=" + quote("Подключай MGN VPN", safe="")
         )
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("👥 Поделиться", url=share_url))
+        kb.row(blue_inline_button("Пригласить друга", url=share_url))
+        kb.row(copy_inline_button("Скопировать ссылку", link))
         add_nav_buttons(kb, back_data="home")
         e = emoji.icon(8, pack=PACK_UI)
         await send_screen(
             callback.message,
             callback.from_user,
             f"{e} <b>Пригласить друзей</b>\n\n"
-            "Пригласите до 3 друзей и получите до 3 бесплатных дней VPN.\n\n"
+            "За каждого нового друга получаете +1 день MGN VPN.\n\n"
+            "1 друг — 1 день\n2 друга — 2 дня\n3 друга — 3 дня\n\n"
             f"Приглашено: <b>{min(stats['invited'], 3)} / 3</b>\n"
             f"Получено: <b>+{stats['rewarded']} дней</b>\n"
             + (
@@ -1843,10 +1921,7 @@ def build_router(
     async def grant_paid_device_slot(
         telegram_id: int,
     ) -> dict[str, Any] | None:
-        updated = await db.grant_extra_device(
-            telegram_id=telegram_id,
-            max_total_devices=MAX_DEVICES,
-        )
+        updated = await db.get_user(telegram_id)
         if updated:
             await sync_device_limit(updated)
         return updated
@@ -2304,21 +2379,15 @@ def build_router(
                 logger.error("Rejected Stars payment intent %s", parts[1])
                 return
             charge_id = payment.telegram_payment_charge_id
-            fresh_charge = await db.record_star_payment(
+            fresh_charge = await db.settle_star_payment(
                 telegram_payment_charge_id=charge_id,
                 buyer_telegram_id=message.from_user.id,
                 target_telegram_id=int(intent["target_telegram_id"]),
                 plan_code=str(intent["product_code"]),
                 stars=int(payment.total_amount),
+                intent_id=parts[1],
             )
-            fresh_intent = await db.mark_payment_intent_paid(parts[1])
-            if fresh_charge and fresh_intent:
-                if intent.get("promo_id"):
-                    await db.consume_promo(
-                        promo_id=int(intent["promo_id"]),
-                        telegram_id=message.from_user.id,
-                        payment_id=charge_id,
-                    )
+            if fresh_charge:
                 await apply_paid_purchase(
                     message.from_user.id,
                     int(intent["target_telegram_id"]),
@@ -2326,6 +2395,7 @@ def build_router(
                     f"stars:{charge_id}",
                 )
             await show_home(message, message.from_user, force_new=True)
+            await refresh_main_keyboard(message, message.from_user)
             return
         if len(parts) != 5 or parts[0] != "xtr":
             return
@@ -2357,7 +2427,7 @@ def build_router(
                 return
 
             charge_id = payment.telegram_payment_charge_id
-            fresh = await db.record_star_payment(
+            fresh = await db.settle_star_payment(
                 telegram_payment_charge_id=charge_id,
                 buyer_telegram_id=buyer_id,
                 target_telegram_id=buyer_id,
@@ -2395,7 +2465,7 @@ def build_router(
             return
 
         charge_id = payment.telegram_payment_charge_id
-        fresh = await db.record_star_payment(
+        fresh = await db.settle_star_payment(
             telegram_payment_charge_id=charge_id,
             buyer_telegram_id=buyer_id,
             target_telegram_id=target_id,
@@ -2414,6 +2484,7 @@ def build_router(
 
         if target_id == buyer_id:
             await show_profile(message, message.from_user)
+            await refresh_main_keyboard(message, message.from_user)
             return
 
         try:
@@ -2471,6 +2542,7 @@ def build_router(
             remote_payment == payment_id
             and remote_order == str(local["order_id"])
             and remote_currency == "RUB"
+            and remote_amount.is_finite()
             and remote_amount == Decimal(int(local["amount_rub"]))
         )
         if not matches:
@@ -2481,7 +2553,7 @@ def build_router(
             return
 
         if status == "paid":
-            fresh = await db.mark_sbp_paid(payment_id)
+            fresh = await db.settle_sbp_payment(payment_id)
             code = str(local["plan_code"])
             target_id = int(
                 local.get("target_telegram_id")
@@ -2520,6 +2592,7 @@ def build_router(
 
             if target_id == callback.from_user.id:
                 await show_profile(callback.message, callback.from_user)
+                await refresh_main_keyboard(callback.message, callback.from_user)
                 return
 
             try:
@@ -2559,46 +2632,16 @@ def build_router(
     async def connect(message: Message) -> None:
         user = await ensure_actor(message.from_user)
         if not is_active(user):
-            if not user.get("trial_used"):
-                subscribed = await is_trial_channel_member(
-                    message.bot,
-                    message.from_user.id,
-                    retries=2,
-                )
-                text = (
-                    "🎁 <b>Бесплатный день VPN</b>\n\n"
-                    + (
-                        "✅ Подписка на канал подтверждена.\n"
-                        "Нажмите <b>«🎁 Забрать 1 день»</b>."
-                        if subscribed
-                        else (
-                            f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
-                            "вернитесь в бот и нажмите <b>«🎁 Забрать 1 день»</b>."
-                        )
-                    )
-                )
-                await send_screen(
-                    message,
-                    message.from_user,
-                    text,
-                    reply_markup=trial_channel_keyboard(subscribed=subscribed),
-                )
-            else:
-                kb = InlineKeyboardBuilder()
-                kb.row(
-                    blue_inline_button(
-                        "💳 Купить подписку",
-                        callback_data="plans",
-                    )
-                )
-                add_nav_buttons(kb, back_data="home")
-                await send_screen(
-                    message,
-                    message.from_user,
-                    "🔗 <b>Подключение VPN</b>\n\n"
-                    "Бесплатный день уже использован. Выберите подписку.",
-                    reply_markup=kb.as_markup(),
-                )
+            kb = InlineKeyboardBuilder()
+            kb.row(blue_inline_button("Купить VPN", callback_data="plans"))
+            kb.row(blue_inline_button("Пригласить друзей", callback_data="menu:friends"))
+            add_nav_buttons(kb, back_data="home")
+            await send_screen(
+                message,
+                message.from_user,
+                "🔗 <b>Подключение VPN</b>\n\nВыберите тариф или пригласите друзей.",
+                reply_markup=kb.as_markup(),
+            )
             return
 
         state, ok = await load_state(user, provider, config)
@@ -2642,63 +2685,6 @@ def build_router(
             reply_markup=connection_keyboard(subscription_url),
         )
 
-    @router.callback_query(F.data.in_({"trial", "trialcheck", "trial:claim"}))
-    async def trial(callback: CallbackQuery) -> None:
-        if not callback.message:
-            return
-
-        user = await ensure_actor(callback.from_user)
-        if user.get("trial_used"):
-            await callback.answer(
-                "Бесплатный день уже использован.",
-                show_alert=True,
-            )
-            return
-        subscribed = await is_trial_channel_member(
-            callback.message.bot,
-            callback.from_user.id,
-        )
-        if not subscribed:
-            await callback.answer(
-                "Подписка пока не найдена. Если только что подписались — нажмите ещё раз через секунду.",
-                show_alert=True,
-            )
-            await send_screen(
-                callback.message,
-                callback.from_user,
-                "🎁 <b>Бесплатный день VPN</b>\n\n"
-                f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
-                "вернитесь сюда и нажмите <b>«🎁 Забрать 1 день»</b>.",
-                reply_markup=trial_channel_keyboard(subscribed=False),
-            )
-            return
-
-        activated = await db.activate_trial(
-            callback.from_user.id,
-            config.trial_minutes,
-            config.trial_max_devices,
-        )
-        if not activated:
-            await callback.answer(
-                "Бесплатный день уже использован.",
-                show_alert=True,
-            )
-            return
-
-        user = await db.get_user(callback.from_user.id)
-
-        try:
-            await provider.provision(user)
-        except Exception as exc:
-            logger.warning(
-                "Trial VPN provisioning deferred for user %s: %s",
-                callback.from_user.id,
-                exc,
-            )
-
-        await callback.answer("Бесплатный день активирован")
-        await show_home(callback.message, callback.from_user)
-
     @router.message(F.text.in_({"📱 Устройства", "Устройства"}))
     async def devices(message: Message) -> None:
         await show_devices_panel(
@@ -2707,7 +2693,7 @@ def build_router(
             back_data="home",
         )
 
-    @router.message(F.text.in_({"👥 Друзья", "👥 Пригласить друга", "Пригласить друга", "Друзья"}))
+    @router.message(F.text.in_({"👥 Друзья", "👥 Пригласить друга", "Пригласить друга", "Друзья", "Рефералы"}))
     async def invite(message: Message) -> None:
         await ensure_actor(message.from_user)
         bot_info = await message.bot.get_me()
@@ -2721,7 +2707,8 @@ def build_router(
         )
 
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("👥 Поделиться", url=share_url))
+        kb.row(blue_inline_button("Пригласить друга", url=share_url))
+        kb.row(copy_inline_button("Скопировать ссылку", link))
         add_nav_buttons(kb, back_data="home")
 
         e = emoji.icon(8, pack=PACK_UI)
@@ -2729,7 +2716,8 @@ def build_router(
             message,
             message.from_user,
             f"{e} <b>Пригласить друзей</b>\n\n"
-            "За каждого нового друга, который подпишется на канал и активирует бесплатный день, вы получите +1 день VPN.\n\n"
+            "За каждого нового друга получаете +1 день MGN VPN.\n\n"
+            "1 друг — 1 день\n2 друга — 2 дня\n3 друга — 3 дня\n\n"
             f"Приглашено: <b>{min(stats['invited'], 3)} / 3</b>\n"
             f"Получено: <b>+{stats['rewarded']} дней</b>\n\n"
             f"Ваша ссылка:\n<code>{html.escape(link)}</code>",
@@ -2740,7 +2728,6 @@ def build_router(
     async def information_screen(message: Message) -> None:
         user = await ensure_actor(message.from_user)
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("Канал MGN VPN", url=config.trial_channel_url, icon_index=5))
         kb.row(blue_inline_button("Пользовательское соглашение", callback_data="menu:terms", icon_index=11))
         add_nav_buttons(kb, back_data="home")
 
@@ -2752,10 +2739,7 @@ def build_router(
             f"Лимит — до <b>{MAX_DEVICES}</b> устройств; список подключений находится в <b>Профиле</b>.",
         ]
         if not is_active(user):
-            if not user.get("trial_used"):
-                lines += ["", "Новому пользователю доступен <b>1 бесплатный день</b> после подписки на канал."]
-            else:
-                lines += ["", "Чтобы подключиться снова, выберите тариф."]
+            lines += ["", "Чтобы подключиться, выберите тариф или пригласите друзей."]
         await send_screen(
             message,
             message.from_user,
@@ -2871,14 +2855,27 @@ def build_router(
             reply_markup=admin_main_keyboard(role),
         )
 
-    async def show_admin_support(message: Message, actor) -> None:
+    async def show_admin_support(message: Message, actor, status: str = "all", page: int = 0) -> None:
         role = await get_admin_role(actor.id)
         if not role:
             return
-        tickets = await db.list_support_tickets(limit=20)
+        status = status if status in {"all", "open", "answered", "closed"} else "all"
+        tickets, total = await db.list_support_tickets(
+            page=page, page_size=10, status=None if status == "all" else status
+        )
+        pages = max(1, (total + 9) // 10)
+        page = min(max(0, page), pages - 1)
+        if not tickets and total:
+            tickets, total = await db.list_support_tickets(
+                page=page, page_size=10, status=None if status == "all" else status
+            )
+        status_label = {
+            "all": "все", "open": "открытые", "answered": "с ответом", "closed": "закрытые"
+        }[status]
         kb = InlineKeyboardBuilder()
         lines = [
             "<b>Обращения в поддержку</b>",
+            f"Фильтр: <b>{status_label}</b> · страница {page + 1}/{pages}",
             "",
         ]
         if not tickets:
@@ -2897,22 +2894,36 @@ def build_router(
                     if ticket.get("username")
                     else html.escape(str(ticket.get("first_name") or "без username"))
                 )
-                status = "открыто" if ticket.get("status") == "open" else "отвечено"
+                ticket_status = {"open": "открыто", "answered": "с ответом", "closed": "закрыто"}.get(str(ticket.get("status")), "открыто")
                 preview = html.escape(str(ticket.get("message") or "")[:120])
                 lines += [
-                    f"<b>#{ticket_id}</b> · {status} · {created_text}",
+                    f"<b>#{ticket_id}</b> · {ticket_status} · {created_text}",
                     f"{username} · <code>{int(ticket['telegram_id'])}</code>",
                     preview,
                     "",
                 ]
                 kb.row(
                     blue_inline_button(
-                        f"Ответить #{ticket_id}",
-                        callback_data=f"support:reply:{ticket_id}",
+                        f"Открыть #{ticket_id}",
+                        callback_data=f"support:view:{ticket_id}",
                         icon_index=6,
                     )
                 )
-        kb.row(blue_inline_button("Обновить", callback_data="admin:support"))
+        kb.row(
+            blue_inline_button("Все", callback_data="admin:support:all:0"),
+            blue_inline_button("Открытые", callback_data="admin:support:open:0"),
+        )
+        kb.row(
+            blue_inline_button("С ответом", callback_data="admin:support:answered:0"),
+            blue_inline_button("Закрытые", callback_data="admin:support:closed:0"),
+        )
+        nav = []
+        if page > 0:
+            nav.append(blue_inline_button("←", callback_data=f"admin:support:{status}:{page - 1}"))
+        if page + 1 < pages:
+            nav.append(blue_inline_button("→", callback_data=f"admin:support:{status}:{page + 1}"))
+        if nav:
+            kb.row(*nav)
         kb.row(blue_inline_button("Админка", callback_data="admin:home"))
         await send_screen(
             message,
@@ -2972,16 +2983,20 @@ def build_router(
             reply_markup=kb.as_markup(),
         )
 
-    async def show_admin_users(message: Message, actor) -> None:
+    async def show_admin_users(message: Message, actor, page: int = 0) -> None:
         role = await get_admin_role(actor.id)
         if not role:
             return
-        users = await db.recent_users(20)
+        users, total = await db.list_users_page(page, 12)
+        pages = max(1, (total + 11) // 12)
+        page = min(max(0, page), pages - 1)
+        if page and not users:
+            users, total = await db.list_users_page(page, 12)
         kb = InlineKeyboardBuilder()
         lines = [
             "👥 <b>Пользователи</b>",
             "",
-            "Последние 20 регистраций:",
+            f"Страница {page + 1} из {pages} · всего {total}",
             "",
         ]
 
@@ -2999,11 +3014,12 @@ def build_router(
                     from_iso(item.get("subscription_until"))
                     and from_iso(item.get("subscription_until")) > utcnow()
                 )
-                mark = "✅" if active else "▫️"
+                status = (
+                    f"Активна до {format_until(item, config)}" if active else "Неактивна"
+                )
                 lines.append(
-                    f"{mark} {html.escape(str(username))} · "
-                    f"<code>{uid}</code>\n"
-                    f"   └ пришёл {format_joined(item.get('created_at'))}"
+                    f"<b>{html.escape(str(item.get('first_name') or 'Без имени'))}</b>\n"
+                    f"{html.escape(str(username))}\n<code>{uid}</code>\n{status}"
                 )
                 kb.row(
                     blue_inline_button(
@@ -3012,7 +3028,15 @@ def build_router(
                     )
                 )
 
-        kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:users"))
+        nav = []
+        if page > 0:
+            nav.append(blue_inline_button("←", callback_data=f"admin:users:{page - 1}"))
+        if page + 1 < pages:
+            nav.append(blue_inline_button("→", callback_data=f"admin:users:{page + 1}"))
+        if nav:
+            kb.row(*nav)
+        kb.row(blue_inline_button("Поиск", callback_data="admin:usersearch"))
+        kb.row(blue_inline_button("Обновить", callback_data=f"admin:users:{page}"))
         kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
         await send_screen(
             message,
@@ -3045,28 +3069,31 @@ def build_router(
         )
         active = is_active(user)
         referrals = await db.referral_count(telegram_id)
+        last_payment = await db.get_last_payment(telegram_id)
+        until = from_iso(user.get("subscription_until"))
+        remaining_days = max(0, int(((until - utcnow()).total_seconds() + 86399) // 86400)) if until else 0
+        device_count = 0
+        if active and getattr(provider, "service_ready", True):
+            try:
+                state = await asyncio.wait_for(provider.get_state(user), 5.0)
+                device_count = len(state.devices)
+            except Exception:
+                pass
 
         kb = InlineKeyboardBuilder()
 
         if actor_role in {"owner", "full"}:
             kb.row(
-                blue_inline_button("+7 дней", callback_data=f"admin:grant:{telegram_id}:7"),
-                blue_inline_button("+30 дней", callback_data=f"admin:grant:{telegram_id}:30"),
+                blue_inline_button("Выдать подписку", callback_data=f"admin:grantmenu:{telegram_id}"),
             )
             kb.row(
-                blue_inline_button("+90 дней", callback_data=f"admin:grant:{telegram_id}:90"),
-                blue_inline_button("+365 дней", callback_data=f"admin:grant:{telegram_id}:365"),
+                blue_inline_button("Добавить дни", callback_data=f"admin:daysmenu:{telegram_id}:add"),
+                blue_inline_button("Списать дни", callback_data=f"admin:daysmenu:{telegram_id}:sub"),
             )
             kb.row(
-                blue_inline_button(
-                    "📱 +1 слот",
-                    callback_data=f"admin:device:{telegram_id}:add",
-                ),
-                blue_inline_button(
-                    "📱 −1 слот",
-                    callback_data=f"admin:device:{telegram_id}:remove",
-                ),
+                blue_inline_button("Устройства", callback_data=f"admin:devicemenu:{telegram_id}"),
             )
+            kb.row(blue_inline_button("Отключить подписку", callback_data=f"admin:revokeconfirm:{telegram_id}"))
 
         if actor_role == "owner" and telegram_id not in config.admin_ids:
             kb.row(
@@ -3091,18 +3118,24 @@ def build_router(
         kb.row(blue_inline_button("🏠 Админка", callback_data="admin:home"))
 
         lines = [
-            f"👤 <b>{username}</b>",
-            f"<code>{telegram_id}</code>",
+            f"👤 <b>{html.escape(user.get('first_name') or 'Без имени')}</b>",
+            f"Username — <b>{username}</b>",
+            f"Telegram ID — <code>{telegram_id}</code>",
             "",
             f"Пришёл — <b>{format_joined(user.get('created_at'))}</b>",
             f"Админ-доступ — <b>{admin_role_label(target_role)}</b>",
             f"Подписка — <b>{'активна' if active else 'не активна'}</b>",
             f"Тариф — <b>{html.escape(user.get('plan_name') or '—')}</b>",
             f"До — <b>{format_until(user, config) if active else '—'}</b>",
-            f"Устройств — <b>{int(user.get('max_devices') or BASE_DEVICES)}/{MAX_DEVICES}</b>",
-            f"Доп. слотов — <b>{max(0, int(user.get('bonus_devices') or 0))}</b>",
-            f"Бесплатный день — <b>{'использован' if user.get('trial_used') else 'доступен'}</b>",
+            f"Осталось — <b>{remaining_days} дней</b>",
+            f"Устройства — <b>{device_count} / {int(user.get('max_devices') or BASE_DEVICES)}</b>",
+            f"Лимит устройств — <b>{int(user.get('max_devices') or BASE_DEVICES)}</b>",
+            f"Trial — <b>{'Использован' if user.get('trial_used') else 'Не использован'}</b>",
             f"Приглашено — <b>{referrals}</b>",
+            "Последний платёж — <b>нет</b>" if not last_payment else (
+                f"Последний платёж — <b>{int(last_payment['amount'])} {last_payment['currency']}</b>\n"
+                f"Способ — <b>{html.escape(last_payment['method'])}</b>"
+            ),
         ]
         await send_screen(
             message,
@@ -3202,13 +3235,11 @@ def build_router(
 
         text = (
             "⚙️ <b>Система</b>\n\n"
-            f"{vpn_ready} VPN режим — <b>{html.escape(config.vpn_mode)}</b>\n"
+            f"{vpn_ready} VPN-система — <b>{'доступна' if getattr(provider, 'service_ready', True) else 'недоступна'}</b>\n"
             f"🔗 Реальные подключения — <b>{'готовы' if getattr(provider, 'service_ready', True) else 'ожидают серверы'}</b>\n"
             f"🌐 Сервер — <b>{html.escape(config.vpn_server_name)}</b>\n"
             f"💳 RollyPay — <b>{rolly}</b>\n"
-            f"🧾 Режим оплаты — <b>{rolly_mode}</b>\n"
-            "🎁 Бесплатный доступ — <b>1 день, один раз</b>\n"
-            f"📱 Лимит бесплатного доступа — <b>{config.trial_max_devices} устройство</b>\n\n"
+            f"🧾 Режим оплаты — <b>{rolly_mode}</b>\n\n"
             "<i>Секретные ключи здесь не отображаются.</i>"
         )
         await send_screen(message, actor, text, reply_markup=kb.as_markup())
@@ -3285,6 +3316,12 @@ def build_router(
             return
         await show_admin(message, message.from_user)
 
+    @router.message(F.text.in_({"Админ-панель", "🛡 Админ-панель"}))
+    async def admin_panel_button(message: Message) -> None:
+        if not await has_admin_access(message.from_user.id):
+            return
+        await show_admin(message, message.from_user)
+
     @router.callback_query(F.data == "admin:home")
     async def admin_home(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
@@ -3303,23 +3340,38 @@ def build_router(
         if callback.message:
             await show_admin_stats(callback.message, callback.from_user)
 
-    @router.callback_query(F.data == "admin:users")
+    @router.callback_query(F.data.startswith("admin:users"))
     async def admin_users_callback(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
             await callback.answer("Нет доступа", show_alert=True)
             return
         await callback.answer()
         if callback.message:
-            await show_admin_users(callback.message, callback.from_user)
+            parts = callback.data.split(":")
+            page = int(parts[2]) if len(parts) == 3 and parts[2].isdigit() else 0
+            await show_admin_users(callback.message, callback.from_user, page)
 
-    @router.callback_query(F.data == "admin:support")
+    @router.callback_query(F.data == "admin:usersearch")
+    async def admin_user_search(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        await db.set_support_session(callback.from_user.id, "admin_search")
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer("Отправьте Telegram ID или @username.")
+
+    @router.callback_query(F.data.startswith("admin:support"))
     async def admin_support_callback(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
             await callback.answer("Нет доступа", show_alert=True)
             return
         await callback.answer()
         if callback.message:
-            await show_admin_support(callback.message, callback.from_user)
+            parts = callback.data.split(":")
+            status = parts[2] if len(parts) > 2 else "all"
+            page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+            await show_admin_support(callback.message, callback.from_user, status, page)
 
     @router.callback_query(F.data == "admin:payments")
     async def admin_payments_callback(callback: CallbackQuery) -> None:
@@ -3438,6 +3490,168 @@ def build_router(
             telegram_id,
         )
 
+    @router.callback_query(F.data.startswith("admin:grantmenu:"))
+    async def admin_grant_menu(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        raw = callback.data.rsplit(":", 1)[-1]
+        if not raw.isdigit() or not callback.message:
+            await callback.answer("Некорректный пользователь", show_alert=True)
+            return
+        uid = int(raw)
+        kb = InlineKeyboardBuilder()
+        for days in (7, 30, 90, 180, 365):
+            kb.button(text=f"{days} дней", callback_data=f"admin:grant:{uid}:{days}")
+        kb.adjust(2)
+        kb.row(blue_inline_button("Ввести вручную", callback_data=f"admin:manualdays:{uid}:grant"))
+        kb.row(blue_inline_button("Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
+        await callback.answer()
+        await send_screen(callback.message, callback.from_user, "<b>Выдать подписку</b>\n\nВыберите срок.", reply_markup=kb.as_markup())
+
+    @router.callback_query(F.data.startswith("admin:daysmenu:"))
+    async def admin_days_menu(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        parts = callback.data.split(":")
+        if len(parts) != 4 or not parts[2].isdigit() or parts[3] not in {"add", "sub"} or not callback.message:
+            await callback.answer("Некорректная команда", show_alert=True)
+            return
+        uid, action = int(parts[2]), parts[3]
+        kb = InlineKeyboardBuilder()
+        for days in (1, 3, 7, 14, 30):
+            kb.button(text=str(days), callback_data=f"admin:adjust:{uid}:{action}:{days}")
+        kb.adjust(3)
+        kb.row(blue_inline_button("Ввести вручную", callback_data=f"admin:manualdays:{uid}:{action}"))
+        kb.row(blue_inline_button("Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
+        await callback.answer()
+        title = "Добавить дни" if action == "add" else "Списать дни"
+        await send_screen(callback.message, callback.from_user, f"<b>{title}</b>", reply_markup=kb.as_markup())
+
+    @router.callback_query(F.data.startswith("admin:manualdays:"))
+    async def admin_manual_days(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        parts = callback.data.split(":")
+        if len(parts) != 4 or not parts[2].isdigit() or parts[3] not in {"grant", "add", "sub"}:
+            await callback.answer("Некорректная команда", show_alert=True)
+            return
+        await db.set_support_session(callback.from_user.id, "admin_days", payload=f"{parts[2]}:{parts[3]}")
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer("Отправьте целое количество дней от 1 до 3650.")
+
+    @router.callback_query(F.data.startswith("admin:adjust:"))
+    async def admin_adjust_days(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        parts = callback.data.split(":")
+        if len(parts) != 5 or not parts[2].isdigit() or parts[3] not in {"add", "sub"} or not parts[4].isdigit():
+            await callback.answer("Некорректная команда", show_alert=True)
+            return
+        uid, days = int(parts[2]), int(parts[4])
+        if days not in {1, 3, 7, 14, 30}:
+            await callback.answer("Некорректный срок", show_alert=True)
+            return
+        updated = await db.adjust_subscription_days(uid, days if parts[3] == "add" else -days)
+        await sync_device_limit(updated)
+        await callback.answer("Срок обновлён")
+        if callback.message:
+            await show_admin_user(callback.message, callback.from_user, uid)
+
+    @router.callback_query(F.data.startswith("admin:adjustconfirmed:"))
+    async def admin_adjust_days_confirmed(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        parts = callback.data.split(":")
+        if (
+            len(parts) != 5 or not parts[2].isdigit()
+            or parts[3] != "sub" or not parts[4].isdigit()
+        ):
+            await callback.answer("Некорректная команда", show_alert=True)
+            return
+        uid, days = int(parts[2]), int(parts[4])
+        if not 31 <= days <= 3650:
+            await callback.answer("Некорректный срок", show_alert=True)
+            return
+        updated = await db.adjust_subscription_days(uid, -days)
+        await sync_device_limit(updated)
+        await callback.answer("Срок обновлён")
+        if callback.message:
+            await show_admin_user(callback.message, callback.from_user, uid)
+
+    @router.callback_query(F.data.startswith("admin:devicemenu:"))
+    async def admin_device_menu(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        raw = callback.data.rsplit(":", 1)[-1]
+        if not raw.isdigit() or not callback.message:
+            await callback.answer("Некорректный пользователь", show_alert=True)
+            return
+        uid = int(raw)
+        kb = InlineKeyboardBuilder()
+        for limit in range(1, 6):
+            kb.button(text=str(limit), callback_data=f"admin:setdevice:{uid}:{limit}")
+        kb.adjust(3)
+        kb.row(blue_inline_button("Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
+        await callback.answer()
+        await send_screen(callback.message, callback.from_user, "<b>Лимит устройств</b>\n\nВыберите значение от 1 до 5.", reply_markup=kb.as_markup())
+
+    @router.callback_query(F.data.startswith("admin:setdevice:"))
+    async def admin_set_device(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        parts = callback.data.split(":")
+        if len(parts) != 4 or not parts[2].isdigit() or not parts[3].isdigit():
+            await callback.answer("Некорректное значение", show_alert=True)
+            return
+        uid, limit = int(parts[2]), int(parts[3])
+        if not 1 <= limit <= 5:
+            await callback.answer("Допустимо от 1 до 5", show_alert=True)
+            return
+        updated = await db.set_device_limit(uid, limit)
+        await sync_device_limit(updated)
+        await callback.answer("Лимит обновлён")
+        if callback.message:
+            await show_admin_user(callback.message, callback.from_user, uid)
+
+    @router.callback_query(F.data.startswith("admin:revokeconfirm:"))
+    async def admin_revoke_confirm(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        raw = callback.data.rsplit(":", 1)[-1]
+        if not raw.isdigit() or not callback.message:
+            await callback.answer("Некорректный пользователь", show_alert=True)
+            return
+        uid = int(raw)
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("Отключить", callback_data=f"admin:revoke:{uid}"))
+        kb.row(blue_inline_button("Отмена", callback_data=f"admin:user:{uid}", premium_icon=False))
+        await callback.answer()
+        await send_screen(callback.message, callback.from_user, f"<b>Отключить подписку?</b>\n\nПользователь <code>{uid}</code> потеряет доступ.", reply_markup=kb.as_markup())
+
+    @router.callback_query(F.data.startswith("admin:revoke:"))
+    async def admin_revoke(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        raw = callback.data.rsplit(":", 1)[-1]
+        if not raw.isdigit():
+            await callback.answer("Некорректный пользователь", show_alert=True)
+            return
+        uid = int(raw)
+        await db.revoke_subscription(uid)
+        await callback.answer("Подписка отключена")
+        if callback.message:
+            await show_admin_user(callback.message, callback.from_user, uid)
+
     @router.callback_query(F.data.startswith("admin:device:"))
     async def admin_device_callback(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
@@ -3522,6 +3736,9 @@ def build_router(
 
         telegram_id = int(parts[2])
         days = int(parts[3])
+        if days not in {7, 30, 90, 180, 365}:
+            await callback.answer("Некорректный срок", show_alert=True)
+            return
         try:
             await db.get_user(telegram_id)
         except KeyError:
@@ -3535,7 +3752,7 @@ def build_router(
             max_devices=BASE_DEVICES,
         )
         try:
-            await provider.provision(user)
+            await asyncio.wait_for(provider.provision(user), 7.0)
         except Exception as exc:
             logger.warning(
                 "Admin grant provisioning deferred for user %s: %s",
@@ -3654,7 +3871,7 @@ def build_router(
             max_devices=BASE_DEVICES,
         )
         try:
-            await provider.provision(user)
+            await asyncio.wait_for(provider.provision(user), 7.0)
         except Exception as exc:
             logger.warning(
                 "Admin command provisioning deferred for user %s: %s",
@@ -3670,79 +3887,164 @@ def build_router(
             reply_markup=admin_main_keyboard(role or "full"),
         )
 
+    async def deliver_support_message(bot, chat_id: int, ticket_id: int, payload: dict[str, Any], *, admin_reply: bool) -> None:
+        prefix = f"<b>{'Ответ поддержки' if admin_reply else 'Новое сообщение'}\nОбращение #{ticket_id}</b>"
+        body = html.escape(str(payload.get("text") or payload.get("caption") or ""))
+        caption = (prefix + (f"\n\n{body}" if body else ""))[:1024]
+        markup = support_user_ticket_keyboard({"id": ticket_id, "status": "open"}) if admin_reply else support_admin_keyboard(ticket_id)
+        if payload["message_type"] == "photo":
+            await bot.send_photo(chat_id=chat_id, photo=payload["file_id"], caption=caption, reply_markup=markup)
+        elif payload["message_type"] == "video":
+            await bot.send_video(chat_id=chat_id, video=payload["file_id"], caption=caption, reply_markup=markup)
+        else:
+            await bot.send_message(chat_id=chat_id, text=prefix + f"\n\n{body}", reply_markup=markup)
+
+    def support_payload(message: Message) -> dict[str, Any] | None:
+        if message.photo:
+            media = message.photo[-1]
+            return {"message_type": "photo", "file_id": media.file_id, "file_unique_id": media.file_unique_id, "caption": message.caption}
+        if message.video:
+            return {"message_type": "video", "file_id": message.video.file_id, "file_unique_id": message.video.file_unique_id, "caption": message.caption}
+        text = str(message.text or "").strip()
+        if text:
+            return {"message_type": "text", "text": text}
+        return None
+
+    async def handle_support_input(message: Message) -> bool:
+        if not message.from_user:
+            return False
+        user_id = int(message.from_user.id)
+        session = await db.get_support_session(user_id)
+        if not session:
+            return False
+
+        if session["mode"] == "admin_search" and await has_admin_access(user_id):
+            query = str(message.text or "").strip()
+            user = await db.get_user_by_username(query) if query.startswith("@") else None
+            if query.isdigit():
+                try:
+                    user = await db.get_user(int(query))
+                except KeyError:
+                    user = None
+            await db.clear_support_session(user_id)
+            if not user:
+                await message.answer("Пользователь не найден.")
+            else:
+                await show_admin_user(message, message.from_user, int(user["telegram_id"]))
+            return True
+
+        if session["mode"] == "admin_days" and await has_full_admin_access(user_id):
+            raw = str(message.text or "").strip()
+            payload_value = str(session.get("payload") or "")
+            if not raw.isdigit() or not 1 <= int(raw) <= 3650 or ":" not in payload_value:
+                await message.answer("Введите целое число от 1 до 3650.")
+                return True
+            uid_raw, action = payload_value.split(":", 1)
+            if not uid_raw.isdigit() or action not in {"grant", "add", "sub"}:
+                await db.clear_support_session(user_id)
+                await message.answer("Команда устарела. Откройте карточку пользователя заново.")
+                return True
+            uid, days = int(uid_raw), int(raw)
+            if action == "sub" and days > 30:
+                await db.clear_support_session(user_id)
+                kb = InlineKeyboardBuilder()
+                kb.row(blue_inline_button("Подтвердить списание", callback_data=f"admin:adjustconfirmed:{uid}:sub:{days}"))
+                kb.row(blue_inline_button("Отмена", callback_data=f"admin:user:{uid}", premium_icon=False))
+                await message.answer(
+                    f"<b>Списать {days} дней?</b>\n\nПользователь: <code>{uid}</code>",
+                    reply_markup=kb.as_markup(),
+                )
+                return True
+            updated = await db.adjust_subscription_days(uid, days if action in {"grant", "add"} else -days)
+            await sync_device_limit(updated)
+            await db.clear_support_session(user_id)
+            await show_admin_user(message, message.from_user, uid)
+            return True
+
+        payload = support_payload(message)
+        if not payload:
+            await message.answer("Можно отправить текст, фото или видео.")
+            return True
+        now_mono = asyncio.get_running_loop().time()
+        if now_mono - support_cooldowns.get(user_id, 0.0) < 2.0:
+            await message.answer("Слишком быстро. Подождите пару секунд.")
+            return True
+        support_cooldowns[user_id] = now_mono
+
+        if session["mode"] == "admin_reply" and await has_admin_access(user_id):
+            ticket_id = int(session["ticket_id"] or 0)
+            ticket = await db.get_support_ticket(ticket_id, is_admin=True)
+            if not ticket or ticket.get("status") == "closed":
+                await db.clear_support_session(user_id)
+                await message.answer("Обращение закрыто или удалено.")
+                return True
+            await db.add_support_message(ticket_id=ticket_id, sender_type="admin", sender_telegram_id=user_id, is_admin=True, **payload)
+            await db.clear_support_session(user_id)
+            try:
+                await deliver_support_message(message.bot, int(ticket["telegram_id"]), ticket_id, payload, admin_reply=True)
+            except Exception as exc:
+                logger.warning("Support delivery failed for ticket %s: %s", ticket_id, type(exc).__name__)
+                await message.answer("Ответ сохранён в обращении, но Telegram не смог доставить уведомление пользователю.")
+                return True
+            await message.answer(f"Ответ по обращению #{ticket_id} отправлен.")
+            return True
+
+        if session["mode"] == "new":
+            if await db.recent_support_ticket_count(user_id) >= 3:
+                await message.answer("Слишком много новых обращений. Продолжите одно из уже созданных.")
+                return True
+            await ensure_actor(message.from_user)
+            ticket = await db.create_support_thread(
+                telegram_id=user_id, username=message.from_user.username,
+                first_name=message.from_user.first_name, **payload,
+            )
+            ticket_id = int(ticket["id"])
+            await db.set_support_session(user_id, "user_reply", ticket_id)
+            for admin_id in {*(int(v) for v in config.admin_ids), *(int(a["telegram_id"]) for a in await db.list_admin_roles())}:
+                try:
+                    await deliver_support_message(message.bot, admin_id, ticket_id, payload, admin_reply=False)
+                except Exception as exc:
+                    logger.warning("Support notification failed for admin %s: %s", admin_id, type(exc).__name__)
+            await message.answer(f"<b>Обращение #{ticket_id} создано.</b>\n\nСтатус: <b>Открыто</b>\nМожно отправить ещё сообщение, фото или видео.", reply_markup=support_user_ticket_keyboard(ticket))
+            return True
+
+        if session["mode"] == "user_reply":
+            ticket_id = int(session["ticket_id"] or 0)
+            try:
+                ticket = await db.add_support_message(
+                    ticket_id=ticket_id, sender_type="user", sender_telegram_id=user_id,
+                    owner_id=user_id, **payload,
+                )
+            except ValueError:
+                await db.clear_support_session(user_id)
+                await message.answer("Обращение закрыто. Создайте новое, если нужна помощь.")
+                return True
+            if not ticket:
+                await db.clear_support_session(user_id)
+                await message.answer("Обращение не найдено.")
+                return True
+            for admin_id in {*(int(v) for v in config.admin_ids), *(int(a["telegram_id"]) for a in await db.list_admin_roles())}:
+                try:
+                    await deliver_support_message(message.bot, admin_id, ticket_id, payload, admin_reply=False)
+                except Exception as exc:
+                    logger.warning("Support notification failed for admin %s: %s", admin_id, type(exc).__name__)
+            await message.answer(f"Сообщение добавлено в обращение #{ticket_id}.")
+            return True
+        return False
+
+    @router.message(F.photo | F.video)
+    async def support_media_router(message: Message) -> None:
+        if not await handle_support_input(message):
+            await message.answer("Фото и видео можно отправить после открытия обращения в разделе «Поддержка».")
+
     @router.message(F.text)
     async def support_text_router(message: Message) -> None:
-        if not message.from_user:
-            return
-        user_id = int(message.from_user.id)
-        raw_text = str(message.text or "").strip()
+        await handle_support_input(message)
 
-        ticket_id = pending_support_admins.get(user_id)
-        if ticket_id is not None and await has_admin_access(user_id):
-            if len(raw_text) > 3000:
-                await message.answer("Ответ слишком длинный. Максимум 3000 символов.")
-                return
-            ticket = await db.get_support_ticket(ticket_id)
-            if not ticket:
-                pending_support_admins.pop(user_id, None)
-                await message.answer("Обращение больше не найдено.")
-                return
-            try:
-                await message.bot.send_message(
-                    chat_id=int(ticket["telegram_id"]),
-                    text=(
-                        f"<b>Ответ поддержки · обращение #{ticket_id}</b>\n\n"
-                        f"{html.escape(raw_text)}"
-                    ),
-                )
-            except Exception as exc:
-                logger.warning("Could not deliver support answer %s: %s", ticket_id, exc)
-                await message.answer(
-                    "Не удалось доставить ответ пользователю. Обращение оставлено открытым."
-                )
-                return
-
-            await db.answer_support_ticket(
-                ticket_id=ticket_id,
-                answered_by=user_id,
-                answer_text=raw_text,
-            )
-            pending_support_admins.pop(user_id, None)
-            await message.answer(f"Ответ по обращению #{ticket_id} отправлен.")
-            return
-
-        if user_id not in pending_support_users:
-            return
-
-        if not raw_text:
-            return
-        if len(raw_text) > 3000:
-            await message.answer("Сообщение слишком длинное. Максимум 3000 символов.")
-            return
-
-        now_mono = asyncio.get_running_loop().time()
-        last = support_cooldowns.get(user_id, 0.0)
-        if now_mono - last < 30.0:
-            await message.answer("Подождите немного перед новым обращением.")
-            return
-
-        actor = await ensure_actor(message.from_user)
-        ticket = await db.create_support_ticket(
-            telegram_id=user_id,
-            username=message.from_user.username,
-            first_name=message.from_user.first_name,
-            message=raw_text,
-        )
-        pending_support_users.discard(user_id)
-        support_cooldowns[user_id] = now_mono
-        await notify_support_admins(message.bot, ticket)
-        await send_screen(
-            message,
-            message.from_user,
-            f"<b>Обращение #{int(ticket['id'])} создано</b>\n\n"
-            "Администраторы получили сообщение. Ответ придёт сюда, в этот чат.",
-            reply_markup=support_keyboard(),
-        )
+    @router.message()
+    async def unsupported_support_input(message: Message) -> None:
+        if message.from_user and await db.get_support_session(message.from_user.id):
+            await message.answer("Можно отправить текст, фото или видео.")
 
 
     return router

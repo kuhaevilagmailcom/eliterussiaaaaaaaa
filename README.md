@@ -18,7 +18,7 @@ Telegram VPN-сервис с ботом, Mini App, персональными su
 
 - оплата через СБП/RollyPay и Telegram Stars с серверной проверкой суммы, валюты, покупателя, получателя и продукта;
 - подарок подписки другому пользователю;
-- один бесплатный день после проверки подписки на Telegram-канал;
+- реферальная награда до трёх дней за трёх новых пользователей;
 - реферальная программа: один подтверждённый новый пользователь даёт один день, максимум три дня;
 - промокоды двух типов: скидка на выбранные тарифы и бесплатные дни;
 - персональная стабильная ссылка `/sub/{token}` с проксированием H1 subscription;
@@ -40,7 +40,7 @@ python main.py
 
 Скопируйте `.env.example` в локальный `.env` и заполните значения. `.env` не хранится в Git.
 
-Ключевые переменные: `BOT_TOKEN`, `ADMIN_IDS`, `DB_PATH`, `DOMAIN` или `MINIAPP_URL`, `VPN_MODE=h1cloud`, `H1_API_URL`, `H1_API_TOKEN`, `H1_SUBSCRIPTION_TEMPLATE`, параметры `ROLLYPAY_*`, `TRIAL_CHANNEL_USERNAME`, `TRIAL_CHANNEL_URL` и `EMOJI_PACKS=NewsEmoji`.
+Ключевые переменные: `BOT_TOKEN`, `ADMIN_IDS`, `DB_PATH`, `DOMAIN` или `MINIAPP_URL`, `VPN_MODE=h1cloud`, `H1_API_URL`, `H1_API_TOKEN`, `H1_SUBSCRIPTION_TEMPLATE`, параметры `ROLLYPAY_*` и `EMOJI_PACKS=NewsEmoji`.
 
 Не включайте реальные токены в `.env.example`, логи или репозиторий.
 

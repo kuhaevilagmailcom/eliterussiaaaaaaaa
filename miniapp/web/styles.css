@@ -29,7 +29,7 @@ button,input{font:inherit}
 button{min-height:44px;color:inherit;cursor:pointer}
 button:disabled{opacity:.42;cursor:default}
 svg{width:19px;height:19px;stroke-width:1.8}
-[hidden]{display:none}
+[hidden]{display:none!important}
 .app-shell{width:min(100%,430px);min-height:100vh;margin:auto;padding:calc(var(--safe-top) + 8px) 16px calc(88px + var(--safe-bottom))}
 .topbar{height:64px;display:flex;align-items:center;justify-content:space-between;gap:12px}
 .brand,.user-chip,.ghost-icon,.link-help{border:0;background:transparent;padding:0}
@@ -67,6 +67,7 @@ svg{width:19px;height:19px;stroke-width:1.8}
 .progress{height:5px;margin:16px 0;border-radius:99px;background:rgba(255,255,255,.07);overflow:hidden}
 .progress span{display:block;height:100%;border-radius:inherit;background:var(--accent);transition:width .25s ease}
 .primary,.copy-button,.sheet-primary{width:100%;border:0;border-radius:var(--radius-2);background:var(--accent);color:#fff;font-weight:800;padding:0 16px}
+.sheet-secondary{width:100%;min-height:44px;border:1px solid var(--line);border-radius:var(--radius-2);background:var(--surface);color:var(--text);font-weight:750;padding:0 16px;margin-bottom:10px}
 .primary{display:flex;align-items:center;justify-content:space-between}
 .primary span{display:flex;align-items:center;gap:9px}
 .link-card{margin-top:12px}
@@ -666,7 +667,7 @@ button.pressing,
 .motion-in{
   opacity:0;
   transform:translate3d(0,10px,0) scale(.992);
-  animation:mgn-enter 430ms var(--ease-out) forwards;
+  animation:mgn-enter 350ms var(--ease-out) forwards;
   animation-delay:calc(var(--motion-index,0) * 34ms);
   will-change:transform,opacity
 }
@@ -678,7 +679,7 @@ button.pressing,
 .nav-in{
   opacity:0;
   transform:translate(-50%,12px);
-  animation:mgn-nav 440ms var(--ease-out) 120ms forwards
+  animation:mgn-nav 350ms var(--ease-out) 120ms forwards
 }
 
 @keyframes mgn-enter{
@@ -708,7 +709,7 @@ button.pressing,
 
 /* Pink card: one restrained reveal, no infinite glow */
 .personal-link.motion-in{
-  animation:mgn-link-enter 500ms var(--ease-out) forwards;
+  animation:mgn-link-enter 350ms var(--ease-out) forwards;
   animation-delay:calc(var(--motion-index,0) * 34ms)
 }
 @keyframes mgn-link-enter{
@@ -717,7 +718,7 @@ button.pressing,
   100%{opacity:1;transform:translate3d(0,0,0) scale(1)}
 }
 .personal-link.motion-in .link-icon svg{
-  animation:link-icon-draw 480ms var(--ease-spring) 120ms both
+  animation:link-icon-draw 350ms var(--ease-spring) 120ms both
 }
 @keyframes link-icon-draw{
   0%{opacity:.2;transform:rotate(-12deg) scale(.72)}
@@ -726,7 +727,7 @@ button.pressing,
 
 /* Statistics feel alive without flashy counters */
 .hero-card.motion-in .stat-icon{
-  animation:stat-icon-in 420ms var(--ease-spring) both
+  animation:stat-icon-in 350ms var(--ease-spring) both
 }
 .hero-card.motion-in .hero-stats>div:nth-child(2) .stat-icon{animation-delay:55ms}
 @keyframes stat-icon-in{
@@ -1004,3 +1005,12 @@ button.pressing,
   animation-duration:340ms!important;
   animation-delay:calc(var(--motion-index,0) * 24ms)!important
 }
+
+/* Keep long account and device labels inside narrow Telegram viewports. */
+.topbar > *, .profile-hero > *, .device-copy { min-width:0; }
+.device-copy b, .profile-hero b { overflow-wrap:anywhere; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.sheet { max-height:calc(100dvh - var(--safe-top) - 16px); overflow-y:auto; }
+
+.app-error{max-width:430px;margin:20vh auto;padding:24px;text-align:center}
+.app-error a,.app-error button{display:block;margin:16px auto;padding:14px;color:var(--text);background:var(--surface);border:1px solid var(--accent);border-radius:12px}
