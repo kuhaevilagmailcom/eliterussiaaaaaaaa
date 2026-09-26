@@ -531,6 +531,49 @@ class H1CloudVpnProvider(VpnProvider):
             return link
         return ""
 
+    @staticmethod
+    def _client_vless_links(client: dict[str, Any] | None) -> list[str]:
+        if not isinstance(client, dict):
+            return []
+
+        found: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: Any) -> None:
+            if not isinstance(value, str):
+                return
+            value = value.strip()
+            if value.startswith("vless://") and value not in seen:
+                seen.add(value)
+                found.append(value)
+
+        links = client.get("links")
+        if isinstance(links, dict):
+            for value in links.values():
+                add(value)
+        elif isinstance(links, list):
+            for value in links:
+                if isinstance(value, dict):
+                    add(value.get("link"))
+                    add(value.get("url"))
+                    add(value.get("uri"))
+                else:
+                    add(value)
+
+        add(client.get("link"))
+
+        inbound_links = client.get("inbound_links")
+        if isinstance(inbound_links, list):
+            for item in inbound_links:
+                if isinstance(item, dict):
+                    add(item.get("link"))
+                    add(item.get("url"))
+                    add(item.get("uri"))
+                else:
+                    add(item)
+
+        return found
+
     def _subscription_url(self, client: dict[str, Any]) -> str:
         for key in ("subscription_url", "sub_url", "subscription"):
             value = client.get(key)
@@ -805,10 +848,91 @@ class H1CloudVpnProvider(VpnProvider):
         self,
         user: dict[str, Any],
     ) -> tuple[bytes, dict[str, str]]:
+        """Build the MGN subscription from H1 API client links first.
+
+        H1 exposes working VLESS links in the client payload, while its public
+        subscription endpoint may be unreachable from another container or may
+        temporarily return 5xx. Building from the API avoids turning every VPN
+        client into a 503 when only the upstream subscription HTTP endpoint is
+        unhealthy.
+        """
+        name = self._name(user)
+        main = await self._get_client(name)
+        if main is None:
+            await self.provision(user)
+            main = await self._get_client(name)
+
+        links: list[str] = []
+        seen: set[str] = set()
+
+        def add_many(values: list[str]) -> None:
+            for value in values:
+                if value not in seen:
+                    seen.add(value)
+                    links.append(value)
+
+        add_many(self._client_vless_links(main))
+
+        # Pull remote location links directly from federation. Individual
+        # broken countries are warning-only and must not break the whole
+        # subscription.
+        try:
+            nodes = await self._federated_nodes()
+        except Exception as exc:
+            logger.warning(
+                "H1Cloud federation registry unavailable while building subscription for %s: %s",
+                name,
+                exc,
+            )
+            nodes = []
+
+        async def load_remote(node_id: str) -> tuple[str, list[str], str | None]:
+            prefix = f"/fed/lproxy/{quote(node_id, safe='')}"
+            try:
+                client = await asyncio.wait_for(
+                    self._get_client(name, prefix=prefix),
+                    timeout=7.0,
+                )
+                return node_id, self._client_vless_links(client), None
+            except Exception as exc:
+                return node_id, [], str(exc).strip() or type(exc).__name__
+
+        node_ids = [
+            self._node_id(node)
+            for node in nodes
+            if self._node_id(node)
+        ]
+        if node_ids:
+            results = await asyncio.gather(
+                *(load_remote(node_id) for node_id in node_ids),
+                return_exceptions=False,
+            )
+            errors: list[str] = []
+            for node_id, remote_links, error in results:
+                add_many(remote_links)
+                if error:
+                    errors.append(f"{node_id}: {error}")
+            if errors:
+                logger.warning(
+                    "H1Cloud subscription federation partial for %s: %s",
+                    name,
+                    "; ".join(errors),
+                )
+
+        if links:
+            logger.info(
+                "H1Cloud subscription built directly from API for %s with %s VLESS link(s)",
+                name,
+                len(links),
+            )
+            return ("\n".join(links) + "\n").encode("utf-8"), {}
+
+        # Compatibility fallback for older H1 installations that expose only a
+        # public subscription URL and no links in the client API payload.
         state = await self.get_state(user)
         url = state.subscription_url
         if not url.startswith(("http://", "https://")):
-            raise RuntimeError("H1Cloud subscription URL is not HTTP(S)")
+            raise RuntimeError("H1Cloud returned neither VLESS links nor an HTTP subscription URL")
 
         async with self.public_session.get(
             url,
