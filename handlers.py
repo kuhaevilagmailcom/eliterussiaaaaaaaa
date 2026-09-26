@@ -568,25 +568,10 @@ async def public_subscription_url(
     bot=None,
 ) -> str:
     if config.vpn_mode == "h1cloud" and user.get("sub_token") and is_active(user):
-        base_url = _https_public_base_url(config.miniapp_url) or _saved_public_base_url(config)
-
-        # If BotHost did not expose DOMAIN/MINIAPP_URL to the process, Telegram
-        # may still have the previously configured Mini App menu button. Reuse
-        # its URL so the bot and Mini App return the exact same /sub/<token>.
-        if not base_url and bot is not None:
-            try:
-                menu_button = await bot.get_chat_menu_button()
-                web_app = getattr(menu_button, "web_app", None)
-                menu_url = str(getattr(web_app, "url", "") or "").strip().rstrip("/")
-                menu_url = _https_public_base_url(menu_url)
-                if menu_url:
-                    base_url = menu_url
-            except Exception as exc:
-                logger.warning("Could not resolve Mini App URL from Telegram menu: %s", exc)
-
+        base_url = _https_public_base_url(config.vpn_sub_base_url)
         if base_url:
             token = quote(str(user["sub_token"]), safe="")
-            return f"{base_url}/sub/{token}"
+            return f"{base_url}/{token}"
 
     return state.subscription_url or ""
 
