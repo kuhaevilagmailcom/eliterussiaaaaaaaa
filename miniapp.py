@@ -141,6 +141,72 @@ class MiniAppServer:
             self._bot_username = me.username or "mgnvpn_bot"
         return self._bot_username
 
+    async def _is_trial_channel_member(
+        self,
+        user_id: int,
+        *,
+        retries: int = 1,
+    ) -> bool:
+        retries = max(1, min(int(retries), 4))
+        for attempt in range(retries):
+            try:
+                member = await self.bot.get_chat_member(
+                    chat_id=self.config.trial_channel_username,
+                    user_id=user_id,
+                )
+                status = getattr(
+                    getattr(member, "status", ""),
+                    "value",
+                    getattr(member, "status", ""),
+                )
+                status = str(status)
+                if status in {"member", "administrator", "creator"}:
+                    return True
+                if status == "restricted" and bool(getattr(member, "is_member", False)):
+                    return True
+            except Exception as exc:
+                logger.warning(
+                    "Mini App channel membership check failed for %s: %s",
+                    user_id,
+                    exc,
+                )
+
+            if attempt + 1 < retries:
+                await asyncio.sleep(0.6)
+
+        return False
+
+    async def _sync_bot_subscription_menu(self, user: dict) -> None:
+        message_id = user.get("last_menu_message_id")
+        if not message_id:
+            return
+
+        until = from_iso(user.get("subscription_until"))
+        until_text = "—"
+        if until:
+            until_text = until.astimezone(self.config.display_tz).strftime("%d.%m.%Y %H:%M")
+
+        active = _active(user)
+        caption = (
+            "🔐 <b>MGN VPN</b>\n\n"
+            f"Статус: <b>{'Активна' if active else 'Не активна'}</b>\n"
+            f"Тариф: <b>{user.get('plan_name') or '—'}</b>\n"
+            f"До: <b>{until_text}</b>\n"
+            f"Устройства: <b>до {int(user.get('max_devices') or 1)}</b>"
+        )
+        try:
+            await self.bot.edit_message_caption(
+                chat_id=int(user["telegram_id"]),
+                message_id=int(message_id),
+                caption=caption,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Could not sync bot menu caption for %s: %s",
+                user.get("telegram_id"),
+                exc,
+            )
+
     def _fallback_state(self, user: dict) -> VpnState:
         return VpnState(
             subscription_url="",
@@ -287,6 +353,7 @@ class MiniAppServer:
                 await asyncio.wait_for(self.provider.provision(target), 7.0)
             except Exception as exc:
                 logger.warning("Mini App provisioning deferred for %s: %s", target_id, exc)
+        await self._sync_bot_subscription_menu(target)
 
     async def index(self, request: web.Request) -> web.StreamResponse:
         index = self.web_dir / "index.html"
@@ -415,6 +482,12 @@ class MiniAppServer:
         state, vpn_ok = await self._load_state(row)
         referral_stats = await self.db.referral_stats(uid)
         username = await self._username()
+        trial_available = not bool(row.get("trial_used")) and not _active(row)
+        trial_channel_member = (
+            await self._is_trial_channel_member(uid, retries=1)
+            if trial_available
+            else False
+        )
 
         until = from_iso(row.get("subscription_until"))
         until_text = ""
@@ -440,7 +513,8 @@ class MiniAppServer:
                     "remaining_seconds": _remaining_seconds(row),
                     "max_devices": int(row.get("max_devices") or 1),
                     "trial_used": bool(row.get("trial_used")),
-                    "trial_available": not bool(row.get("trial_used")) and not _active(row),
+                    "trial_available": trial_available,
+                    "trial_channel_member": trial_channel_member,
                 },
                 "vpn": {
                     "ready": bool(getattr(self.provider, "service_ready", True)),
@@ -484,21 +558,12 @@ class MiniAppServer:
         uid, _tg_user, row = await self._auth(request)
         if row.get("trial_used"):
             raise _json_error(409, "Бесплатный день уже использован")
-        try:
-            member = await self.bot.get_chat_member(
-                chat_id=self.config.trial_channel_username,
-                user_id=uid,
-            )
-        except Exception as exc:
-            logger.warning("Mini App trial membership check failed: %s", exc)
-            raise _json_error(503, "Не удалось проверить подписку на канал")
-
-        status = getattr(getattr(member, "status", ""), "value", getattr(member, "status", ""))
-        subscribed = str(status) in {"member", "administrator", "creator"} or (
-            str(status) == "restricted" and bool(getattr(member, "is_member", False))
-        )
+        subscribed = await self._is_trial_channel_member(uid, retries=3)
         if not subscribed:
-            raise _json_error(403, "Сначала подпишись на канал MGN VPN")
+            raise _json_error(
+                403,
+                "Подписка на канал пока не найдена. Вернитесь из канала и нажмите «Забрать 1 день» ещё раз.",
+            )
 
         activated = await self.db.activate_trial(
             uid,
@@ -515,7 +580,14 @@ class MiniAppServer:
             except Exception as exc:
                 logger.warning("Trial provisioning deferred for %s: %s", uid, exc)
 
-        return web.json_response({"ok": True})
+        await self._sync_bot_subscription_menu(row)
+        return web.json_response(
+            {
+                "ok": True,
+                "subscription_until": row.get("subscription_until"),
+                "plan": row.get("plan_name") or "Бесплатный доступ",
+            }
+        )
 
     async def stars_invoice(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
@@ -683,6 +755,8 @@ class MiniAppServer:
                     updated = await self.db.grant_extra_device(uid, MAX_DEVICES)
                     if updated and getattr(self.provider, "service_ready", True):
                         await self.provider.provision(updated)
+                    if updated:
+                        await self._sync_bot_subscription_menu(updated)
                 else:
                     await self._activate_paid(
                         buyer_id=uid,
@@ -773,6 +847,7 @@ class MiniAppServer:
                 await asyncio.wait_for(self.provider.provision(updated), 7.0)
             except Exception as exc:
                 logger.warning("Promo provisioning deferred for %s: %s", uid, exc)
+        await self._sync_bot_subscription_menu(updated)
         return web.json_response({"ok": True, "subscription_until": updated["subscription_until"]})
 
     async def delete_device(self, request: web.Request) -> web.Response:
