@@ -906,6 +906,25 @@ def build_router(
                     return await create_first_menu()
                 return message
 
+        # Telegram photo captions are limited to 1024 characters. Long admin
+        # and support screens switch the tracked UI message to text so the
+        # action does not silently fail and all inline controls stay usable.
+        if len(text) > 1000:
+            try:
+                await message.bot.delete_message(
+                    chat_id=message.chat.id,
+                    message_id=int(last_id),
+                )
+            except Exception as exc:
+                logger.warning("Could not replace long UI screen for %s: %s", actor.id, type(exc).__name__)
+            sent = await message.bot.send_message(
+                chat_id=message.chat.id,
+                text=text,
+                reply_markup=reply_markup,
+            )
+            await db.set_last_menu_message(actor.id, sent.message_id)
+            return sent
+
         # Normal sections edit the caption of the same photo message.
         try:
             edited = await message.bot.edit_message_caption(
@@ -1328,10 +1347,10 @@ def build_router(
         if admin:
             username = f"@{ticket['username']}" if ticket.get("username") else "без username"
             lines += [f"Пользователь: <b>{html.escape(username)}</b>", f"Telegram ID: <code>{ticket['telegram_id']}</code>", ""]
-        for item in messages[-12:]:
+        for item in messages[-8:]:
             sender = "Поддержка" if item["sender_type"] == "admin" else "Пользователь"
             content = item.get("text") or item.get("caption") or ("Фото" if item["message_type"] == "photo" else "Видео")
-            lines.append(f"<b>{sender}:</b> {html.escape(str(content)[:500])}")
+            lines.append(f"<b>{sender}:</b> {html.escape(str(content)[:300])}")
         await send_screen(
             message, actor, "\n".join(lines),
             reply_markup=(support_admin_ticket_keyboard(ticket) if admin else support_user_ticket_keyboard(ticket)),
@@ -2987,11 +3006,12 @@ def build_router(
         role = await get_admin_role(actor.id)
         if not role:
             return
-        users, total = await db.list_users_page(page, 12)
-        pages = max(1, (total + 11) // 12)
+        page_size = 10
+        users, total = await db.list_users_page(page, page_size)
+        pages = max(1, (total + page_size - 1) // page_size)
         page = min(max(0, page), pages - 1)
-        if page and not users:
-            users, total = await db.list_users_page(page, 12)
+        if not users and total:
+            users, total = await db.list_users_page(page, page_size)
         kb = InlineKeyboardBuilder()
         lines = [
             "👥 <b>Пользователи</b>",
@@ -3005,25 +3025,22 @@ def build_router(
         else:
             for item in users:
                 uid = int(item["telegram_id"])
-                username = (
-                    f'@{item["username"]}'
-                    if item.get("username")
-                    else item.get("first_name") or str(uid)
-                )
-                active = bool(
-                    from_iso(item.get("subscription_until"))
-                    and from_iso(item.get("subscription_until")) > utcnow()
-                )
+                raw_username = str(item.get("username") or "").lstrip("@")
+                username = f"@{raw_username[:20]}" if raw_username else "без username"
+                first_name = str(item.get("first_name") or "Без имени")[:24]
+                subscription_until = from_iso(item.get("subscription_until"))
+                active = bool(subscription_until and subscription_until > utcnow())
                 status = (
-                    f"Активна до {format_until(item, config)}" if active else "Неактивна"
+                    f"Активна до {subscription_until.astimezone(config.display_tz).strftime('%d.%m.%Y')}"
+                    if active and subscription_until else "Неактивна"
                 )
                 lines.append(
-                    f"<b>{html.escape(str(item.get('first_name') or 'Без имени'))}</b>\n"
-                    f"{html.escape(str(username))}\n<code>{uid}</code>\n{status}"
+                    f"<b>{html.escape(first_name)}</b> · {html.escape(username)}\n"
+                    f"<code>{uid}</code> · {status}"
                 )
                 kb.row(
                     blue_inline_button(
-                        f"👤 {str(username)[:28]}",
+                        f"👤 {username[:24]}",
                         callback_data=f"admin:user:{uid}",
                     )
                 )
@@ -3340,7 +3357,7 @@ def build_router(
         if callback.message:
             await show_admin_stats(callback.message, callback.from_user)
 
-    @router.callback_query(F.data.startswith("admin:users"))
+    @router.callback_query(F.data.regexp(r"^admin:users(?::\d+)?$"))
     async def admin_users_callback(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
             await callback.answer("Нет доступа", show_alert=True)

@@ -11,6 +11,13 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def test_legacy_naive_timestamps_are_normalized_to_utc():
+    parsed = from_iso("2026-10-15T12:30:00")
+    assert parsed is not None
+    assert parsed.utcoffset() == timedelta(0)
+    assert from_iso("broken") is None
+
+
 def test_referral_rewards_are_atomic_and_capped(tmp_path):
     async def scenario():
         db = Database(str(tmp_path / "mgn.sqlite3"))

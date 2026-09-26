@@ -162,6 +162,37 @@ def test_admin_callbacks_reject_regular_user(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+def test_admin_users_screen_fits_telegram_caption_and_search_does_not_collide(tmp_path, monkeypatch):
+    monkeypatch.setenv('BOT_TOKEN', TOKEN)
+
+    async def run():
+        config = replace(Config.from_env(), admin_ids=(1,), db_path=str(tmp_path/'users.db'))
+        db = Database(config.db_path)
+        await db.init()
+        for user_id in range(1, 16):
+            await db.ensure_user(user_id, f'user_{user_id}', 'Очень длинное имя пользователя')
+        bot = SimpleNamespace(send_photo=AsyncMock(return_value=SimpleNamespace(message_id=77)))
+        message = SimpleNamespace(bot=bot, chat=SimpleNamespace(id=1))
+        callback = SimpleNamespace(
+            from_user=SimpleNamespace(id=1, username='owner', first_name='Owner'),
+            answer=AsyncMock(), message=message, data='admin:users',
+        )
+        router = build_router(config, db, EmojiBank(()), SimpleNamespace())
+        users_handler = next(item for item in router.callback_query.handlers if item.callback.__name__ == 'admin_users_callback')
+        search_handler = next(item for item in router.callback_query.handlers if item.callback.__name__ == 'admin_user_search')
+        assert (await users_handler.check(SimpleNamespace(data='admin:users')))[0]
+        assert (await users_handler.check(SimpleNamespace(data='admin:users:2')))[0]
+        assert not (await users_handler.check(SimpleNamespace(data='admin:usersearch')))[0]
+        assert (await search_handler.check(SimpleNamespace(data='admin:usersearch')))[0]
+        await users_handler.callback(callback)
+        caption = bot.send_photo.await_args.kwargs['caption']
+        assert len(caption) <= 1000
+        assert 'Пользователи' in caption
+        assert 'user_1' in caption
+
+    asyncio.run(run())
+
+
 def test_secret_logging_redacts_urls_and_values():
     formatter = SecretSafeFormatter(SimpleNamespace(bot_token='private-value', h1_api_token='secret-provider'))
     record = logging.LogRecord('test', logging.WARNING, '', 1, 'private-value secret-provider https://mgnvpn.ru/sub/private-token /client/happ/another-token', (), None)
