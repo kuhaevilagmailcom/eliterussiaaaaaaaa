@@ -72,3 +72,13 @@ def test_h1_extracts_nested_client_and_link_payloads():
         "VLESS://four@example.com:443#four",
         "vless://five@example.com:443#five",
     ]
+
+
+def test_h1_decodes_base64_subscription_links():
+    payload = base64.b64encode(
+        b"vless://one@example.com:443#one\nvless://two@example.com:443#two\n"
+    )
+    assert H1CloudVpnProvider._subscription_vless_links(payload) == [
+        "vless://one@example.com:443#one",
+        "vless://two@example.com:443#two",
+    ]
