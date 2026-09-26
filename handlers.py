@@ -1158,29 +1158,38 @@ def build_router(
             return
 
         state, ok = await load_state(user, provider, config)
-        if not getattr(provider, "service_ready", True):
+        subscription_url = public_subscription_url(user, state, config)
+
+        # For H1Cloud the public MGN /sub/<token> URL is stable and does not
+        # depend on a successful live panel read. The proxy can provision,
+        # retry and serve its short stale cache itself, so the bot must not
+        # hide the copy/open buttons just because H1 timed out for this screen.
+        if not subscription_url:
+            if not getattr(provider, "service_ready", True):
+                text = (
+                    "🔗 <b>Подключение VPN</b>\n\n"
+                    "Подписка активна, но VPN-серверы пока ещё не подключены."
+                )
+            else:
+                text = (
+                    "🔗 <b>Подключение VPN</b>\n\n"
+                    "Не удалось сформировать персональную ссылку. "
+                    "Попробуйте ещё раз через несколько секунд."
+                )
             await send_screen(
                 callback.message,
                 callback.from_user,
-                "🔗 <b>Подключение VPN</b>\n\n"
-                "Подписка активна, но VPN-серверы пока ещё не подключены.\n\n"
-                "Бот уже готов: после подключения серверов здесь автоматически "
-                "появится ваша персональная ссылка.",
-                reply_markup=section_nav_keyboard(),
-            )
-            return
-        if not ok or not state.subscription_url:
-            await send_screen(
-                callback.message,
-                callback.from_user,
-                "🔗 <b>Подключение VPN</b>\n\n"
-                "VPN-сервер временно не ответил. Подписка сохранена — "
-                "попробуйте открыть подключение немного позже.",
+                text,
                 reply_markup=section_nav_keyboard(),
             )
             return
 
-        subscription_url = public_subscription_url(user, state, config)
+        if not ok:
+            logger.warning(
+                "Showing stable public subscription URL despite H1 state failure for user %s",
+                user.get("telegram_id"),
+            )
+
         await send_screen(
             callback.message,
             callback.from_user,
@@ -2308,29 +2317,34 @@ def build_router(
             return
 
         state, ok = await load_state(user, provider, config)
-        if not getattr(provider, "service_ready", True):
+        subscription_url = public_subscription_url(user, state, config)
+
+        if not subscription_url:
+            if not getattr(provider, "service_ready", True):
+                text = (
+                    "🔗 <b>Подключение VPN</b>\n\n"
+                    "Подписка активна, но VPN-серверы пока ещё не подключены."
+                )
+            else:
+                text = (
+                    "🔗 <b>Подключение VPN</b>\n\n"
+                    "Не удалось сформировать персональную ссылку. "
+                    "Попробуйте ещё раз через несколько секунд."
+                )
             await send_screen(
                 message,
                 message.from_user,
-                "🔗 <b>Подключение VPN</b>\n\n"
-                "Подписка активна, но VPN-серверы пока ещё не подключены.\n\n"
-                "Бот уже готов: после подключения серверов здесь автоматически "
-                "появится ваша персональная ссылка.",
-                reply_markup=section_nav_keyboard(),
-            )
-            return
-        if not ok or not state.subscription_url:
-            await send_screen(
-                message,
-                message.from_user,
-                "🔗 <b>Подключение VPN</b>\n\n"
-                "VPN-сервер временно не ответил. Подписка сохранена — "
-                "попробуйте открыть подключение немного позже.",
+                text,
                 reply_markup=section_nav_keyboard(),
             )
             return
 
-        subscription_url = public_subscription_url(user, state, config)
+        if not ok:
+            logger.warning(
+                "Showing stable public subscription URL despite H1 state failure for user %s",
+                user.get("telegram_id"),
+            )
+
         await send_screen(
             message,
             message.from_user,
