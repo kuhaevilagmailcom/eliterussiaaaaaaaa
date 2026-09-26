@@ -473,19 +473,45 @@ def profile_text(
     return "\n".join(lines)
 
 
-def public_subscription_url(
+def _saved_public_base_url(config: Config) -> str:
+    path = Path(config.db_path).with_name("public_base_url.txt")
+    try:
+        value = path.read_text(encoding="utf-8").strip().rstrip("/")
+    except FileNotFoundError:
+        return ""
+    except Exception:
+        logger.exception("Could not read saved public base URL")
+        return ""
+    return value if value.startswith(("http://", "https://")) else ""
+
+
+async def public_subscription_url(
     user: dict[str, Any],
     state: VpnState,
     config: Config,
+    *,
+    bot=None,
 ) -> str:
-    if (
-        config.vpn_mode == "h1cloud"
-        and config.miniapp_url
-        and user.get("sub_token")
-        and is_active(user)
-    ):
-        token = quote(str(user["sub_token"]), safe="")
-        return f"{config.miniapp_url.rstrip('/')}/sub/{token}"
+    if config.vpn_mode == "h1cloud" and user.get("sub_token") and is_active(user):
+        base_url = config.miniapp_url.rstrip("/") or _saved_public_base_url(config)
+
+        # If BotHost did not expose DOMAIN/MINIAPP_URL to the process, Telegram
+        # may still have the previously configured Mini App menu button. Reuse
+        # its URL so the bot and Mini App return the exact same /sub/<token>.
+        if not base_url and bot is not None:
+            try:
+                menu_button = await bot.get_chat_menu_button()
+                web_app = getattr(menu_button, "web_app", None)
+                menu_url = str(getattr(web_app, "url", "") or "").strip().rstrip("/")
+                if menu_url.startswith(("http://", "https://")):
+                    base_url = menu_url
+            except Exception as exc:
+                logger.warning("Could not resolve Mini App URL from Telegram menu: %s", exc)
+
+        if base_url:
+            token = quote(str(user["sub_token"]), safe="")
+            return f"{base_url}/sub/{token}"
+
     return state.subscription_url or ""
 
 
@@ -1158,7 +1184,12 @@ def build_router(
             return
 
         state, ok = await load_state(user, provider, config)
-        subscription_url = public_subscription_url(user, state, config)
+        subscription_url = await public_subscription_url(
+            user,
+            state,
+            config,
+            bot=callback.message.bot,
+        )
 
         # For H1Cloud the public MGN /sub/<token> URL is stable and does not
         # depend on a successful live panel read. The proxy can provision,
@@ -2317,7 +2348,12 @@ def build_router(
             return
 
         state, ok = await load_state(user, provider, config)
-        subscription_url = public_subscription_url(user, state, config)
+        subscription_url = await public_subscription_url(
+            user,
+            state,
+            config,
+            bot=message.bot,
+        )
 
         if not subscription_url:
             if not getattr(provider, "service_ready", True):
