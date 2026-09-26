@@ -586,3 +586,213 @@ body{letter-spacing:-.005em}
   font-size:14px;
   font-weight:760
 }
+
+
+/* ===== Motion pass: minimal iOS-like, fast, tactile ===== */
+:root{
+  --ease-out:cubic-bezier(.22,.8,.28,1);
+  --ease-spring:cubic-bezier(.2,.9,.25,1.15);
+  --motion-fast:150ms;
+  --motion-med:260ms
+}
+
+/* Flatter, cleaner hierarchy */
+.hero-card,
+.quick-grid button,
+.current-card,
+.capacity-card,
+.profile-hero,
+.plan-card,
+.device,
+.secondary-row,
+.menu-list button,
+.referral-card,
+.balance-card,
+.legal-card{
+  box-shadow:none!important
+}
+.hero-card,
+.quick-grid button,
+.current-card,
+.capacity-card,
+.profile-hero,
+.plan-card,
+.device,
+.secondary-row,
+.menu-list button{
+  border-color:rgba(255,255,255,.065)!important
+}
+.personal-link{
+  box-shadow:0 8px 24px rgba(0,0,0,.18)!important
+}
+
+/* Re-enable only deliberate micro-transitions */
+.quick-grid button,
+.plan-card,
+.secondary-row,
+.menu-list button,
+.personal-link,
+.hero-card{
+  transition:
+    transform var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease,
+    opacity var(--motion-fast) ease!important
+}
+button,.link-copy-icon,.bottom-nav button{
+  transition:
+    transform var(--motion-fast) var(--ease-out),
+    opacity var(--motion-fast) ease,
+    color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease!important
+}
+svg{
+  transition:
+    transform var(--motion-med) var(--ease-spring),
+    stroke var(--motion-fast) ease!important
+}
+
+/* Press feedback: tiny and physical, never bouncy/cartoonish */
+button.pressing,
+[data-nav].pressing,
+.plan-card.pressing{
+  transform:scale(.975)!important
+}
+.quick-grid button.pressing{transform:scale(.965)!important}
+.link-copy-icon.pressing{transform:scale(.91)!important}
+.personal-link button.pressing{transform:scale(.985)!important}
+
+/* First paint + page navigation stagger */
+.motion-in{
+  opacity:0;
+  transform:translate3d(0,10px,0) scale(.992);
+  animation:mgn-enter 430ms var(--ease-out) forwards;
+  animation-delay:calc(var(--motion-index,0) * 34ms);
+  will-change:transform,opacity
+}
+.topbar-in{
+  opacity:0;
+  transform:translate3d(0,-8px,0);
+  animation:mgn-header 390ms var(--ease-out) 40ms forwards
+}
+.nav-in{
+  opacity:0;
+  transform:translate(-50%,12px);
+  animation:mgn-nav 440ms var(--ease-out) 120ms forwards
+}
+
+@keyframes mgn-enter{
+  from{opacity:0;transform:translate3d(0,10px,0) scale(.992)}
+  to{opacity:1;transform:translate3d(0,0,0) scale(1)}
+}
+@keyframes mgn-header{
+  from{opacity:0;transform:translate3d(0,-8px,0)}
+  to{opacity:1;transform:translate3d(0,0,0)}
+}
+@keyframes mgn-nav{
+  from{opacity:0;transform:translate(-50%,12px)}
+  to{opacity:1;transform:translate(-50%,0)}
+}
+
+/* Active bottom-nav feels native */
+.bottom-nav button.active svg{transform:translateY(-1px) scale(1.08)}
+.nav-pop svg{animation:nav-icon-pop 320ms var(--ease-spring)}
+@keyframes nav-icon-pop{
+  0%{transform:scale(.9)}
+  58%{transform:scale(1.13)}
+  100%{transform:translateY(-1px) scale(1.08)}
+}
+.bottom-nav button.active::after{
+  transition:width 220ms var(--ease-out),opacity 160ms ease!important
+}
+
+/* Pink card: one restrained reveal, no infinite glow */
+.personal-link.motion-in{
+  animation:mgn-link-enter 500ms var(--ease-out) forwards;
+  animation-delay:calc(var(--motion-index,0) * 34ms)
+}
+@keyframes mgn-link-enter{
+  0%{opacity:0;transform:translate3d(0,13px,0) scale(.982)}
+  68%{opacity:1;transform:translate3d(0,-1px,0) scale(1.004)}
+  100%{opacity:1;transform:translate3d(0,0,0) scale(1)}
+}
+.personal-link.motion-in .link-icon svg{
+  animation:link-icon-draw 480ms var(--ease-spring) 120ms both
+}
+@keyframes link-icon-draw{
+  0%{opacity:.2;transform:rotate(-12deg) scale(.72)}
+  100%{opacity:1;transform:rotate(0) scale(1)}
+}
+
+/* Statistics feel alive without flashy counters */
+.hero-card.motion-in .stat-icon{
+  animation:stat-icon-in 420ms var(--ease-spring) both
+}
+.hero-card.motion-in .hero-stats>div:nth-child(2) .stat-icon{animation-delay:55ms}
+@keyframes stat-icon-in{
+  from{opacity:0;transform:scale(.78)}
+  to{opacity:1;transform:scale(1)}
+}
+.progress span{transition:width 520ms var(--ease-out)!important}
+
+/* Mini pop for explicit actions */
+.micro-pop{animation:micro-pop 360ms var(--ease-spring)}
+@keyframes micro-pop{
+  0%{transform:scale(1)}
+  45%{transform:scale(.965)}
+  100%{transform:scale(1)}
+}
+
+/* Sheets and toast */
+.sheet:not([hidden]){
+  animation:sheet-in 340ms var(--ease-out) both
+}
+.sheet-backdrop:not([hidden]){
+  animation:backdrop-in 220ms ease both
+}
+@keyframes sheet-in{
+  from{opacity:0;transform:translate(-50%,18px)}
+  to{opacity:1;transform:translate(-50%,0)}
+}
+@keyframes backdrop-in{
+  from{opacity:0}
+  to{opacity:1}
+}
+.toast{
+  transition:
+    opacity 180ms ease,
+    transform 220ms var(--ease-out)!important
+}
+
+/* Inputs: subtle focus instead of glow */
+.promo-field input,
+.support-field textarea{
+  transition:border-color 160ms ease,background-color 160ms ease!important
+}
+.promo-field input:focus,
+.support-field textarea:focus{
+  box-shadow:none!important;
+  background:#101014!important
+}
+
+/* Copy icon gives immediate visual acknowledgment */
+.link-copy-icon:active svg{transform:scale(.82) rotate(-4deg)}
+.link-primary-action:active svg,
+.link-secondary-action:active svg{transform:scale(.9)}
+
+/* Respect accessibility and low-power preferences */
+@media (prefers-reduced-motion:reduce){
+  .motion-in,.topbar-in,.nav-in,.nav-pop,.micro-pop,
+  .personal-link.motion-in,.personal-link.motion-in .link-icon svg,
+  .hero-card.motion-in .stat-icon,.sheet:not([hidden]),.sheet-backdrop:not([hidden]){
+    animation:none!important;
+    opacity:1!important;
+    transform:none!important
+  }
+  *,*::before,*::after{
+    scroll-behavior:auto!important;
+    transition-duration:.01ms!important;
+    animation-duration:.01ms!important;
+    animation-iteration-count:1!important
+  }
+}
