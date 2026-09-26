@@ -558,3 +558,31 @@ body{letter-spacing:-.005em}
   .link-copy b{font-size:21px}
   .hero-stats b{font-size:17px}
 }
+
+
+/* Final reference cleanup: no neon/glow, functional inline copy, clean device summary */
+.status.active i{box-shadow:none!important}
+.personal-link{box-shadow:0 12px 28px rgba(0,0,0,.24)!important}
+.bottom-nav button.active::after{box-shadow:none!important}
+.link-copy-icon{
+  flex:0 0 38px;
+  padding:0;
+  border:0;
+  min-height:38px;
+  cursor:pointer
+}
+.link-copy-icon:active{opacity:.72}
+.device-summary{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  min-height:42px;
+  padding:0 2px;
+  color:var(--muted);
+  font-size:12px
+}
+.device-summary b{
+  color:#fff;
+  font-size:14px;
+  font-weight:760
+}
