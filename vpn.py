@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json as json_module
 import base64
 from dataclasses import dataclass
 from datetime import datetime
@@ -325,28 +326,38 @@ class H1CloudVpnProvider(VpnProvider):
             json=json,
             ssl=self.verify_ssl,
         ) as response:
-            data = await response.json(content_type=None)
+            raw = await response.text()
+            data: dict[str, Any] = {}
+            if raw.strip():
+                try:
+                    parsed = json_module.loads(raw)
+                except (ValueError, TypeError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    data = parsed
+
             if allow_missing and (
                 response.status == 404
                 or (
-                    isinstance(data, dict)
-                    and data.get("ok") is False
+                    data.get("ok") is False
                     and str(data.get("error") or "") == "user_not_found"
                 )
             ):
                 return None
 
             if response.status >= 400:
-                message = (
-                    str(data.get("error") or data.get("message") or "")
-                    if isinstance(data, dict)
-                    else ""
-                )
+                message = str(data.get("error") or data.get("message") or "")
+                if not message and raw.strip():
+                    message = raw.strip()[:300]
                 raise RuntimeError(
                     f"H1Cloud API HTTP {response.status}: {message or path}"
                 )
 
-            if not isinstance(data, dict):
+            # DELETE/reset endpoints may legitimately return 204 or an empty body.
+            if not raw.strip():
+                return {}
+
+            if not data:
                 raise RuntimeError("H1Cloud returned invalid JSON")
             if data.get("ok") is False:
                 raise RuntimeError(
@@ -742,49 +753,49 @@ class H1CloudVpnProvider(VpnProvider):
         )
 
     async def reset_devices(self, user: dict[str, Any]) -> VpnState:
-        """Disconnect every current H1 device by recreating the client UUID.
-
-        H1 documents client deletion, but not deletion of one HWID/device.
-        The public MGN /sub/<token> URL remains stable; only the upstream H1
-        client/configuration is recreated.
-        """
+        """Clear H1's remembered devices without changing the VPN UUID."""
         name = self._name(user)
+
+        # H1/VLESS exposes an explicit reset-devices client action. This is
+        # safer than deleting/recreating the whole client and keeps the same
+        # subscription/UUID.
+        await self._request(
+            "PATCH",
+            f"/clients/{quote(name, safe='')}/reset-devices",
+        )
+
         nodes = await self._federated_nodes()
         node_ids = [self._node_id(node) for node in nodes if self._node_id(node)]
 
-        async def delete_remote(node_id: str) -> tuple[str, str | None]:
+        async def reset_remote(node_id: str) -> tuple[str, str | None]:
             prefix = f"/fed/lproxy/{quote(node_id, safe='')}"
             try:
-                existing = await self._get_client(name, prefix=prefix)
-                if existing is not None:
-                    await self._request(
-                        "DELETE",
-                        f"{prefix}/clients/{quote(name, safe='')}",
+                await asyncio.wait_for(
+                    self._request(
+                        "PATCH",
+                        f"{prefix}/clients/{quote(name, safe='')}/reset-devices",
                         allow_missing=True,
-                    )
+                    ),
+                    timeout=7.0,
+                )
                 return node_id, None
             except Exception as exc:
                 return node_id, str(exc).strip() or type(exc).__name__
 
         results = await asyncio.gather(
-            *(delete_remote(node_id) for node_id in node_ids),
+            *(reset_remote(node_id) for node_id in node_ids),
             return_exceptions=False,
         )
         errors = [f"{node_id}: {error}" for node_id, error in results if error]
         if errors:
             logger.warning(
-                "H1Cloud device reset remote cleanup partial for %s: %s",
+                "H1Cloud device reset partial for %s: %s",
                 name,
                 "; ".join(errors),
             )
 
-        await self._request(
-            "DELETE",
-            f"/clients/{quote(name, safe='')}",
-            allow_missing=True,
-        )
-        logger.info("H1Cloud devices reset for %s; recreating client", name)
-        return await self.provision(user)
+        logger.info("H1Cloud remembered devices reset for %s", name)
+        return await self.get_state(user)
 
     async def health(self) -> dict[str, Any]:
         data = await self._request("GET", "/health")
