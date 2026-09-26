@@ -26,6 +26,43 @@
   const notify=(type='success')=>{try{tg?.HapticFeedback?.notificationOccurred(type)}catch(_){}};
 
   function icons(){try{window.lucide?.createIcons()}catch(_){}}
+
+  const reduceMotion=()=>window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches===true;
+
+  function animatePage(pageEl,{initial=false}={}){
+    if(!pageEl||reduceMotion())return;
+    const items=[
+      ...pageEl.querySelectorAll(
+        ':scope > .page-intro, :scope > article, :scope > .section-title, :scope > .quick-grid, :scope > .page-section-head, :scope > .plans, :scope > .stats-grid, :scope > .menu-list, :scope > .promo-field, :scope > .faq'
+      )
+    ];
+    items.forEach((el,index)=>{
+      el.style.setProperty('--motion-index',String(Math.min(index,8)));
+      el.classList.remove('motion-in');
+    });
+    // Force a fresh animation only on actual navigation / first paint.
+    void pageEl.offsetWidth;
+    items.forEach(el=>el.classList.add('motion-in'));
+    if(initial){
+      const header=document.querySelector('.topbar');
+      header?.classList.remove('topbar-in');
+      void header?.offsetWidth;
+      header?.classList.add('topbar-in');
+      const nav=document.querySelector('#bottomNav');
+      nav?.classList.remove('nav-in');
+      void nav?.offsetWidth;
+      nav?.classList.add('nav-in');
+    }
+  }
+
+  function pulseElement(el,className='micro-pop'){
+    if(!el||reduceMotion())return;
+    el.classList.remove(className);
+    void el.offsetWidth;
+    el.classList.add(className);
+    window.setTimeout(()=>el.classList.remove(className),420);
+  }
+
   function esc(value=''){
     return String(value).replace(/[&<>"']/g,ch=>({
       '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
@@ -288,6 +325,7 @@
   }
 
 
+  let initialMotionDone=false;
   function render(){
     if(!state.data)return;
     setAvatar('avatar',state.data.user);
@@ -299,15 +337,30 @@
     renderBonuses();
     renderClients();
     icons();
-    $('#loader').classList.add('hidden');
+    const loader=$('#loader');
+    loader.classList.add('hidden');
+    if(!initialMotionDone){
+      initialMotionDone=true;
+      requestAnimationFrame(()=>animatePage($('.page.active'),{initial:true}));
+    }
   }
 
   function go(page){
     if(!$('.page[data-page="'+page+'"]'))page='home';
+    if(page===state.page&&$('.page[data-page="'+page+'"]')?.classList.contains('active'))return;
     if(ROOT_PAGES.has(page))state.previousRoot=page;
     state.page=page;
-    $$('.page').forEach(el=>el.classList.toggle('active',el.dataset.page===page));
-    $$('#bottomNav button').forEach(el=>el.classList.toggle('active',el.dataset.nav===page));
+    let activePage=null;
+    $('.page').forEach(el=>{
+      const active=el.dataset.page===page;
+      el.classList.toggle('active',active);
+      if(active)activePage=el;
+    });
+    $('#bottomNav button').forEach(el=>{
+      const active=el.dataset.nav===page;
+      el.classList.toggle('active',active);
+      if(active)pulseElement(el,'nav-pop');
+    });
     $('#bottomNav').style.display=ROOT_PAGES.has(page)?'grid':'none';
     window.scrollTo({top:0,behavior:'auto'});
     try{
@@ -316,6 +369,7 @@
     }catch(_){}
     haptic();
     icons();
+    requestAnimationFrame(()=>animatePage(activePage));
   }
 
   async function load(silent=false){
@@ -585,9 +639,9 @@
     try{tg?.openTelegramLink?tg.openTelegramLink(share):window.open(share,'_blank')}catch(_){window.open(share,'_blank')}
   }
   $$('[data-nav]').forEach(btn=>btn.addEventListener('click',()=>go(btn.dataset.nav)));
-  $('#copySubscriptionHome').onclick=copySubscription;
-  $('#copySubscriptionInline').onclick=copySubscription;
-  $('#openHappHome').onclick=openHapp;
+  $('#copySubscriptionHome').onclick=event=>{pulseElement(event.currentTarget);copySubscription()};
+  $('#copySubscriptionInline').onclick=event=>{pulseElement(event.currentTarget);copySubscription()};
+  $('#openHappHome').onclick=event=>{pulseElement(event.currentTarget);openHapp()};
   $('#copySubscriptionPlans').onclick=copySubscription;
   $('#trialBtn').onclick=activateTrial;
   $('#buyDevicePage').onclick=openDeviceSheet;
@@ -613,7 +667,19 @@
     if(result)result.textContent='';
   });
 
-  window.addEventListener('focus',refreshTrialState);
+  document.addEventListener('pointerdown',event=>{
+    const el=event.target.closest('button,[data-nav],.plan-card');
+    if(!el||el.disabled||reduceMotion())return;
+    el.classList.add('pressing');
+  },{passive:true});
+  const clearPress=event=>{
+    const el=event.target.closest?.('button,[data-nav],.plan-card');
+    el?.classList.remove('pressing');
+  };
+  document.addEventListener('pointerup',clearPress,{passive:true});
+  document.addEventListener('pointercancel',clearPress,{passive:true});
+
+    window.addEventListener('focus',refreshTrialState);
   document.addEventListener('visibilitychange',()=>{
     if(document.visibilityState==='visible')refreshTrialState();
   });
