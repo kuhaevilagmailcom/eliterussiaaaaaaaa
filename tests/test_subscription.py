@@ -19,4 +19,5 @@ def test_h1_capabilities_are_explicit():
     assert capabilities.supports_federation
     assert capabilities.supports_subscription_proxy
     assert capabilities.supports_device_list
-    assert capabilities.supports_device_removal
+    assert not capabilities.supports_device_removal
+    assert capabilities.supports_device_reset
