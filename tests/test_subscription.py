@@ -21,3 +21,22 @@ def test_h1_capabilities_are_explicit():
     assert capabilities.supports_device_list
     assert not capabilities.supports_device_removal
     assert capabilities.supports_device_reset
+
+
+def test_h1_extracts_vless_links_from_client_payload():
+    client = {
+        "link": "vless://one@example.com:443?security=tls#one",
+        "links": {
+            "ws": "vless://two@example.com:443?security=tls#two",
+            "ignored": "https://example.com/sub",
+        },
+        "inbound_links": [
+            {"url": "vless://three@example.com:443?security=tls#three"},
+            {"link": "vless://two@example.com:443?security=tls#two"},
+        ],
+    }
+    assert H1CloudVpnProvider._client_vless_links(client) == [
+        "vless://two@example.com:443?security=tls#two",
+        "vless://one@example.com:443?security=tls#one",
+        "vless://three@example.com:443?security=tls#three",
+    ]
