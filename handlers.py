@@ -260,10 +260,11 @@ def connection_keyboard(
     back_data: str = "home",
 ) -> Any:
     kb = InlineKeyboardBuilder()
+    primary_client = CLIENTS[0]
     kb.row(
         blue_inline_button(
-            "🚀 Открыть VPN",
-            url=subscription_url,
+            "🩷 Подключить в Happ",
+            url=client_redirect_url(subscription_url, primary_client),
         )
     )
     kb.row(

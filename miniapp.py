@@ -7,6 +7,7 @@ import hmac
 import json
 import logging
 import time
+from html import escape
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import parse_qsl, quote
@@ -498,7 +499,23 @@ class MiniAppServer:
         target = client.import_url(subscription_url)
         if not target:
             raise web.HTTPFound(client.download_url)
-        raise web.HTTPFound(target)
+        safe_target = escape(target, quote=True)
+        safe_download = escape(client.download_url, quote=True)
+        safe_name = escape(client.name)
+        return web.Response(
+            text=f"""<!doctype html>
+<html lang=\"ru\"><head><meta charset=\"utf-8\">
+<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+<title>MGN VPN — {safe_name}</title></head>
+<body style=\"margin:0;background:#09090b;color:#fff;font:16px system-ui;display:grid;place-items:center;min-height:100vh;text-align:center\">
+<main style=\"max-width:420px;padding:28px\"><h1>Открываем {safe_name}</h1>
+<p style=\"color:#a1a1aa\">Подписка MGN VPN будет добавлена автоматически.</p>
+<a href=\"{safe_target}\" style=\"display:block;padding:16px;border-radius:14px;background:#ff3dbb;color:#fff;text-decoration:none;font-weight:700\">Открыть {safe_name}</a>
+<a href=\"{safe_download}\" style=\"display:block;margin-top:18px;color:#a1a1aa\">Установить приложение</a></main>
+<script>location.href={json.dumps(target)};</script></body></html>""",
+            content_type="text/html",
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def me(self, request: web.Request) -> web.Response:
         uid, tg_user, row = await self._auth(request)

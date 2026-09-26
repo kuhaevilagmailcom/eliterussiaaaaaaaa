@@ -11,6 +11,7 @@ class VpnClient:
     icon: str
     download_url: str
     deep_link_template: str | None = None
+    subscription_url_safe: str = ""
 
     @property
     def supports_subscription_import(self) -> bool:
@@ -20,7 +21,7 @@ class VpnClient:
         if not self.deep_link_template:
             return None
         return self.deep_link_template.format(
-            subscription_url=quote(subscription_url, safe=":/?=&%"),
+            subscription_url=quote(subscription_url, safe=self.subscription_url_safe),
         )
 
 
@@ -28,17 +29,26 @@ class VpnClient:
 # documentation confirms it. Other clients intentionally use copy + download.
 CLIENTS: tuple[VpnClient, ...] = (
     VpnClient(
+        name="Happ",
+        platform="Android · iOS · Windows · macOS · Linux",
+        icon="🩷",
+        download_url="https://www.happ.su/main/",
+        deep_link_template="happ://add/{subscription_url}",
+        subscription_url_safe=":/",
+    ),
+    VpnClient(
         name="Hiddify",
         platform="Android · iOS · Windows · macOS · Linux",
         icon="🔷",
         download_url="https://github.com/hiddify/hiddify-app/releases",
-        deep_link_template="hiddify://import/{subscription_url}#MGN%20VPN",
+        deep_link_template="hiddify://install-sub?url={subscription_url}#MGN%20VPN",
     ),
     VpnClient(
         name="v2rayNG",
         platform="Android",
         icon="📱",
         download_url="https://github.com/2dust/v2rayNG/releases",
+        deep_link_template="v2rayng://install-sub?url={subscription_url}#MGN%20VPN",
     ),
     VpnClient(
         name="NekoBox",

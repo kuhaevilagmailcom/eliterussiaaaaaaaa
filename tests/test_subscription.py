@@ -10,7 +10,7 @@ def test_plain_and_base64_subscriptions_get_pretty_names():
     plain, plain_count = prettify_subscription_payload(VLESS.encode())
     encoded, encoded_count = prettify_subscription_payload(base64.b64encode(VLESS.encode()))
     assert plain_count == encoded_count == 1
-    assert b"#%F0%9F" in plain
+    assert b"#%F0%9F" in base64.b64decode(plain)
     assert b"#%F0%9F" in base64.b64decode(encoded)
 
 
@@ -39,4 +39,27 @@ def test_h1_extracts_vless_links_from_client_payload():
         "vless://two@example.com:443?security=tls#two",
         "vless://one@example.com:443?security=tls#one",
         "vless://three@example.com:443?security=tls#three",
+    ]
+
+
+def test_h1_extracts_nested_client_and_link_payloads():
+    payload = {
+        "data": {
+            "result": {
+                "client": {
+                    "name": "mgn_42",
+                    "links": {
+                        "reality": {"uri": "VLESS://four@example.com:443#four"},
+                        "groups": [
+                            {"connection": {"url": "vless://five@example.com:443#five"}}
+                        ],
+                    },
+                }
+            }
+        }
+    }
+    client = H1CloudVpnProvider._extract_client(payload)
+    assert H1CloudVpnProvider._client_vless_links(client) == [
+        "VLESS://four@example.com:443#four",
+        "vless://five@example.com:443#five",
     ]

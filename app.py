@@ -148,7 +148,7 @@ async def main() -> None:
 
     config = Config.from_env()
     logging.getLogger(__name__).info(
-        "MGN VPN build: h1cloud-v16-direct-sub | vpn_mode=%s",
+        "MGN VPN build: h1cloud-v17-client-import | vpn_mode=%s",
         config.vpn_mode,
     )
     prepare_persistent_database(config.db_path)

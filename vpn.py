@@ -47,14 +47,13 @@ def _location_label(value: str) -> str:
 
 
 def prettify_subscription_payload(payload: bytes) -> tuple[bytes, int]:
-    """Normalize H1 subscription node names while preserving its format."""
+    """Normalize H1 node names and return a standard base64 subscription."""
 
     raw_text = payload.decode("utf-8", errors="ignore").strip()
     if not raw_text:
         return payload, 0
 
     decoded_text = raw_text
-    encoded = False
     if "vless://" not in raw_text.lower():
         compact = "".join(raw_text.split())
         if compact:
@@ -66,7 +65,6 @@ def prettify_subscription_payload(payload: bytes) -> tuple[bytes, int]:
                     continue
                 if "vless://" in candidate.lower():
                     decoded_text = candidate
-                    encoded = True
                     break
 
     count = 0
@@ -90,9 +88,10 @@ def prettify_subscription_payload(payload: bytes) -> tuple[bytes, int]:
         output.append(line)
 
     rendered = "\n".join(output).encode("utf-8")
-    if encoded:
-        rendered = base64.b64encode(rendered)
-    return rendered, count
+    # A base64-encoded newline list is the common subscription format shared
+    # by Happ, Hiddify and v2rayNG. Always returning it avoids client-specific
+    # behavior when H1 alternates between encoded and plain responses.
+    return base64.b64encode(rendered), count
 
 
 @dataclass
@@ -367,13 +366,25 @@ class H1CloudVpnProvider(VpnProvider):
 
     @staticmethod
     def _extract_client(data: dict[str, Any] | None) -> dict[str, Any] | None:
-        if not data:
-            return None
-        client = data.get("client")
-        if isinstance(client, dict):
-            return dict(client)
-        if data.get("name") or data.get("uuid"):
-            return dict(data)
+        """Unwrap the response variants used by H1Cloud installations."""
+
+        current: Any = data
+        for _depth in range(5):
+            if not isinstance(current, dict) or not current:
+                return None
+            if current.get("name") or current.get("uuid") or current.get("links"):
+                return dict(current)
+            nested = next(
+                (
+                    current.get(key)
+                    for key in ("client", "data", "result", "item")
+                    if isinstance(current.get(key), dict)
+                ),
+                None,
+            )
+            if nested is None:
+                return None
+            current = nested
         return None
 
     async def _get_client(
@@ -540,37 +551,24 @@ class H1CloudVpnProvider(VpnProvider):
         seen: set[str] = set()
 
         def add(value: Any) -> None:
-            if not isinstance(value, str):
+            if isinstance(value, str):
+                normalized = value.strip()
+                if normalized.lower().startswith("vless://") and normalized not in seen:
+                    seen.add(normalized)
+                    found.append(normalized)
                 return
-            value = value.strip()
-            if value.startswith("vless://") and value not in seen:
-                seen.add(value)
-                found.append(value)
+            if isinstance(value, dict):
+                for nested in value.values():
+                    add(nested)
+                return
+            if isinstance(value, (list, tuple)):
+                for nested in value:
+                    add(nested)
 
-        links = client.get("links")
-        if isinstance(links, dict):
-            for value in links.values():
-                add(value)
-        elif isinstance(links, list):
-            for value in links:
-                if isinstance(value, dict):
-                    add(value.get("link"))
-                    add(value.get("url"))
-                    add(value.get("uri"))
-                else:
-                    add(value)
-
-        add(client.get("link"))
-
-        inbound_links = client.get("inbound_links")
-        if isinstance(inbound_links, list):
-            for item in inbound_links:
-                if isinstance(item, dict):
-                    add(item.get("link"))
-                    add(item.get("url"))
-                    add(item.get("uri"))
-                else:
-                    add(item)
+        # H1Cloud versions expose links as strings, maps, lists, or nested
+        # inbound objects. Traverse only the link-bearing response fields.
+        for key in ("links", "link", "inbound_links", "inboundLinks"):
+            add(client.get(key))
 
         return found
 
@@ -925,7 +923,11 @@ class H1CloudVpnProvider(VpnProvider):
                 name,
                 len(links),
             )
-            return ("\n".join(links) + "\n").encode("utf-8"), {}
+            # Base64 is the interoperable subscription representation expected
+            # by v2rayNG and is also accepted by Happ/Hiddify. A plain newline
+            # list works in some clients but is rejected by stricter parsers.
+            payload = ("\n".join(links) + "\n").encode("utf-8")
+            return base64.b64encode(payload), {}
 
         # Compatibility fallback for older H1 installations that expose only a
         # public subscription URL and no links in the client API payload.
