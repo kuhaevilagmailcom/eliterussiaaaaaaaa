@@ -116,6 +116,7 @@ class MiniAppServer:
         self._bot_username = ""
         self._last_reconcile: dict[int, float] = {}
         self._reconcile_tasks: dict[int, asyncio.Task] = {}
+        self._subscription_refresh_tasks: dict[int, asyncio.Task] = {}
         self._subscription_cache: dict[str, dict] = {}
         self._subscription_cache_dir = Path(self.config.db_path).with_name(
             "subscription_cache"
@@ -125,7 +126,7 @@ class MiniAppServer:
         # Version the on-disk cache so a deployment that fixes subscription
         # composition never keeps serving an older NL-only payload.
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        return self._subscription_cache_dir / f"v2-{digest}.json"
+        return self._subscription_cache_dir / f"v3-{digest}.json"
 
     def _read_persistent_subscription_cache(self, token: str) -> dict | None:
         path = self._subscription_cache_path(token)
@@ -276,7 +277,7 @@ class MiniAppServer:
         try:
             await asyncio.wait_for(
                 self.provider.provision(user),
-                15.0,
+                45.0,
             )
             self._last_reconcile[user_id] = time.monotonic()
         except Exception as exc:
@@ -295,6 +296,56 @@ class MiniAppServer:
             return
         self._reconcile_tasks[user_id] = asyncio.create_task(
             self._reconcile_h1(dict(user))
+        )
+
+    async def _refresh_subscription_federation(
+        self,
+        user: dict,
+        token: str,
+    ) -> None:
+        user_id = int(user["telegram_id"])
+        try:
+            await asyncio.wait_for(self.provider.provision(user), 45.0)
+            # The old cached payload may contain only NL/US. Remove it after
+            # reconciliation so the next client refresh is rebuilt from all
+            # reachable linked nodes.
+            self._subscription_cache.pop(token, None)
+            try:
+                self._subscription_cache_path(token).unlink()
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                logger.warning(
+                    "Could not invalidate subscription cache for %s: %s",
+                    user_id,
+                    exc,
+                )
+            logger.info(
+                "H1Cloud background federation refresh completed for %s",
+                user_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "H1Cloud background federation refresh failed for %s: %s",
+                user_id,
+                str(exc).strip() or type(exc).__name__,
+            )
+        finally:
+            self._subscription_refresh_tasks.pop(user_id, None)
+
+    def _schedule_subscription_federation_refresh(
+        self,
+        user: dict,
+        token: str,
+    ) -> None:
+        if getattr(self.provider, "mode_name", "") != "h1cloud":
+            return
+        user_id = int(user["telegram_id"])
+        current = self._subscription_refresh_tasks.get(user_id)
+        if current and not current.done():
+            return
+        self._subscription_refresh_tasks[user_id] = asyncio.create_task(
+            self._refresh_subscription_federation(dict(user), token)
         )
 
     async def _load_state(self, user: dict) -> tuple[VpnState, bool]:
@@ -457,6 +508,8 @@ class MiniAppServer:
             raise web.HTTPNotFound(text="Subscription not found")
         if not _active(user):
             raise web.HTTPForbidden(text="Subscription expired")
+
+        self._schedule_subscription_federation_refresh(user, token)
 
         cached = self._subscription_cache.get(token)
         now = time.monotonic()
