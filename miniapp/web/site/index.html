@@ -3,119 +3,228 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#050507">
-  <meta name="description" content="MGN VPN — VPN в Telegram. Персональная подписка, Happ и управление устройствами.">
-  <meta property="og:title" content="MGN VPN — свободный интернет">
-  <meta property="og:description" content="Подключение через Telegram и Happ за пару нажатий.">
+  <meta name="theme-color" content="#07070a">
+  <meta name="description" content="MGN VPN — подключение через Telegram и Happ. Персональная подписка, тарифы и управление устройствами.">
+  <meta property="og:title" content="MGN VPN">
+  <meta property="og:description" content="VPN без лишнего: подключение через Telegram за пару нажатий.">
   <meta property="og:type" content="website">
-  <title>MGN VPN — свободный интернет</title>
-  <link rel="stylesheet" href="/static/site/styles.css?v=1">
+  <title>MGN VPN</title>
+  <link rel="stylesheet" href="/static/site/styles.css?v=2">
 </head>
 <body>
   <div class="noise" aria-hidden="true"></div>
 
   <header class="site-header">
-    <a class="brand" href="#top" aria-label="MGN VPN">
+    <a class="brand" href="#top" aria-label="MGN VPN — на главную">
       <img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN">
     </a>
-    <nav class="desktop-nav">
+
+    <nav class="desktop-nav" aria-label="Основная навигация">
       <a href="#benefits">Возможности</a>
       <a href="#setup">Подключение</a>
       <a href="#plans">Тарифы</a>
       <a href="#faq">FAQ</a>
     </nav>
+
     <div class="header-actions">
-      <a class="button button-ghost button-small" href="/app">Mini App</a>
-      <a class="button button-primary button-small" data-bot-link href="#">Подключить</a>
+      <a class="button button-small button-ghost" href="/app">Mini App</a>
+      <a class="button button-small button-primary" data-bot-link href="#">Подключить</a>
     </div>
   </header>
 
   <main id="main">
     <section class="hero" id="top">
       <div class="hero-copy reveal">
-        <p class="eyebrow"><span></span> VPN прямо в Telegram</p>
-        <h1>Свободный<br>и безопасный<br>интернет с <em>MGN VPN</em></h1>
-        <p class="hero-lead">Персональная VPN‑ссылка, подключение через Happ и управление тарифом и устройствами в одном месте.</p>
+        <p class="eyebrow"><span></span> MGN VPN</p>
+        <h1>VPN без лишнего.<br><em>Быстро и понятно.</em></h1>
+        <p class="hero-lead">Открой Telegram, получи персональную ссылку и добавь её в Happ. Тариф, устройства и продление — в одном месте.</p>
+
         <div class="hero-actions">
-          <a class="button button-primary" data-bot-link href="#">Подключить VPN <span>→</span></a>
-          <a class="button button-ghost" href="/app">Открыть Mini App <span>↗</span></a>
+          <a class="button button-primary" data-bot-link href="#">
+            Подключить VPN
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </a>
+          <a class="button button-text" href="#setup">
+            Как подключиться
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+          </a>
         </div>
-        <div class="trust-row">
-          <span><i></i> Персональная ссылка</span>
+
+        <div class="trust-row" aria-label="Ключевые свойства">
+          <span><i></i> Happ</span>
           <span><i></i> До <b data-device-limit>5</b> устройств</span>
-          <span><i></i> Быстрое подключение через Happ</span>
+          <span><i></i> Персональная ссылка</span>
         </div>
       </div>
 
-      <div class="hero-visual reveal" aria-label="MGN VPN Mini App">
+      <div class="hero-visual reveal" aria-label="Пример подключения MGN VPN">
         <div class="orbit orbit-one"></div>
         <div class="orbit orbit-two"></div>
-        <div class="phone-glow"></div>
-        <img class="phone-image" src="/static/site/phone.webp?v=1" alt="MGN VPN Mini App на iPhone">
-        <div class="float-card float-one"><span>▦</span><strong>Mini App</strong><small>всё управление в Telegram</small></div>
-        <div class="float-card float-two"><span>⚡</span><strong>Happ</strong><small>добавление подписки в один тап</small></div>
-        <div class="float-card float-three"><span>◎</span><strong>До 5 устройств</strong><small>слоты видны в профиле</small></div>
-      </div>
-    </section>
 
-    <section class="metrics reveal">
-      <article><span>⚡</span><b>1–2 нажатия</b><small>до подключения VPN</small></article>
-      <article><span>▦</span><b>5 тарифов</b><small>от 7 дней до 1 года</small></article>
-      <article><span>▣</span><b>До 5 устройств</b><small>дополнительные слоты</small></article>
-      <article><span>✦</span><b>Всё в Telegram</b><small>покупка, профиль, поддержка</small></article>
+        <div class="signal-card">
+          <div class="signal-head">
+            <img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN">
+            <span class="status-pill"><b></b> готово</span>
+          </div>
+
+          <div class="signal-core">
+            <div class="signal-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/></svg>
+            </div>
+            <small>ПЕРСОНАЛЬНАЯ ССЫЛКА</small>
+            <strong>mgnvpn.ru/sub/••••••••</strong>
+          </div>
+
+          <a class="connect-row" data-bot-link href="#">
+            <span class="connect-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+            </span>
+            <span><b>Добавить в Happ</b><small>Откроется через Telegram</small></span>
+            <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+          </a>
+
+          <div class="signal-stats">
+            <div>
+              <span>Устройства</span>
+              <strong>до <b data-device-limit>5</b></strong>
+            </div>
+            <div>
+              <span>Управление</span>
+              <strong>Mini App</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="float-card float-left">
+          <span class="icon-wrap">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </span>
+          <strong>Быстрый старт</strong>
+          <small>пара нажатий</small>
+        </div>
+
+        <div class="float-card float-right">
+          <span class="icon-wrap">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6M9 11h6"/></svg>
+          </span>
+          <strong>Один профиль</strong>
+          <small>бот + Mini App</small>
+        </div>
+      </div>
     </section>
 
     <section class="section" id="benefits">
       <div class="section-heading reveal">
         <p class="eyebrow"><span></span> Возможности</p>
-        <h2>Минимум лишнего.<br>Максимум понятности.</h2>
-        <p>Сайт, бот и Mini App работают как один продукт. Пользователь получает одну персональную ссылку и подключает её в Happ.</p>
+        <h2>Только то,<br>что действительно нужно.</h2>
+        <p>Без перегруженных экранов и лишней информации. Подключение, подписка и устройства — всё на своих местах.</p>
       </div>
+
       <div class="feature-grid">
         <article class="feature feature-large reveal">
-          <div class="feature-icon">⌁</div>
-          <p class="feature-index">01 / ПОДПИСКА</p>
-          <h3>Одна персональная ссылка</h3>
-          <p>После активации тарифа ссылка вида <b>mgnvpn.ru/sub/…</b> появляется в боте и Mini App. Она принадлежит только владельцу аккаунта.</p>
-          <div class="pink-orbit"></div>
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/></svg>
+          </div>
+          <p class="feature-index">01 / ССЫЛКА</p>
+          <h3>Одна персональная ссылка для подключения</h3>
+          <p>После активации подписки ссылка появляется в боте и Mini App. Её можно скопировать или сразу открыть в Happ.</p>
+          <div class="feature-art" aria-hidden="true"><span></span><span></span><span></span></div>
         </article>
+
         <article class="feature reveal">
-          <div class="feature-icon">⚡</div>
-          <p class="feature-index">02 / СКОРОСТЬ</p>
-          <h3>Подключение без ручной настройки</h3>
-          <p>Кнопка «Добавить в Happ» открывает защищённый HTTPS‑переход и передаёт подписку клиенту.</p>
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 2-8 12h7l-1 8 8-12h-7z"/></svg>
+          </div>
+          <p class="feature-index">02 / ПОДКЛЮЧЕНИЕ</p>
+          <h3>Happ без ручной настройки</h3>
+          <p>Нажми «Добавить в Happ» — остальное делает сервис.</p>
         </article>
+
         <article class="feature reveal">
-          <div class="feature-icon">▣</div>
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="14" height="10" rx="2"/><path d="M8 19h4M10 15v4"/><rect x="16" y="9" width="5" height="10" rx="1.4"/></svg>
+          </div>
           <p class="feature-index">03 / УСТРОЙСТВА</p>
-          <h3>Всё видно в профиле</h3>
-          <p>Количество активных устройств, свободные слоты и действия с устройствами находятся внутри Mini App.</p>
+          <h3>До <span data-device-limit>5</span> устройств в профиле</h3>
+          <p>Количество активных устройств и свободных слотов всегда видно в Mini App.</p>
         </article>
       </div>
     </section>
 
     <section class="section setup-section" id="setup">
       <div class="section-heading centered reveal">
-        <p class="eyebrow"><span></span> Три шага</p>
-        <h2>От Telegram до VPN<br>за пару минут.</h2>
+        <p class="eyebrow"><span></span> Подключение</p>
+        <h2>Три простых шага.</h2>
       </div>
+
       <ol class="steps">
-        <li class="reveal"><span class="step-number">01</span><div class="step-art">↗</div><h3>Открой MGN VPN</h3><p>Запусти бота или Mini App в Telegram.</p></li>
-        <li class="reveal"><span class="step-number">02</span><div class="step-art">⌁</div><h3>Получи ссылку</h3><p>После активации тарифа появится персональная ссылка подписки.</p></li>
-        <li class="reveal"><span class="step-number">03</span><div class="step-art">⚡</div><h3>Добавь в Happ</h3><p>Нажми одну кнопку — подписка откроется в клиенте.</p></li>
+        <li class="reveal">
+          <span class="step-number">01</span>
+          <div class="step-art">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3 9.5 14.5M21 3l-7 18-4-7-7-4z"/></svg>
+          </div>
+          <h3>Открой Telegram</h3>
+          <p>Запусти MGN VPN и выбери тариф.</p>
+        </li>
+
+        <li class="reveal">
+          <span class="step-number">02</span>
+          <div class="step-art">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/></svg>
+          </div>
+          <h3>Получи ссылку</h3>
+          <p>Она появится после активации подписки.</p>
+        </li>
+
+        <li class="reveal">
+          <span class="step-number">03</span>
+          <div class="step-art">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+          </div>
+          <h3>Добавь в Happ</h3>
+          <p>Нажми одну кнопку и подключайся.</p>
+        </li>
       </ol>
     </section>
 
-    <section class="section" id="plans">
+    <section class="section plans-section" id="plans">
       <div class="section-heading reveal">
         <p class="eyebrow"><span></span> Тарифы</p>
-        <h2>Выбери срок доступа.</h2>
-        <p>В тариф включено одно устройство. Дополнительные слоты можно добавить отдельно, максимум — 5.</p>
+        <h2>Выбери срок.</h2>
+        <p>В базовый тариф входит одно устройство. Дополнительные слоты можно добавить отдельно.</p>
       </div>
+
       <div class="plans">
-        <article class="plan reveal"><h3>1 месяц</h3><strong>149 ₽</strong><small>30 дней</small><a data-bot-link href="#">Выбрать</a></article>
-        <article class="plan plan-hot reveal"><span class="popular">ПОПУЛЯРНЫЙ</span><h3>3 месяца</h3><strong>349 ₽</strong><small>90 дней</small><a data-bot-link href="#">Подключить</a></article>
-        <article class="plan reveal"><h3>1 год</h3><strong>1200 ₽</strong><small>365 дней</small><a data-bot-link href="#">Выбрать</a></article>
+        <article class="plan reveal">
+          <h3>7 дней</h3>
+          <div class="price"><strong>59 ₽</strong><small>7 дней</small></div>
+          <a data-bot-link href="#">Выбрать</a>
+        </article>
+
+        <article class="plan reveal">
+          <h3>1 месяц</h3>
+          <div class="price"><strong>149 ₽</strong><small>30 дней</small></div>
+          <a data-bot-link href="#">Выбрать</a>
+        </article>
+
+        <article class="plan plan-hot reveal">
+          <span class="popular">ПОПУЛЯРНЫЙ</span>
+          <h3>3 месяца</h3>
+          <div class="price"><strong>349 ₽</strong><small>90 дней</small></div>
+          <a data-bot-link href="#">Подключить</a>
+        </article>
+
+        <article class="plan reveal">
+          <h3>6 месяцев</h3>
+          <div class="price"><strong>599 ₽</strong><small>180 дней</small></div>
+          <a data-bot-link href="#">Выбрать</a>
+        </article>
+
+        <article class="plan reveal">
+          <h3>1 год</h3>
+          <div class="price"><strong>1200 ₽</strong><small>365 дней</small></div>
+          <a data-bot-link href="#">Выбрать</a>
+        </article>
       </div>
     </section>
 
@@ -124,30 +233,41 @@
         <p class="eyebrow"><span></span> FAQ</p>
         <h2>Коротко о главном.</h2>
       </div>
+
       <div class="faq-list">
-        <details class="reveal"><summary>Как подключить MGN VPN?</summary><p>Открой Mini App, активируй тариф и нажми «Добавить в Happ». Если Happ не установлен, сначала установи его и повтори действие.</p></details>
-        <details class="reveal"><summary>Где находится моя ссылка?</summary><p>Она доступна в боте и Mini App после активации подписки и имеет вид mgnvpn.ru/sub/…</p></details>
-        <details class="reveal"><summary>Можно подключить несколько устройств?</summary><p>Да. Максимальный лимит — <span data-device-limit>5</span> устройств.</p></details>
-        <details class="reveal"><summary>Можно переслать ссылку другому человеку?</summary><p>Не стоит: персональная ссылка даёт доступ к вашей подписке. Храните её только у себя.</p></details>
+        <details class="reveal">
+          <summary>Как подключить MGN VPN?</summary>
+          <p>Открой бота или Mini App, активируй тариф и нажми «Добавить в Happ».</p>
+        </details>
+        <details class="reveal">
+          <summary>Где находится персональная ссылка?</summary>
+          <p>Она появляется в боте и Mini App после активации подписки.</p>
+        </details>
+        <details class="reveal">
+          <summary>Сколько устройств можно подключить?</summary>
+          <p>До <span data-device-limit>5</span> устройств. Лимит и свободные слоты видны в профиле.</p>
+        </details>
       </div>
     </section>
 
     <section class="final-cta reveal">
       <img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN">
       <p class="eyebrow"><span></span> MGN VPN</p>
-      <h2>Открой и подключись.</h2>
-      <p>Без ручного копирования конфигов и лишних экранов.</p>
-      <a class="button button-primary" data-bot-link href="#">Открыть в Telegram <span>↗</span></a>
+      <h2>Открой. Подключи. Готово.</h2>
+      <a class="button button-primary" data-bot-link href="#">
+        Подключить VPN
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </a>
     </section>
   </main>
 
   <footer>
     <a class="brand" href="#top"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"></a>
-    <p>MGN VPN · Используйте сервис в рамках законов вашей страны.</p>
+    <p>MGN VPN</p>
     <a data-support-link href="#">Поддержка</a>
   </footer>
 
-  <script src="/static/site/config.js?v=1"></script>
-  <script src="/static/site/app.js?v=1"></script>
+  <script src="/static/site/config.js?v=2"></script>
+  <script src="/static/site/app.js?v=2"></script>
 </body>
 </html>
