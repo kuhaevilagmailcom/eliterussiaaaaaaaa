@@ -122,8 +122,10 @@ class MiniAppServer:
         )
 
     def _subscription_cache_path(self, token: str) -> Path:
+        # Version the on-disk cache so a deployment that fixes subscription
+        # composition never keeps serving an older NL-only payload.
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        return self._subscription_cache_dir / f"{digest}.json"
+        return self._subscription_cache_dir / f"v2-{digest}.json"
 
     def _read_persistent_subscription_cache(self, token: str) -> dict | None:
         path = self._subscription_cache_path(token)
