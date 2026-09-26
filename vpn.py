@@ -103,9 +103,18 @@ class VpnState:
     devices: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class ProviderCapabilities:
+    supports_device_list: bool = False
+    supports_device_removal: bool = False
+    supports_federation: bool = False
+    supports_subscription_proxy: bool = False
+
+
 class VpnProvider:
     service_ready: bool = True
     mode_name: str = "vpn"
+    capabilities = ProviderCapabilities()
 
     async def provision(self, user: dict[str, Any]) -> VpnState:
         raise NotImplementedError
@@ -157,6 +166,10 @@ class DemoVpnProvider(VpnProvider):
 
 
 class WebhookVpnProvider(VpnProvider):
+    capabilities = ProviderCapabilities(
+        supports_device_list=True,
+        supports_device_removal=True,
+    )
     service_ready = True
     mode_name = "webhook"
 
@@ -232,6 +245,12 @@ class WebhookVpnProvider(VpnProvider):
 
 
 class H1CloudVpnProvider(VpnProvider):
+    capabilities = ProviderCapabilities(
+        supports_device_list=True,
+        supports_device_removal=True,
+        supports_federation=True,
+        supports_subscription_proxy=True,
+    )
     """Native provider for H1/VLESS Panel, including federated locations."""
 
     service_ready = True
@@ -752,6 +771,10 @@ class H1CloudVpnProvider(VpnProvider):
 
 
 class XuiVpnProvider(VpnProvider):
+    capabilities = ProviderCapabilities(
+        supports_device_list=True,
+        supports_device_removal=True,
+    )
     """Native provider for the configured 3x-ui client API."""
 
     service_ready = True

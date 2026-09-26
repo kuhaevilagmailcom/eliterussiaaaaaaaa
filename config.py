@@ -134,7 +134,8 @@ class Config:
                 "",
             ).strip(),
             xui_verify_ssl=_bool(os.getenv("XUI_VERIFY_SSL", "true")),
-            trial_minutes=max(1, int(os.getenv("TRIAL_MINUTES", "60"))),
+            # One channel bonus per Telegram account: exactly one day.
+            trial_minutes=1440,
             trial_max_devices=max(1, int(os.getenv("TRIAL_MAX_DEVICES", "1"))),
             trial_channel_username=os.getenv(
                 "TRIAL_CHANNEL_USERNAME",

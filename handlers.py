@@ -5,6 +5,7 @@ import base64
 import html
 import logging
 import re
+from datetime import timedelta
 from io import BytesIO
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -13,6 +14,7 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from aiogram import F, Router
+import aiosqlite
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
@@ -34,13 +36,9 @@ from PIL import Image
 from catalog import (
     BASE_DEVICES,
     DEVICE_PRODUCT_CODE,
-    DIAMOND_REWARDS,
-    DIAMOND_SHOP_DAYS,
     EXTRA_DEVICE_PRICE_RUB,
     MAX_DEVICES,
     PLANS,
-    REFERRAL_FIRST_PAID_REWARD,
-    REFERRAL_TRIAL_REWARD,
     extra_device_price_stars,
     plan_price_rub,
     plan_price_stars,
@@ -51,6 +49,7 @@ from db import Database, from_iso, utcnow
 from emoji import EmojiBank
 from payments import RollyPayError, create_payment, get_payment
 from vpn import VpnProvider, VpnState
+from vpn_clients import CLIENTS, client_redirect_url
 
 
 PACK_CRYPTO = "CryptoGIFTPODARKI"
@@ -105,15 +104,6 @@ def main_menu_banner() -> BufferedInputFile:
 def is_active(user: dict[str, Any]) -> bool:
     until = from_iso(user.get("subscription_until"))
     return bool(until and until > utcnow())
-
-
-def plan_price_rub(config: Config, code: str) -> int:
-    return int(PLANS[code]["price_rub"])
-
-
-def plan_price_stars(config: Config, code: str) -> int:
-    rub = plan_price_rub(config, code)
-    return max(1, (rub * STAR_RATE_XTR + STAR_RATE_RUB - 1) // STAR_RATE_RUB)
 
 
 def format_until(user: dict[str, Any], config: Config) -> str:
@@ -217,7 +207,7 @@ def main_keyboard(
                 button("ℹ️ Информация"),
             ],
             [
-                button("💎 Купить VPN"),
+                button("💳 Купить VPN"),
                 button("📱 Устройства"),
             ],
             [
@@ -273,6 +263,18 @@ def connection_keyboard(
             subscription_url,
         )
     )
+    for client in CLIENTS:
+        target = (
+            client_redirect_url(subscription_url, client)
+            if client.supports_subscription_import
+            else client.download_url
+        )
+        label = (
+            f"{client.icon} Добавить в {client.name}"
+            if client.supports_subscription_import
+            else f"{client.icon} Скачать {client.name}"
+        )
+        kb.row(blue_inline_button(label, url=target))
     add_nav_buttons(kb, back_data=back_data)
     return kb.as_markup()
 
@@ -312,12 +314,12 @@ def main_menu_inline_keyboard(
         blue_inline_button("ℹ️ Информация", callback_data="menu:info"),
     )
     kb.row(
-        blue_inline_button("💎 Купить VPN", callback_data="plans"),
+        blue_inline_button("💳 Купить VPN", callback_data="plans"),
         blue_inline_button("📱 Устройства", callback_data="menu:devices"),
     )
     kb.row(
-        blue_inline_button("💎 Алмазы", callback_data="diamonds"),
-        blue_inline_button("👥 Друзья", callback_data="menu:friends"),
+        blue_inline_button("👥 Пригласить друзей", callback_data="menu:friends"),
+        blue_inline_button("🎟 Промокод", callback_data="menu:promo"),
     )
     kb.row(
         blue_inline_button("🆘 Поддержка", callback_data="menu:support"),
@@ -427,8 +429,6 @@ def profile_text(
 
     lines = [
         f"{e_profile} <b>Ваш ID:</b> <code>{user_id}</code>",
-        f"💎 <b>Алмазы:</b> {int(user.get('diamonds') or 0)}",
-        "",
         f"{e_sub} <b>Информация о подписке:</b>",
         f"├ Статус: <b>{'Активна' if active else 'Не активна'}</b>",
     ]
@@ -446,7 +446,7 @@ def profile_text(
         else:
             trial = "доступен после подписки на канал"
         lines += [
-            f"├ Пробный доступ: <b>{trial}</b>",
+            f"├ Бесплатный день: <b>{trial}</b>",
             f"└ Устройства: <b>до {max_devices}</b>",
         ]
 
@@ -944,17 +944,17 @@ def build_router(
         elif not user.get("trial_used"):
             channel = html.escape(config.trial_channel_username)
             lines += [
-                "└ Пробный доступ: <b>доступен</b>",
+                "└ Бесплатный день: <b>доступен</b>",
                 "",
-                "🎁 <b>Пробная подписка</b>",
+                "🎁 <b>Бесплатный день VPN</b>",
                 f"Чтобы активировать её, подпишитесь на канал <b>{channel}</b>.",
                 "После подписки нажмите <b>«🔗 Подключить VPN»</b>.",
             ]
         else:
             lines += [
-                "└ Пробный доступ: <b>уже использован</b>",
+                "└ Бесплатный день: <b>уже использован</b>",
                 "",
-                "Выберите платную подписку кнопкой <b>«💎 Купить VPN»</b>.",
+                "Выберите платную подписку кнопкой <b>«💳 Купить VPN»</b>.",
             ]
 
         if active and not getattr(provider, "service_ready", True):
@@ -977,127 +977,6 @@ def build_router(
             actor,
             profile_text(user, state, emoji, ok, config),
             reply_markup=section_nav_keyboard(),
-        )
-
-    async def show_diamonds(message: Message, actor) -> None:
-        user = await ensure_actor(actor)
-        balance = int(user.get("diamonds") or 0)
-
-        kb = InlineKeyboardBuilder()
-        kb.row(
-            blue_inline_button("🛍 Магазин", callback_data="diamonds:shop"),
-            blue_inline_button("👥 Заработать", callback_data="diamonds:earn"),
-        )
-        kb.row(
-            blue_inline_button("📜 История", callback_data="diamonds:history"),
-        )
-        add_nav_buttons(kb, back_data="home")
-
-        await send_screen(
-            message,
-            actor,
-            "💎 <b>Алмазы MGN VPN</b>\n\n"
-            f"Баланс — <b>{balance} 💎</b>\n\n"
-            "Получайте алмазы за покупки и приглашённых друзей, "
-            "а затем меняйте их на дни VPN и промокоды.",
-            reply_markup=kb.as_markup(),
-        )
-
-    async def show_diamond_shop(message: Message, actor) -> None:
-        user = await ensure_actor(actor)
-        balance = int(user.get("diamonds") or 0)
-        kb = InlineKeyboardBuilder()
-
-        for key, item in DIAMOND_SHOP_DAYS.items():
-            kb.row(
-                blue_inline_button(
-                    f"⏳ {item['days']} дн. VPN · {item['cost']} 💎",
-                    callback_data=f"shop:days:{key}",
-                )
-            )
-
-        promos = await db.promo_products()
-        for item in promos[:12]:
-            slug = str(item["slug"])
-            title = str(item["title"])
-            price = int(item["price_diamonds"])
-            stock = int(item["stock"])
-            kb.row(
-                blue_inline_button(
-                    f"🎟 {title[:28]} · {price} 💎 ({stock})",
-                    callback_data=f"shop:promo:{slug}",
-                )
-            )
-
-        add_nav_buttons(kb, back_data="diamonds")
-        promo_note = (
-            "\n\n🎟 Доступные промокоды показаны ниже."
-            if promos
-            else "\n\n🎟 Промокодов сейчас нет в наличии."
-        )
-        await send_screen(
-            message,
-            actor,
-            "🛍 <b>Магазин за алмазы</b>\n\n"
-            f"Ваш баланс — <b>{balance} 💎</b>\n\n"
-            "Выберите награду. Покупки списываются с баланса сразу."
-            + promo_note,
-            reply_markup=kb.as_markup(),
-        )
-
-    async def show_diamond_earn(message: Message, actor) -> None:
-        await ensure_actor(actor)
-        bot_info = await message.bot.get_me()
-        link = f"https://t.me/{bot_info.username}?start=ref_{actor.id}"
-        kb = InlineKeyboardBuilder()
-        kb.row(
-            blue_inline_button(
-                "👥 Поделиться ссылкой",
-                url=(
-                    "https://t.me/share/url?url="
-                    + quote(link, safe="")
-                    + "&text="
-                    + quote("Подключай MGN VPN", safe="")
-                ),
-            )
-        )
-        add_nav_buttons(kb, back_data="diamonds")
-
-        await send_screen(
-            message,
-            actor,
-            "💎 <b>Как заработать алмазы</b>\n\n"
-            f"7 дней VPN — <b>+{DIAMOND_REWARDS['7']} 💎</b>\n"
-            f"1 месяц — <b>+{DIAMOND_REWARDS['30']} 💎</b>\n"
-            f"3 месяца — <b>+{DIAMOND_REWARDS['90']} 💎</b>\n"
-            f"6 месяцев — <b>+{DIAMOND_REWARDS['180']} 💎</b>\n"
-            f"1 год — <b>+{DIAMOND_REWARDS['365']} 💎</b>\n\n"
-            f"Друг активировал пробник — <b>+{REFERRAL_TRIAL_REWARD} 💎</b>\n"
-            f"Друг впервые купил VPN — <b>+{REFERRAL_FIRST_PAID_REWARD} 💎</b>\n\n"
-            f"Ваша ссылка:\n<code>{html.escape(link)}</code>",
-            reply_markup=kb.as_markup(),
-        )
-
-    async def show_diamond_history(message: Message, actor) -> None:
-        await ensure_actor(actor)
-        history = await db.diamond_history(actor.id, 10)
-        lines = ["📜 <b>История алмазов</b>", ""]
-
-        if not history:
-            lines.append("Операций пока нет.")
-        else:
-            for item in history:
-                amount = int(item["amount"])
-                sign = "+" if amount > 0 else ""
-                lines.append(
-                    f"{sign}{amount} 💎 · {html.escape(str(item['reason']))}"
-                )
-
-        await send_screen(
-            message,
-            actor,
-            "\n".join(lines),
-            reply_markup=section_nav_keyboard(back_data="diamonds"),
         )
 
     async def activate_paid_plan(telegram_id: int, code: str) -> dict[str, Any]:
@@ -1126,26 +1005,7 @@ def build_router(
         payment_event_key: str,
     ) -> tuple[dict[str, Any], int]:
         user = await activate_paid_plan(target_telegram_id, code)
-
-        reward_amount = int(DIAMOND_REWARDS.get(code, 0))
-        if reward_amount:
-            await db.add_diamonds(
-                telegram_id=buyer_telegram_id,
-                amount=reward_amount,
-                reason=f"Покупка VPN: {PLANS[code]['name']}",
-                event_key=f"payment-reward:{payment_event_key}",
-            )
-
-        referrer_id = user.get("referrer_id")
-        if referrer_id:
-            await db.add_diamonds(
-                telegram_id=int(referrer_id),
-                amount=REFERRAL_FIRST_PAID_REWARD,
-                reason="Друг впервые купил VPN",
-                event_key=f"referral-first-paid:{target_telegram_id}",
-            )
-
-        return user, reward_amount
+        return user, 0
 
     @router.message(Command("setbanner"))
     async def set_banner(message: Message) -> None:
@@ -1172,7 +1032,7 @@ def build_router(
         user = await ensure_actor(message.from_user)
         if command.args and command.args.startswith("ref_"):
             raw = command.args.removeprefix("ref_")
-            if raw.isdigit():
+            if raw.isdigit() and bool(user.get("_is_new")):
                 await db.set_referrer_once(
                     message.from_user.id,
                     int(raw),
@@ -1220,20 +1080,20 @@ def build_router(
                 await send_screen(
                     callback.message,
                     callback.from_user,
-                    "🎁 <b>Пробная подписка</b>\n\n"
+                    "🎁 <b>Бесплатный день VPN</b>\n\n"
                     f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
                     "затем нажмите <b>«✅ Проверить подписку»</b>.",
                     reply_markup=trial_channel_keyboard(),
                 )
             else:
                 kb = InlineKeyboardBuilder()
-                kb.row(blue_inline_button("💎 Купить подписку", callback_data="plans"))
+                kb.row(blue_inline_button("💳 Купить подписку", callback_data="plans"))
                 add_nav_buttons(kb, back_data="home")
                 await send_screen(
                     callback.message,
                     callback.from_user,
                     "🔗 <b>Подключение VPN</b>\n\n"
-                    "Пробный период уже использован. Выберите подписку.",
+                    "Бесплатный день уже использован. Выберите подписку.",
                     reply_markup=kb.as_markup(),
                 )
             return
@@ -1284,7 +1144,7 @@ def build_router(
             f"{e} <b>Информация</b>\n\n"
             "🔐 Доступ выдаётся по персональной ссылке.\n"
             f"📱 В тариф входит <b>1 устройство</b>, можно докупить до <b>{MAX_DEVICES}</b>.\n"
-            "🎁 Пробный доступ можно активировать один раз после подписки на наш Telegram-канал.\n"
+            "🎁 Бесплатный день можно активировать один раз после подписки на наш Telegram-канал.\n"
             "⚙️ Управление подпиской и устройствами находится прямо в боте.",
             reply_markup=kb.as_markup(),
         )
@@ -1298,12 +1158,36 @@ def build_router(
                 callback.message,
                 callback.from_user,
                 f"{e} <b>Поддержка</b>\n\n"
-                "1. Активируйте пробный доступ или купите подписку.\n"
+                "1. Активируйте бесплатный день или купите подписку.\n"
                 "2. Нажмите <b>«🔗 Подключить VPN»</b>.\n"
                 "3. Откройте персональную ссылку на нужном устройстве.\n\n"
                 "Лимит устройств и дополнительные слоты находятся в разделе <b>«📱 Устройства»</b>.",
                 reply_markup=section_nav_keyboard(),
             )
+
+    @router.callback_query(F.data == "menu:promo")
+    async def menu_promo(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not callback.message:
+            return
+        kb = InlineKeyboardBuilder()
+        if config.miniapp_url:
+            kb.row(
+                InlineKeyboardButton(
+                    text="🎟 Открыть промокоды",
+                    web_app=WebAppInfo(url=config.miniapp_url),
+                    style="primary",
+                )
+            )
+        add_nav_buttons(kb, back_data="home")
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "🎟 <b>Промокод</b>\n\n"
+            "Активируйте бесплатные дни или примените скидку перед оплатой "
+            "в Mini App. Итоговую цену всегда рассчитывает сервер.",
+            reply_markup=kb.as_markup(),
+        )
 
     @router.callback_query(F.data == "menu:friends")
     async def menu_friends(callback: CallbackQuery) -> None:
@@ -1312,7 +1196,7 @@ def build_router(
             return
         bot_info = await callback.message.bot.get_me()
         link = f"https://t.me/{bot_info.username}?start=ref_{callback.from_user.id}"
-        count = await db.referral_count(callback.from_user.id)
+        stats = await db.referral_stats(callback.from_user.id)
         share_url = (
             "https://t.me/share/url?url=" + quote(link, safe="")
             + "&text=" + quote("Подключай MGN VPN", safe="")
@@ -1324,11 +1208,16 @@ def build_router(
         await send_screen(
             callback.message,
             callback.from_user,
-            f"{e} <b>Друзья</b>\n\n"
-            f"Ваша ссылка:\n<code>{html.escape(link)}</code>\n\n"
-            f"Приглашено — <b>{count}</b>\n\n"
-            f"Друг активировал пробник — <b>+{REFERRAL_TRIAL_REWARD} 💎</b>\n"
-            f"Первая покупка друга — <b>+{REFERRAL_FIRST_PAID_REWARD} 💎</b>",
+            f"{e} <b>Пригласить друзей</b>\n\n"
+            "Пригласите до 3 друзей и получите до 3 бесплатных дней VPN.\n\n"
+            f"Приглашено: <b>{min(stats['invited'], 3)} / 3</b>\n"
+            f"Получено: <b>+{stats['rewarded']} дней</b>\n"
+            + (
+                "До следующего бонуса: <b>1 друг</b>\n\n"
+                if stats["rewarded"] < 3
+                else "🎉 <b>Максимальный бонус получен</b>\n\n"
+            )
+            + f"Ваша ссылка:\n<code>{html.escape(link)}</code>",
             reply_markup=kb.as_markup(),
         )
 
@@ -1446,124 +1335,6 @@ def build_router(
             reply_markup=device_payment_keyboard(),
         )
 
-    @router.callback_query(F.data == "diamonds")
-    async def diamonds_home(callback: CallbackQuery) -> None:
-        await callback.answer()
-        if callback.message:
-            await show_diamonds(callback.message, callback.from_user)
-
-    @router.callback_query(F.data == "diamonds:shop")
-    async def diamonds_shop(callback: CallbackQuery) -> None:
-        await callback.answer()
-        if callback.message:
-            await show_diamond_shop(callback.message, callback.from_user)
-
-    @router.callback_query(F.data == "diamonds:earn")
-    async def diamonds_earn(callback: CallbackQuery) -> None:
-        await callback.answer()
-        if callback.message:
-            await show_diamond_earn(callback.message, callback.from_user)
-
-    @router.callback_query(F.data == "diamonds:history")
-    async def diamonds_history(callback: CallbackQuery) -> None:
-        await callback.answer()
-        if callback.message:
-            await show_diamond_history(callback.message, callback.from_user)
-
-    @router.callback_query(F.data.startswith("shop:days:"))
-    async def buy_shop_days(callback: CallbackQuery) -> None:
-        if not callback.message:
-            return
-        key = callback.data.rsplit(":", 1)[-1]
-        item = DIAMOND_SHOP_DAYS.get(key)
-        if not item:
-            await callback.answer("Товар не найден", show_alert=True)
-            return
-
-        balance = await db.diamond_balance(callback.from_user.id)
-        cost = int(item["cost"])
-        if balance < cost:
-            await callback.answer(
-                f"Не хватает {cost - balance} 💎",
-                show_alert=True,
-            )
-            return
-
-        user = await db.purchase_vpn_days(
-            telegram_id=callback.from_user.id,
-            days=int(item["days"]),
-            cost=cost,
-            event_key=f"shop-days:{callback.from_user.id}:{uuid4().hex}",
-        )
-        if not user:
-            await callback.answer("Не удалось выполнить покупку", show_alert=True)
-            return
-
-        try:
-            await provider.provision(user)
-        except Exception:
-            pass
-
-        await callback.answer(f"+{item['days']} дней VPN")
-        await show_diamond_shop(callback.message, callback.from_user)
-
-    @router.callback_query(F.data.startswith("shop:promo:"))
-    async def buy_shop_promo(callback: CallbackQuery) -> None:
-        if not callback.message:
-            return
-        slug = callback.data.split(":", 2)[-1]
-        product_list = await db.promo_products()
-        product = next(
-            (item for item in product_list if str(item["slug"]) == slug),
-            None,
-        )
-        if not product:
-            await callback.answer(
-                "Промокоды закончились или товар недоступен.",
-                show_alert=True,
-            )
-            await show_diamond_shop(callback.message, callback.from_user)
-            return
-
-        balance = await db.diamond_balance(callback.from_user.id)
-        cost = int(product["price_diamonds"])
-        if balance < cost:
-            await callback.answer(
-                f"Не хватает {cost - balance} 💎",
-                show_alert=True,
-            )
-            return
-
-        reward = await db.redeem_promo(
-            telegram_id=callback.from_user.id,
-            slug=slug,
-            event_key=f"shop-promo:{callback.from_user.id}:{uuid4().hex}",
-        )
-        if not reward:
-            await callback.answer(
-                "Промокод уже закончился. Баланс не списан.",
-                show_alert=True,
-            )
-            await show_diamond_shop(callback.message, callback.from_user)
-            return
-
-        kb = InlineKeyboardBuilder()
-        kb.row(
-            blue_inline_button("⬅️ Магазин", callback_data="diamonds:shop"),
-        )
-        await callback.answer("Промокод получен")
-        await send_screen(
-            callback.message,
-            callback.from_user,
-            "🎟 <b>Покупка готова</b>\n\n"
-            f"{html.escape(str(reward['title']))}\n"
-            f"Списано: <b>{int(reward['price_diamonds'])} 💎</b>\n\n"
-            "Ваш промокод:\n"
-            f"<code>{html.escape(str(reward['code']))}</code>\n\n"
-            "<i>Сохраните код. Он также останется в истории алмазов.</i>",
-            reply_markup=kb.as_markup(),
-        )
-
     @router.message(Command("ping"))
     async def ping(message: Message) -> None:
         await send_screen(
@@ -1578,7 +1349,7 @@ def build_router(
     async def profile(message: Message) -> None:
         await show_profile(message, message.from_user)
 
-    @router.message(F.text.in_({"💎 Купить VPN", "💳 Купить VPN", "Купить VPN"}))
+    @router.message(F.text.in_({"💳 Купить VPN", "Купить VPN"}))
     async def plans_message(message: Message) -> None:
         await ensure_actor(message.from_user)
         e = emoji.icon(0, pack=PACK_NEWS)
@@ -1632,10 +1403,9 @@ def build_router(
                 if plan_savings_rub(code)
                 else ""
             )
-            + f"💎 После оплаты: <b>+{DIAMOND_REWARDS.get(code, 0)} 💎</b>\n\n"
+            + "\n"
             + f"Дополнительное устройство — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>. "
-            f"Максимум — <b>{MAX_DEVICES}</b>.\n"
-            + f"<i>Курс для тарифов: {STAR_RATE_XTR} ⭐ = {STAR_RATE_RUB} ₽.</i>",
+            f"Максимум — <b>{MAX_DEVICES}</b>.",
             reply_markup=payment_methods_keyboard(config, code),
         )
 
@@ -2078,6 +1848,21 @@ def build_router(
     async def pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
         payload = pre_checkout_query.invoice_payload or ""
         parts = payload.split("|")
+        if len(parts) == 2 and parts[0] == "xtr2":
+            intent = await db.get_payment_intent(parts[1])
+            valid = bool(
+                intent
+                and intent["status"] == "created"
+                and int(intent["buyer_telegram_id"]) == pre_checkout_query.from_user.id
+                and intent["currency"] == "XTR"
+                and pre_checkout_query.currency == "XTR"
+                and int(intent["currency_amount"]) == pre_checkout_query.total_amount
+            )
+            await pre_checkout_query.answer(
+                ok=valid,
+                error_message=None if valid else "Параметры оплаты изменились. Откройте тариф заново.",
+            )
+            return
         if len(parts) != 5 or parts[0] != "xtr":
             await pre_checkout_query.answer(
                 ok=False,
@@ -2156,6 +1941,39 @@ def build_router(
             return
 
         parts = (payment.invoice_payload or "").split("|")
+        if len(parts) == 2 and parts[0] == "xtr2":
+            intent = await db.get_payment_intent(parts[1])
+            if not intent or (
+                int(intent["buyer_telegram_id"]) != message.from_user.id
+                or intent["currency"] != "XTR"
+                or int(intent["currency_amount"]) != int(payment.total_amount)
+            ):
+                logger.error("Rejected Stars payment intent %s", parts[1])
+                return
+            charge_id = payment.telegram_payment_charge_id
+            fresh_charge = await db.record_star_payment(
+                telegram_payment_charge_id=charge_id,
+                buyer_telegram_id=message.from_user.id,
+                target_telegram_id=int(intent["target_telegram_id"]),
+                plan_code=str(intent["product_code"]),
+                stars=int(payment.total_amount),
+            )
+            fresh_intent = await db.mark_payment_intent_paid(parts[1])
+            if fresh_charge and fresh_intent:
+                if intent.get("promo_id"):
+                    await db.consume_promo(
+                        promo_id=int(intent["promo_id"]),
+                        telegram_id=message.from_user.id,
+                        payment_id=charge_id,
+                    )
+                await apply_paid_purchase(
+                    message.from_user.id,
+                    int(intent["target_telegram_id"]),
+                    str(intent["product_code"]),
+                    f"stars:{charge_id}",
+                )
+            await show_home(message, message.from_user, force_new=True)
+            return
         if len(parts) != 5 or parts[0] != "xtr":
             return
 
@@ -2255,19 +2073,13 @@ def build_router(
         except KeyError:
             target_label = str(target_id)
 
-        bonus_line = (
-            f"\n💎 Вам начислено <b>+{reward_amount} 💎</b>."
-            if reward_amount
-            else ""
-        )
         await send_screen(
             message,
             message.from_user,
             "✅ <b>Подарок активирован</b>\n\n"
             f"Получатель — <b>{html.escape(target_label)}</b>\n"
             f"Тариф — <b>{PLANS[code]['name']}</b>\n"
-            f"Оплачено — <b>{payment.total_amount} ⭐</b>"
-            f"{bonus_line}",
+            f"Оплачено — <b>{payment.total_amount} ⭐</b>",
             reply_markup=section_nav_keyboard(back_data="home"),
         )
 
@@ -2351,12 +2163,7 @@ def build_router(
                     payment_event_key=f"sbp:{payment_id}",
                 )
 
-            if reward_amount:
-                await callback.answer(
-                    f"Оплата получена · +{reward_amount} 💎"
-                )
-            else:
-                await callback.answer("Оплата получена")
+            await callback.answer("Оплата получена")
 
             if target_id == callback.from_user.id:
                 await show_profile(callback.message, callback.from_user)
@@ -2403,7 +2210,7 @@ def build_router(
                 await send_screen(
                     message,
                     message.from_user,
-                    "🎁 <b>Пробная подписка</b>\n\n"
+                    "🎁 <b>Бесплатный день VPN</b>\n\n"
                     f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
                     "затем нажмите <b>«✅ Проверить подписку»</b>.",
                     reply_markup=trial_channel_keyboard(),
@@ -2412,7 +2219,7 @@ def build_router(
                 kb = InlineKeyboardBuilder()
                 kb.row(
                     blue_inline_button(
-                        "💎 Купить подписку",
+                        "💳 Купить подписку",
                         callback_data="plans",
                     )
                 )
@@ -2421,7 +2228,7 @@ def build_router(
                     message,
                     message.from_user,
                     "🔗 <b>Подключение VPN</b>\n\n"
-                    "Пробный период уже использован. Выберите подписку.",
+                    "Бесплатный день уже использован. Выберите подписку.",
                     reply_markup=kb.as_markup(),
                 )
             return
@@ -2465,17 +2272,10 @@ def build_router(
         user = await ensure_actor(callback.from_user)
         if user.get("trial_used"):
             await callback.answer(
-                "Пробный период уже использован.",
+                "Бесплатный день уже использован.",
                 show_alert=True,
             )
             return
-        if is_active(user):
-            await callback.answer(
-                "У вас уже есть активная подписка.",
-                show_alert=True,
-            )
-            return
-
         subscribed = await is_trial_channel_member(
             callback.message.bot,
             callback.from_user.id,
@@ -2485,7 +2285,7 @@ def build_router(
             await send_screen(
                 callback.message,
                 callback.from_user,
-                "🎁 <b>Пробная подписка</b>\n\n"
+                "🎁 <b>Бесплатный день VPN</b>\n\n"
                 f"Подпишитесь на <b>{html.escape(config.trial_channel_username)}</b>, "
                 "затем нажмите <b>«✅ Проверить подписку»</b>.",
                 reply_markup=trial_channel_keyboard(),
@@ -2499,21 +2299,12 @@ def build_router(
         )
         if not activated:
             await callback.answer(
-                "Пробный период уже использован.",
+                "Бесплатный день уже использован.",
                 show_alert=True,
             )
             return
 
         user = await db.get_user(callback.from_user.id)
-
-        referrer_id = user.get("referrer_id")
-        if referrer_id:
-            await db.add_diamonds(
-                telegram_id=int(referrer_id),
-                amount=REFERRAL_TRIAL_REWARD,
-                reason="Друг активировал пробный VPN",
-                event_key=f"referral-trial:{callback.from_user.id}",
-            )
 
         try:
             await provider.provision(user)
@@ -2524,7 +2315,7 @@ def build_router(
                 exc,
             )
 
-        await callback.answer("Пробный VPN активирован")
+        await callback.answer("Бесплатный день активирован")
         await show_profile(callback.message, callback.from_user)
 
     @router.message(F.text.in_({"📱 Устройства", "Устройства"}))
@@ -2540,7 +2331,7 @@ def build_router(
         await ensure_actor(message.from_user)
         bot_info = await message.bot.get_me()
         link = f"https://t.me/{bot_info.username}?start=ref_{message.from_user.id}"
-        count = await db.referral_count(message.from_user.id)
+        stats = await db.referral_stats(message.from_user.id)
         share_url = (
             "https://t.me/share/url?url="
             + quote(link, safe="")
@@ -2556,11 +2347,11 @@ def build_router(
         await send_screen(
             message,
             message.from_user,
-            f"{e} <b>Друзья</b>\n\n"
-            f"Ваша ссылка:\n<code>{html.escape(link)}</code>\n\n"
-            f"Приглашено — <b>{count}</b>\n\n"
-            f"Друг активировал пробник — <b>+{REFERRAL_TRIAL_REWARD} 💎</b>\n"
-            f"Первая покупка друга — <b>+{REFERRAL_FIRST_PAID_REWARD} 💎</b>",
+            f"{e} <b>Пригласить друзей</b>\n\n"
+            "За каждого нового друга, который подпишется на канал и активирует бесплатный день, вы получите +1 день VPN.\n\n"
+            f"Приглашено: <b>{min(stats['invited'], 3)} / 3</b>\n"
+            f"Получено: <b>+{stats['rewarded']} дней</b>\n\n"
+            f"Ваша ссылка:\n<code>{html.escape(link)}</code>",
             reply_markup=kb.as_markup(),
         )
 
@@ -2582,7 +2373,7 @@ def build_router(
             f"{e} <b>Информация</b>\n\n"
             "🔐 Доступ выдаётся по персональной ссылке.\n"
             f"📱 В тариф входит <b>1 устройство</b>; дополнительные — по <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>, максимум <b>{MAX_DEVICES}</b>.\n"
-            "🎁 Пробный доступ можно активировать один раз после подписки на наш Telegram-канал.\n"
+            "🎁 Бесплатный день можно активировать один раз после подписки на наш Telegram-канал.\n"
             "⚙️ Управление подпиской и устройствами находится прямо в боте.",
             reply_markup=kb.as_markup(),
         )
@@ -2594,7 +2385,7 @@ def build_router(
             message,
             message.from_user,
             f"{e} <b>Поддержка</b>\n\n"
-            "1. Активируйте пробный доступ или купите подписку.\n"
+            "1. Активируйте бесплатный день или купите подписку.\n"
             "2. Нажмите <b>«🔗 Подключить VPN»</b>.\n"
             "3. Скопируйте ссылку одной кнопкой или сразу откройте её.\n\n"
             "Дополнительные слоты находятся в разделе <b>«📱 Устройства»</b>.",
@@ -2625,7 +2416,7 @@ def build_router(
         )
         if role in {"owner", "full"}:
             kb.row(
-                blue_inline_button("💎 Бонусы", callback_data="admin:bonuses"),
+                blue_inline_button("🎟 Промокоды", callback_data="admin:bonuses"),
                 blue_inline_button("⚙️ Система", callback_data="admin:system"),
             )
         if role == "owner":
@@ -2874,8 +2665,7 @@ def build_router(
             f"До — <b>{format_until(user, config) if active else '—'}</b>",
             f"Устройств — <b>{int(user.get('max_devices') or BASE_DEVICES)}/{MAX_DEVICES}</b>",
             f"Доп. слотов — <b>{max(0, int(user.get('bonus_devices') or 0))}</b>",
-            f"💎 Алмазы — <b>{int(user.get('diamonds') or 0)}</b>",
-            f"Пробник — <b>{'использован' if user.get('trial_used') else 'доступен'}</b>",
+            f"Бесплатный день — <b>{'использован' if user.get('trial_used') else 'доступен'}</b>",
             f"Приглашено — <b>{referrals}</b>",
         ]
         await send_screen(
@@ -2934,32 +2724,26 @@ def build_router(
     async def show_admin_bonuses(message: Message, actor) -> None:
         if not await has_full_admin_access(actor.id):
             return
-        stock = await db.promo_stock_overview()
+        stock = await db.list_service_promos()
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:bonuses"))
         kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
 
         lines = [
-            "💎 <b>Бонусная система</b>",
+            "🎟 <b>Промокоды</b>",
             "",
             "Команды:",
-            "<code>/diamonds ID AMOUNT</code>",
-            "<code>/promoproduct SLUG PRICE TITLE</code>",
-            "<code>/promocode SLUG CODE</code>",
-            "",
-            "🎟 <b>Промокоды</b>",
+            "<code>/promocreate CODE TYPE VALUE MAX_USES DAYS_VALID PLANS</code>",
         ]
 
         if not stock:
-            lines.append("Товаров пока нет.")
+            lines.append("Промокодов пока нет.")
         else:
             for item in stock:
                 lines.append(
-                    f"• {html.escape(str(item['title']))} "
-                    f"(<code>{html.escape(str(item['slug']))}</code>) — "
-                    f"<b>{int(item['price_diamonds'])} 💎</b> · "
-                    f"остаток {int(item['stock'] or 0)} · "
-                    f"выдано {int(item['issued'] or 0)}"
+                    f"• <code>{html.escape(str(item['code']))}</code> · "
+                    f"{html.escape(str(item['type']))} {int(item['value'])} · "
+                    f"использовано {int(item['used_count'] or 0)}"
                 )
 
         await send_screen(
@@ -2987,8 +2771,8 @@ def build_router(
             f"🌐 Сервер — <b>{html.escape(config.vpn_server_name)}</b>\n"
             f"💳 RollyPay — <b>{rolly}</b>\n"
             f"🧾 Режим оплаты — <b>{rolly_mode}</b>\n"
-            f"🎁 Пробный период — <b>{config.trial_minutes} мин.</b>\n"
-            f"📱 Пробник — <b>{config.trial_max_devices} устройство</b>\n\n"
+            "🎁 Бесплатный доступ — <b>1 день, один раз</b>\n"
+            f"📱 Лимит бесплатного доступа — <b>{config.trial_max_devices} устройство</b>\n\n"
             "<i>Секретные ключи здесь не отображаются.</i>"
         )
         await send_screen(message, actor, text, reply_markup=kb.as_markup())
@@ -3343,119 +3127,51 @@ def build_router(
             return
         await show_admin_stats(message, message.from_user)
 
-    @router.message(Command("diamonds"))
-    async def admin_diamonds(message: Message) -> None:
+    @router.message(Command("promocreate"))
+    async def admin_promo_create(message: Message) -> None:
         if not await has_full_admin_access(message.from_user.id):
             return
 
         parts = (message.text or "").split()
-        if len(parts) != 3:
-            await message.answer("Использование: /diamonds TELEGRAM_ID AMOUNT")
-            return
-
-        try:
-            telegram_id = int(parts[1])
-            amount = int(parts[2])
-        except ValueError:
-            await message.answer("ID и AMOUNT должны быть числами.")
-            return
-
-        if amount == 0 or abs(amount) > 1_000_000:
-            await message.answer("AMOUNT: от -1000000 до 1000000, кроме 0.")
-            return
-
-        try:
-            await db.get_user(telegram_id)
-        except KeyError:
-            await message.answer("Пользователь ещё не запускал бота.")
-            return
-
-        changed = await db.add_diamonds(
-            telegram_id=telegram_id,
-            amount=amount,
-            reason="Изменение администратором",
-            event_key=f"admin-diamonds:{message.from_user.id}:{telegram_id}:{uuid4().hex}",
-        )
-        balance = await db.diamond_balance(telegram_id)
-        if not changed:
-            await message.answer("Баланс не изменился.")
-            return
-
-        role = await get_admin_role(message.from_user.id)
-        await send_screen(
-            message,
-            message.from_user,
-            f"💎 Баланс <code>{telegram_id}</code> изменён.\n"
-            f"Теперь: <b>{balance} 💎</b>",
-            reply_markup=admin_main_keyboard(role or "full"),
-        )
-
-    @router.message(Command("promoproduct"))
-    async def admin_promo_product(message: Message) -> None:
-        if not await has_full_admin_access(message.from_user.id):
-            return
-
-        parts = (message.text or "").split(maxsplit=3)
-        if len(parts) != 4:
+        if len(parts) != 7:
             await message.answer(
-                "Использование: /promoproduct SLUG PRICE TITLE\n"
-                "Пример: /promoproduct yandex_plus 500 Яндекс Плюс 60 дней"
+                "Использование: /promocreate CODE TYPE VALUE MAX_USES DAYS_VALID PLANS\n"
+                "TYPE: discount или free_days; 0 в MAX_USES — без лимита; "
+                "PLANS: all или 7,30,90,180,365"
             )
             return
 
-        slug = parts[1].strip().lower()
+        code, promo_type, value_raw, max_raw, valid_raw, plans = parts[1:]
         try:
-            price = int(parts[2])
+            value = int(value_raw)
+            max_uses = int(max_raw)
+            valid_days = int(valid_raw)
         except ValueError:
-            await message.answer("PRICE должен быть числом.")
+            await message.answer("VALUE, MAX_USES и DAYS_VALID должны быть числами.")
             return
-        title = parts[3].strip()
-
-        if not re.fullmatch(r"[a-z0-9_-]{2,48}", slug):
-            await message.answer("SLUG: только a-z, 0-9, _ и -, длина 2–48.")
-            return
-        if price < 1 or price > 1_000_000 or not title:
-            await message.answer("Проверь цену и название товара.")
-            return
-
-        await db.create_promo_product(slug, title, price)
-        role = await get_admin_role(message.from_user.id)
-        await send_screen(
-            message,
-            message.from_user,
-            f"✅ Товар <b>{html.escape(title)}</b> сохранён за <b>{price} 💎</b>.\n"
-            f"Теперь добавляй коды: <code>/promocode {html.escape(slug)} CODE</code>",
-            reply_markup=admin_main_keyboard(role or "full"),
-        )
-
-    @router.message(Command("promocode"))
-    async def admin_promo_code(message: Message) -> None:
-        if not await has_full_admin_access(message.from_user.id):
-            return
-
-        parts = (message.text or "").split(maxsplit=2)
-        if len(parts) != 3:
-            await message.answer("Использование: /promocode SLUG CODE")
-            return
-
-        slug = parts[1].strip().lower()
-        code = parts[2].strip()
-        if not code:
-            await message.answer("CODE пустой.")
-            return
-
-        added = await db.add_promo_code(slug, code)
-        if not added:
-            await message.answer(
-                "Не удалось добавить код: товар не найден или такой код уже есть."
+        expires_at = None
+        if valid_days > 0:
+            from db import to_iso
+            expires_at = to_iso(utcnow() + timedelta(days=valid_days))
+        try:
+            promo = await db.create_service_promo(
+                code=code,
+                promo_type=promo_type,
+                value=value,
+                max_uses=max_uses or None,
+                expires_at=expires_at,
+                applicable_plans=plans,
+                created_by=message.from_user.id,
             )
+        except (ValueError, aiosqlite.IntegrityError):
+            await message.answer("Проверьте параметры: код должен быть уникальным.")
             return
-
         role = await get_admin_role(message.from_user.id)
         await send_screen(
             message,
             message.from_user,
-            f"✅ Код добавлен в товар <code>{html.escape(slug)}</code>.",
+            f"🎟 Промокод <code>{html.escape(str(promo['code']))}</code> создан.\n"
+            f"Тип: <b>{html.escape(str(promo['type']))}</b> · значение: <b>{promo['value']}</b>",
             reply_markup=admin_main_keyboard(role or "full"),
         )
 

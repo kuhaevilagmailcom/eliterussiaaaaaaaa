@@ -7,7 +7,6 @@ import hmac
 import json
 import logging
 import time
-from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import parse_qsl, quote
@@ -17,18 +16,18 @@ from aiohttp import web
 from aiogram.types import LabeledPrice
 
 from catalog import (
-    DIAMOND_REWARDS,
-    DIAMOND_SHOP_DAYS,
-    EXTRA_DEVICE_COST,
+    EXTRA_DEVICE_PRICE_RUB,
+    MAX_DEVICES,
     PLANS,
-    REFERRAL_FIRST_PAID_REWARD,
-    REFERRAL_TRIAL_REWARD,
     plan_price_rub,
     plan_price_stars,
+    plan_savings_rub,
+    rub_to_stars,
 )
 from db import Database, from_iso, utcnow
 from payments import RollyPayError, create_payment, get_payment
 from vpn import VpnProvider, VpnState, prettify_subscription_payload
+from vpn_clients import client_registry, get_client
 
 
 logger = logging.getLogger(__name__)
@@ -283,22 +282,6 @@ class MiniAppServer:
             plan_name=str(plan["name"]),
             max_devices=int(plan["devices"]),
         )
-        reward = int(DIAMOND_REWARDS.get(code, 0))
-        if reward:
-            await self.db.add_diamonds(
-                telegram_id=buyer_id,
-                amount=reward,
-                reason=f"Покупка VPN: {plan['name']}",
-                event_key=f"payment-reward:{event_key}",
-            )
-        referrer_id = target.get("referrer_id")
-        if referrer_id:
-            await self.db.add_diamonds(
-                telegram_id=int(referrer_id),
-                amount=REFERRAL_FIRST_PAID_REWARD,
-                reason="Друг впервые купил VPN",
-                event_key=f"referral-first-paid:{target_id}",
-            )
         if getattr(self.provider, "service_ready", True):
             try:
                 await asyncio.wait_for(self.provider.provision(target), 7.0)
@@ -414,18 +397,30 @@ class MiniAppServer:
                 text="MGN VPN subscription is temporarily unavailable"
             )
 
+    async def client_redirect(self, request: web.Request) -> web.Response:
+        client = get_client(str(request.match_info.get("client") or ""))
+        token = str(request.match_info.get("token") or "").strip()
+        user = await self.db.get_user_by_sub_token(token)
+        if client is None or user is None or not _active(user):
+            raise web.HTTPNotFound(text="Client link not found")
+        base = self._external_base_url(request)
+        subscription_url = f"{base}/sub/{quote(token, safe='')}"
+        target = client.import_url(subscription_url)
+        if not target:
+            raise web.HTTPFound(client.download_url)
+        raise web.HTTPFound(target)
+
     async def me(self, request: web.Request) -> web.Response:
         uid, tg_user, row = await self._auth(request)
         state, vpn_ok = await self._load_state(row)
-        referrals = await self.db.referral_count(uid)
-        diamonds = await self.db.diamond_balance(uid)
-        diamond_history = await self.db.diamond_history(uid, 10)
+        referral_stats = await self.db.referral_stats(uid)
         username = await self._username()
 
         until = from_iso(row.get("subscription_until"))
         until_text = ""
         if until:
             until_text = until.astimezone(self.config.display_tz).isoformat()
+        subscription_url = self._public_subscription_url(row, state, request=request)
 
         return web.json_response(
             {
@@ -434,8 +429,8 @@ class MiniAppServer:
                     "first_name": tg_user.get("first_name") or row.get("first_name") or "Пользователь",
                     "username": tg_user.get("username") or row.get("username") or "",
                     "photo_url": tg_user.get("photo_url") or "",
-                    "diamonds": diamonds,
-                    "referrals": referrals,
+                    "referrals": referral_stats["invited"],
+                    "referral_rewards": referral_stats["rewarded"],
                     "referral_url": f"https://t.me/{username}?start=ref_{uid}",
                 },
                 "subscription": {
@@ -451,11 +446,7 @@ class MiniAppServer:
                     "ready": bool(getattr(self.provider, "service_ready", True)),
                     "ok": vpn_ok,
                     "server": state.server or self.config.vpn_server_name,
-                    "subscription_url": self._public_subscription_url(
-                        row,
-                        state,
-                        request=request,
-                    ),
+                    "subscription_url": subscription_url,
                     "traffic_used_gb": round(float(state.traffic_used_gb or 0), 2),
                     "traffic_limit_gb": round(float(state.traffic_limit_gb or 0), 2),
                     "devices": state.devices,
@@ -468,27 +459,16 @@ class MiniAppServer:
                         "devices": plan["devices"],
                         "rub": plan_price_rub(self.config, code),
                         "stars": plan_price_stars(self.config, code),
-                        "diamonds": int(DIAMOND_REWARDS.get(code, 0)),
+                        "savings": plan_savings_rub(code),
                     }
                     for code, plan in PLANS.items()
                 ],
                 "payments": {"sbp_enabled": bool(self.config.rollypay_enabled)},
+                "clients": client_registry(subscription_url) if subscription_url else [],
                 "shop": {
-                    "extra_device_cost": int(EXTRA_DEVICE_COST),
-                    "max_devices": 10,
-                    "days": [
-                        {
-                            "code": code,
-                            "days": int(item["days"]),
-                            "cost": int(item["cost"]),
-                        }
-                        for code, item in DIAMOND_SHOP_DAYS.items()
-                    ],
-                },
-                "diamond_history": diamond_history,
-                "referral_rewards": {
-                    "trial": int(REFERRAL_TRIAL_REWARD),
-                    "first_paid": int(REFERRAL_FIRST_PAID_REWARD),
+                    "extra_device_price_rub": int(EXTRA_DEVICE_PRICE_RUB),
+                    "extra_device_price_stars": rub_to_stars(EXTRA_DEVICE_PRICE_RUB),
+                    "max_devices": MAX_DEVICES,
                 },
                 "trial_channel_url": self.config.trial_channel_url,
                 "bot_url": f"https://t.me/{username}",
@@ -498,10 +478,7 @@ class MiniAppServer:
     async def activate_trial(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
         if row.get("trial_used"):
-            raise _json_error(409, "Пробный период уже использован")
-        if _active(row):
-            raise _json_error(409, "Подписка уже активна")
-
+            raise _json_error(409, "Бесплатный день уже использован")
         try:
             member = await self.bot.get_chat_member(
                 chat_id=self.config.trial_channel_username,
@@ -524,18 +501,9 @@ class MiniAppServer:
             self.config.trial_max_devices,
         )
         if not activated:
-            raise _json_error(409, "Пробный период уже использован")
+            raise _json_error(409, "Бесплатный день уже использован")
 
         row = await self.db.get_user(uid)
-        referrer_id = row.get("referrer_id")
-        if referrer_id:
-            await self.db.add_diamonds(
-                telegram_id=int(referrer_id),
-                amount=REFERRAL_TRIAL_REWARD,
-                reason="Друг активировал пробную подписку",
-                event_key=f"referral-trial:{uid}",
-            )
-
         if getattr(self.provider, "service_ready", True):
             try:
                 await asyncio.wait_for(self.provider.provision(row), 7.0)
@@ -552,8 +520,35 @@ class MiniAppServer:
         if not plan:
             raise _json_error(400, "Тариф не найден")
 
-        stars = plan_price_stars(self.config, code)
-        payload = f"xtr|{code}|{uid}|{uid}|{uuid4().hex[:12]}"
+        original = plan_price_rub(self.config, code)
+        promo_code = str(data.get("promo_code") or "").strip()
+        quote = None
+        if promo_code:
+            quote = await self.db.promo_quote(
+                code=promo_code,
+                telegram_id=uid,
+                plan_code=code,
+                original_price=original,
+            )
+            if not quote or quote["type"] != "discount":
+                raise _json_error(400, "Промокод не подходит для этой покупки")
+        final = int(quote["final_price"]) if quote else original
+        stars = rub_to_stars(final)
+        intent_id = uuid4().hex
+        await self.db.create_payment_intent(
+            intent_id=intent_id,
+            buyer_id=uid,
+            target_id=uid,
+            product_code=code,
+            original_amount_rub=original,
+            discount_amount_rub=int(quote["discount"]) if quote else 0,
+            final_amount_rub=final,
+            currency="XTR",
+            currency_amount=stars,
+            promo_id=int(quote["id"]) if quote else None,
+            promo_code=str(quote["code"]) if quote else None,
+        )
+        payload = f"xtr2|{intent_id}"
         try:
             invoice_url = await self.bot.create_invoice_link(
                 title=f"MGN VPN · {plan['name']}",
@@ -566,7 +561,13 @@ class MiniAppServer:
             logger.exception("Mini App Stars invoice failed: %s", exc)
             raise _json_error(503, "Не удалось создать оплату Stars")
 
-        return web.json_response({"invoice_url": invoice_url, "stars": stars})
+        return web.json_response({
+            "invoice_url": invoice_url,
+            "stars": stars,
+            "original_price": original,
+            "discount": int(quote["discount"]) if quote else 0,
+            "final_price": final,
+        })
 
     async def sbp_create(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
@@ -579,7 +580,19 @@ class MiniAppServer:
         if not plan:
             raise _json_error(400, "Тариф не найден")
 
-        amount = plan_price_rub(self.config, code)
+        original = plan_price_rub(self.config, code)
+        promo_code = str(data.get("promo_code") or "").strip()
+        quote = None
+        if promo_code:
+            quote = await self.db.promo_quote(
+                code=promo_code,
+                telegram_id=uid,
+                plan_code=code,
+                original_price=original,
+            )
+            if not quote or quote["type"] != "discount":
+                raise _json_error(400, "Промокод не подходит для этой покупки")
+        amount = int(quote["final_price"]) if quote else original
         order_id = f"vpn-mini-{uid}-{uuid4().hex[:12]}"
         try:
             payment = await create_payment(
@@ -598,13 +611,23 @@ class MiniAppServer:
                 target_telegram_id=uid,
                 plan_code=code,
                 amount_rub=amount,
+                original_amount_rub=original,
+                discount_amount_rub=int(quote["discount"]) if quote else 0,
+                promo_id=int(quote["id"]) if quote else None,
+                promo_code=str(quote["code"]) if quote else None,
             )
         except (RollyPayError, KeyError) as exc:
             logger.warning("Mini App SBP create failed: %s", exc)
             raise _json_error(503, "Не удалось создать платёж")
 
         return web.json_response(
-            {"payment_id": payment_id, "pay_url": pay_url, "amount_rub": amount}
+            {
+                "payment_id": payment_id,
+                "pay_url": pay_url,
+                "amount_rub": amount,
+                "original_price": original,
+                "discount": int(quote["discount"]) if quote else 0,
+            }
         )
 
     async def sbp_check(self, request: web.Request) -> web.Response:
@@ -645,135 +668,107 @@ class MiniAppServer:
         if status == "paid":
             fresh = await self.db.mark_sbp_paid(payment_id)
             if fresh:
-                await self._activate_paid(
-                    buyer_id=uid,
-                    target_id=int(local.get("target_telegram_id") or uid),
-                    code=str(local["plan_code"]),
-                    event_key=f"sbp:{payment_id}",
-                )
+                if local.get("promo_id"):
+                    await self.db.consume_promo(
+                        promo_id=int(local["promo_id"]),
+                        telegram_id=uid,
+                        payment_id=payment_id,
+                    )
+                if str(local["plan_code"]) == "device":
+                    updated = await self.db.grant_extra_device(uid, MAX_DEVICES)
+                    if updated and getattr(self.provider, "service_ready", True):
+                        await self.provider.provision(updated)
+                else:
+                    await self._activate_paid(
+                        buyer_id=uid,
+                        target_id=int(local.get("target_telegram_id") or uid),
+                        code=str(local["plan_code"]),
+                        event_key=f"sbp:{payment_id}",
+                    )
             return web.json_response({"status": "paid"})
 
         await self.db.set_sbp_status(payment_id, status or "processing")
         return web.json_response({"status": status or "processing"})
 
-    async def buy_bonus_days_by_code(self, request: web.Request) -> web.Response:
+    async def buy_extra_device(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
-        code = str(request.match_info.get("code") or "")
-        item = DIAMOND_SHOP_DAYS.get(code)
-        if not item:
-            raise _json_error(404, "Награда не найдена")
+        if not _active(row):
+            raise _json_error(409, "Сначала активируйте подписку")
+        if int(row.get("max_devices") or 1) >= MAX_DEVICES:
+            raise _json_error(409, "Уже доступно максимальное количество устройств")
+        if not self.config.rollypay_enabled:
+            raise _json_error(503, "СБП пока не настроена")
 
-        cost = int(item["cost"])
-        balance = int(row.get("diamonds") or 0)
-        if balance < cost:
-            raise _json_error(409, f"Не хватает {cost - balance} алмазов")
-
-        updated = await self.db.purchase_vpn_days(
-            telegram_id=uid,
-            days=int(item["days"]),
-            cost=cost,
-            event_key=f"mini-days:{uid}:{code}:{uuid4().hex}",
-        )
-        if not updated:
-            raise _json_error(409, "Не удалось выполнить покупку")
-
-        if getattr(self.provider, "service_ready", True):
-            try:
-                await asyncio.wait_for(self.provider.provision(updated), 7.0)
-            except Exception as exc:
-                logger.warning(
-                    "Mini App bonus-days provisioning deferred for %s: %s",
-                    uid,
-                    exc,
-                )
-
+        order_id = f"device-mini-{uid}-{uuid4().hex[:12]}"
+        try:
+            payment = await create_payment(
+                self.config,
+                order_id=order_id,
+                amount=Decimal(EXTRA_DEVICE_PRICE_RUB),
+                description="MGN VPN +1 устройство",
+                user_id=uid,
+            )
+            payment_id = str(payment["payment_id"])
+            pay_url = str(payment["pay_url"])
+            await self.db.create_sbp_payment(
+                payment_id=payment_id,
+                order_id=order_id,
+                telegram_id=uid,
+                target_telegram_id=uid,
+                plan_code="device",
+                amount_rub=EXTRA_DEVICE_PRICE_RUB,
+                original_amount_rub=EXTRA_DEVICE_PRICE_RUB,
+            )
+        except (RollyPayError, KeyError) as exc:
+            logger.warning("Mini App device payment failed: %s", exc)
+            raise _json_error(503, "Не удалось создать платёж")
         return web.json_response(
             {
-                "ok": True,
-                "days": int(item["days"]),
-                "diamonds": int(updated.get("diamonds") or 0),
-                "subscription_until": updated.get("subscription_until"),
+                "payment_id": payment_id,
+                "pay_url": pay_url,
+                "amount_rub": EXTRA_DEVICE_PRICE_RUB,
             }
         )
 
-    async def buy_bonus_days(self, request: web.Request) -> web.Response:
+    async def promo_quote(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
         data = await request.json()
         code = str(data.get("code") or "")
-        item = DIAMOND_SHOP_DAYS.get(code)
-        if not item:
-            raise _json_error(400, "Награда не найдена")
-
-        balance = await self.db.diamond_balance(uid)
-        cost = int(item["cost"])
-        if balance < cost:
-            raise _json_error(409, f"Не хватает {cost - balance} алмазов")
-
-        updated = await self.db.purchase_vpn_days(
+        plan_code = str(data.get("plan_code") or "")
+        plan = PLANS.get(plan_code)
+        original = plan_price_rub(self.config, plan_code) if plan else 0
+        quote = await self.db.promo_quote(
+            code=code,
             telegram_id=uid,
-            days=int(item["days"]),
-            cost=cost,
-            event_key=f"mini-days:{uid}:{code}:{uuid4().hex}",
+            plan_code=plan_code,
+            original_price=original,
         )
-        if not updated:
-            raise _json_error(409, "Не удалось обменять алмазы")
+        if not quote:
+            raise _json_error(400, "Промокод недействителен или уже использован")
+        return web.json_response(
+            {
+                "code": quote["code"],
+                "type": quote["type"],
+                "value": int(quote["value"]),
+                "original_price": int(quote["original_price"]),
+                "discount": int(quote["discount"]),
+                "final_price": int(quote["final_price"]),
+            }
+        )
 
+    async def promo_redeem(self, request: web.Request) -> web.Response:
+        uid, _tg_user, _row = await self._auth(request)
+        data = await request.json()
+        code = str(data.get("code") or "")
+        updated = await self.db.redeem_free_days_promo(code, uid)
+        if not updated:
+            raise _json_error(400, "Промокод недействителен или не даёт бесплатные дни")
         if getattr(self.provider, "service_ready", True):
             try:
                 await asyncio.wait_for(self.provider.provision(updated), 7.0)
             except Exception as exc:
-                logger.warning(
-                    "Mini App bonus-days provisioning deferred for %s: %s",
-                    uid,
-                    exc,
-                )
-
-        return web.json_response(
-            {
-                "ok": True,
-                "diamonds": int(updated.get("diamonds") or 0),
-                "subscription_until": updated.get("subscription_until"),
-                "plan_name": updated.get("plan_name") or "",
-            }
-        )
-
-    async def buy_extra_device(self, request: web.Request) -> web.Response:
-        uid, _tg_user, row = await self._auth(request)
-        current_limit = int(row.get("max_devices") or 1)
-        if current_limit >= 10:
-            raise _json_error(409, "Уже доступно максимальное количество устройств")
-
-        balance = int(row.get("diamonds") or 0)
-        if balance < int(EXTRA_DEVICE_COST):
-            missing = int(EXTRA_DEVICE_COST) - balance
-            raise _json_error(409, f"Не хватает {missing} алмазов")
-
-        updated = await self.db.purchase_extra_device(
-            telegram_id=uid,
-            cost=int(EXTRA_DEVICE_COST),
-            event_key=f"mini-device:{uid}:{uuid4().hex}",
-            max_total_devices=10,
-        )
-        if not updated:
-            raise _json_error(409, "Не удалось добавить устройство")
-
-        if getattr(self.provider, "service_ready", True) and _active(updated):
-            try:
-                await asyncio.wait_for(self.provider.provision(updated), 7.0)
-            except Exception as exc:
-                logger.warning(
-                    "Mini App device limit provisioning deferred for %s: %s",
-                    uid,
-                    exc,
-                )
-
-        return web.json_response(
-            {
-                "ok": True,
-                "max_devices": int(updated.get("max_devices") or current_limit + 1),
-                "diamonds": int(updated.get("diamonds") or 0),
-            }
-        )
+                logger.warning("Promo provisioning deferred for %s: %s", uid, exc)
+        return web.json_response({"ok": True, "subscription_until": updated["subscription_until"]})
 
     async def delete_device(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
@@ -801,15 +796,16 @@ class MiniAppServer:
         app.router.add_get("/miniapp", self.index)
         app.router.add_get("/miniapp/", self.index)
         app.router.add_get("/sub/{token}", self.subscription)
+        app.router.add_get("/client/{client}/{token}", self.client_redirect)
         app.router.add_get("/api/miniapp/health", self.health)
         app.router.add_get("/api/miniapp/me", self.me)
         app.router.add_post("/api/miniapp/trial", self.activate_trial)
         app.router.add_post("/api/miniapp/payment/stars", self.stars_invoice)
         app.router.add_post("/api/miniapp/payment/sbp", self.sbp_create)
         app.router.add_get("/api/miniapp/payment/sbp/{payment_id}", self.sbp_check)
-        app.router.add_post("/api/miniapp/shop/days/{code}", self.buy_bonus_days_by_code)
         app.router.add_post("/api/miniapp/shop/device", self.buy_extra_device)
-        app.router.add_post("/api/miniapp/shop/days", self.buy_bonus_days)
+        app.router.add_post("/api/miniapp/promo/quote", self.promo_quote)
+        app.router.add_post("/api/miniapp/promo/redeem", self.promo_redeem)
         app.router.add_delete("/api/miniapp/devices/{device_id}", self.delete_device)
         app.router.add_static("/static/", str(self.web_dir), show_index=False)
 

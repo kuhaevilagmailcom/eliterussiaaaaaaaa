@@ -10,7 +10,6 @@ PLANS: dict[str, dict[str, Any]] = {
         "name": "7 дней",
         "devices": 1,
         "price_rub": 59,
-        "display_savings": 0,
     },
     "30": {
         "days": 30,
@@ -18,7 +17,6 @@ PLANS: dict[str, dict[str, Any]] = {
         "name": "1 месяц",
         "devices": 1,
         "price_rub": 149,
-        "display_savings": 0,
     },
     "90": {
         "days": 90,
@@ -26,7 +24,6 @@ PLANS: dict[str, dict[str, Any]] = {
         "name": "3 месяца",
         "devices": 1,
         "price_rub": 349,
-        "display_savings": 98,
     },
     "180": {
         "days": 180,
@@ -34,7 +31,6 @@ PLANS: dict[str, dict[str, Any]] = {
         "name": "6 месяцев",
         "devices": 1,
         "price_rub": 599,
-        "display_savings": 295,
     },
     "365": {
         "days": 365,
@@ -42,34 +38,16 @@ PLANS: dict[str, dict[str, Any]] = {
         "name": "1 год",
         "devices": 1,
         "price_rub": 1200,
-        "display_savings": 789,
     },
-}
-
-DIAMOND_REWARDS: dict[str, int] = {
-    "7": 5,
-    "30": 25,
-    "90": 75,
-    "180": 150,
-    "365": 300,
-}
-
-DIAMOND_SHOP_DAYS: dict[str, dict[str, int]] = {
-    "3": {"days": 3, "cost": 60},
-    "7": {"days": 7, "cost": 120},
-    "30": {"days": 30, "cost": 400},
 }
 
 BASE_DEVICES = 1
 MAX_DEVICES = 5
 DEVICE_PRODUCT_CODE = "device"
 EXTRA_DEVICE_PRICE_RUB = 100
-
-# Optional reward-store price. Paid device slots use EXTRA_DEVICE_PRICE_RUB.
-EXTRA_DEVICE_COST = 250
-
-REFERRAL_TRIAL_REWARD = 15
-REFERRAL_FIRST_PAID_REWARD = 30
+CHANNEL_BONUS_DAYS = 1
+REFERRAL_REWARD_DAYS = 1
+MAX_REFERRAL_REWARDS = 3
 
 STAR_RATE_XTR = 50
 STAR_RATE_RUB = 87
@@ -80,17 +58,32 @@ def plan_price_rub(config, code: str) -> int:
 
 
 def plan_price_stars(config, code: str) -> int:
-    rub = plan_price_rub(config, code)
-    return max(1, (rub * STAR_RATE_XTR + STAR_RATE_RUB - 1) // STAR_RATE_RUB)
+    return rub_to_stars(plan_price_rub(config, code))
 
 
 def plan_savings_rub(code: str) -> int:
-    return max(0, int(PLANS[code].get("display_savings") or 0))
+    months = int(PLANS[code].get("months") or 0)
+    if months < 2:
+        return 0
+    monthly_price = int(PLANS["30"]["price_rub"])
+    return max(0, monthly_price * months - plan_price_rub(None, code))
+
+
+def clamp_device_limit(value: int) -> int:
+    return min(MAX_DEVICES, max(BASE_DEVICES, int(value)))
+
+
+def discounted_price_rub(code: str, discount_percent: int = 0) -> tuple[int, int, int]:
+    original = plan_price_rub(None, code)
+    percent = min(100, max(0, int(discount_percent)))
+    discount = original * percent // 100
+    return original, discount, max(0, original - discount)
+
+
+def rub_to_stars(amount_rub: int) -> int:
+    amount = max(0, int(amount_rub))
+    return max(1, (amount * STAR_RATE_XTR + STAR_RATE_RUB - 1) // STAR_RATE_RUB)
 
 
 def extra_device_price_stars() -> int:
-    return max(
-        1,
-        (EXTRA_DEVICE_PRICE_RUB * STAR_RATE_XTR + STAR_RATE_RUB - 1)
-        // STAR_RATE_RUB,
-    )
+    return rub_to_stars(EXTRA_DEVICE_PRICE_RUB)

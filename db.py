@@ -49,7 +49,6 @@ class Database:
                     sub_token TEXT NOT NULL UNIQUE,
                     referrer_id INTEGER,
                     last_menu_message_id INTEGER,
-                    diamonds INTEGER NOT NULL DEFAULT 0,
                     bonus_devices INTEGER NOT NULL DEFAULT 0
                 );
 
@@ -83,41 +82,6 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_star_payments_buyer
                 ON star_payments(buyer_telegram_id, created_at);
 
-                CREATE TABLE IF NOT EXISTS diamond_ledger (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    telegram_id INTEGER NOT NULL,
-                    amount INTEGER NOT NULL,
-                    reason TEXT NOT NULL,
-                    event_key TEXT NOT NULL UNIQUE,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_diamond_ledger_user
-                ON diamond_ledger(telegram_id, id DESC);
-
-                CREATE TABLE IF NOT EXISTS promo_products (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    slug TEXT NOT NULL UNIQUE,
-                    title TEXT NOT NULL,
-                    price_diamonds INTEGER NOT NULL,
-                    active INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS promo_codes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    product_id INTEGER NOT NULL,
-                    code TEXT NOT NULL UNIQUE,
-                    redeemed_by INTEGER,
-                    redeemed_at TEXT,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(product_id) REFERENCES promo_products(id)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_promo_codes_product
-                ON promo_codes(product_id, redeemed_by);
-
-
                 CREATE TABLE IF NOT EXISTS admin_roles (
                     telegram_id INTEGER PRIMARY KEY,
                     role TEXT NOT NULL CHECK(role IN ('full', 'limited')),
@@ -127,6 +91,63 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_admin_roles_role
                 ON admin_roles(role);
+
+                CREATE TABLE IF NOT EXISTS referrals (
+                    referrer_id INTEGER NOT NULL,
+                    referred_id INTEGER NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    qualified_at TEXT,
+                    rewarded_at TEXT,
+                    PRIMARY KEY (referrer_id, referred_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_referrals_referrer
+                ON referrals(referrer_id, rewarded_at);
+
+                CREATE TABLE IF NOT EXISTS service_promo_codes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    type TEXT NOT NULL CHECK(type IN ('discount', 'free_days')),
+                    value INTEGER NOT NULL,
+                    max_uses INTEGER,
+                    used_count INTEGER NOT NULL DEFAULT 0,
+                    per_user_limit INTEGER NOT NULL DEFAULT 1,
+                    expires_at TEXT,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    applicable_plans TEXT NOT NULL DEFAULT 'all',
+                    created_by INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS promo_uses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    promo_id INTEGER NOT NULL,
+                    telegram_id INTEGER NOT NULL,
+                    payment_id TEXT,
+                    used_at TEXT NOT NULL,
+                    UNIQUE(promo_id, telegram_id, payment_id),
+                    FOREIGN KEY(promo_id) REFERENCES service_promo_codes(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_promo_uses_user
+                ON promo_uses(promo_id, telegram_id);
+
+                CREATE TABLE IF NOT EXISTS payment_intents (
+                    intent_id TEXT PRIMARY KEY,
+                    buyer_telegram_id INTEGER NOT NULL,
+                    target_telegram_id INTEGER NOT NULL,
+                    product_code TEXT NOT NULL,
+                    original_amount_rub INTEGER NOT NULL,
+                    discount_amount_rub INTEGER NOT NULL DEFAULT 0,
+                    final_amount_rub INTEGER NOT NULL,
+                    currency TEXT NOT NULL,
+                    currency_amount INTEGER NOT NULL,
+                    promo_id INTEGER,
+                    promo_code TEXT,
+                    status TEXT NOT NULL DEFAULT 'created',
+                    created_at TEXT NOT NULL,
+                    paid_at TEXT
+                );
                 """
             )
 
@@ -141,10 +162,6 @@ class Database:
             if "last_menu_message_id" not in columns:
                 await db.execute(
                     "ALTER TABLE users ADD COLUMN last_menu_message_id INTEGER"
-                )
-            if "diamonds" not in columns:
-                await db.execute(
-                    "ALTER TABLE users ADD COLUMN diamonds INTEGER NOT NULL DEFAULT 0"
                 )
             if "bonus_devices" not in columns:
                 await db.execute(
@@ -161,6 +178,16 @@ class Database:
                 await db.execute(
                     "ALTER TABLE sbp_payments ADD COLUMN target_telegram_id INTEGER"
                 )
+            for name, declaration in (
+                ("original_amount_rub", "INTEGER"),
+                ("discount_amount_rub", "INTEGER NOT NULL DEFAULT 0"),
+                ("promo_id", "INTEGER"),
+                ("promo_code", "TEXT"),
+            ):
+                if name not in sbp_columns:
+                    await db.execute(
+                        f"ALTER TABLE sbp_payments ADD COLUMN {name} {declaration}"
+                    )
 
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_users_referrer_id "
@@ -199,6 +226,12 @@ class Database:
         now = to_iso(utcnow())
         token = secrets.token_urlsafe(24)
         async with aiosqlite.connect(self.path) as db:
+            existed = await (
+                await db.execute(
+                    "SELECT 1 FROM users WHERE telegram_id=?",
+                    (telegram_id,),
+                )
+            ).fetchone()
             await db.execute(
                 """
                 INSERT INTO users (
@@ -211,7 +244,9 @@ class Database:
                 (telegram_id, username, first_name or "", now, token),
             )
             await db.commit()
-        return await self.get_user(telegram_id)
+        result = await self.get_user(telegram_id)
+        result["_is_new"] = existed is None
+        return result
 
     async def get_user(self, telegram_id: int) -> dict[str, Any]:
         async with aiosqlite.connect(self.path) as db:
@@ -275,14 +310,25 @@ class Database:
         if telegram_id == referrer_id:
             return False
         async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
                 """
                 UPDATE users
                 SET referrer_id=?
                 WHERE telegram_id=? AND referrer_id IS NULL
+                  AND EXISTS (SELECT 1 FROM users WHERE telegram_id=?)
                 """,
-                (referrer_id, telegram_id),
+                (referrer_id, telegram_id, referrer_id),
             )
+            if cursor.rowcount == 1:
+                await db.execute(
+                    """
+                    INSERT OR IGNORE INTO referrals (
+                        referrer_id, referred_id, created_at
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (referrer_id, telegram_id, to_iso(utcnow())),
+                )
             await db.commit()
             return cursor.rowcount == 1
 
@@ -295,6 +341,22 @@ class Database:
                 )
             ).fetchone()
         return int(row[0])
+
+    async def referral_stats(self, telegram_id: int) -> dict[str, int]:
+        async with aiosqlite.connect(self.path) as db:
+            row = await (
+                await db.execute(
+                    """
+                    SELECT COUNT(*) AS invited,
+                           SUM(CASE WHEN rewarded_at IS NOT NULL THEN 1 ELSE 0 END) AS rewarded
+                    FROM referrals WHERE referrer_id=?
+                    """,
+                    (telegram_id,),
+                )
+            ).fetchone()
+        invited = int(row[0] or 0)
+        rewarded = min(3, int(row[1] or 0))
+        return {"invited": invited, "rewarded": rewarded}
 
     async def set_last_menu_message(
         self,
@@ -314,20 +376,80 @@ class Database:
         minutes: int,
         max_devices: int,
     ) -> bool:
-        until = to_iso(utcnow() + timedelta(minutes=minutes))
         async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            user = await (
+                await db.execute(
+                    "SELECT * FROM users WHERE telegram_id=?",
+                    (telegram_id,),
+                )
+            ).fetchone()
+            if user is None or int(user["trial_used"] or 0):
+                await db.rollback()
+                return False
+            current = from_iso(user["subscription_until"])
+            start = max(utcnow(), current) if current else utcnow()
+            until = to_iso(start + timedelta(minutes=minutes))
+            device_limit = min(5, max(1, int(user["max_devices"] or max_devices)))
             cursor = await db.execute(
                 """
                 UPDATE users
                 SET trial_used=1,
                     subscription_until=?,
-                    plan_name='Пробный',
+                    plan_name='Бесплатный доступ',
                     traffic_limit_gb=0,
                     max_devices=?
                 WHERE telegram_id=? AND trial_used=0
                 """,
-                (until, max_devices, telegram_id),
+                (until, device_limit, telegram_id),
             )
+            referrer_id = user["referrer_id"]
+            if cursor.rowcount == 1 and referrer_id:
+                rewarded = await (
+                    await db.execute(
+                        "SELECT COUNT(*) FROM referrals WHERE referrer_id=? AND rewarded_at IS NOT NULL",
+                        (int(referrer_id),),
+                    )
+                ).fetchone()
+                referral = await (
+                    await db.execute(
+                        "SELECT rewarded_at FROM referrals WHERE referrer_id=? AND referred_id=?",
+                        (int(referrer_id), telegram_id),
+                    )
+                ).fetchone()
+                if referral is not None and referral[0] is None and int(rewarded[0]) < 3:
+                    now = to_iso(utcnow())
+                    await db.execute(
+                        "UPDATE referrals SET qualified_at=?, rewarded_at=? WHERE referrer_id=? AND referred_id=? AND rewarded_at IS NULL",
+                        (now, now, int(referrer_id), telegram_id),
+                    )
+                    owner = await (
+                        await db.execute(
+                            "SELECT subscription_until FROM users WHERE telegram_id=?",
+                            (int(referrer_id),),
+                        )
+                    ).fetchone()
+                    if owner is not None:
+                        owner_until = from_iso(owner[0])
+                        owner_start = max(utcnow(), owner_until) if owner_until else utcnow()
+                        await db.execute(
+                            """
+                            UPDATE users
+                            SET subscription_until=?,
+                                plan_name=CASE
+                                    WHEN subscription_until IS NULL OR subscription_until <= ?
+                                    THEN 'Реферальный бонус'
+                                    ELSE plan_name
+                                END
+                            WHERE telegram_id=?
+                            """,
+                            (
+                                to_iso(owner_start + timedelta(days=1)),
+                                to_iso(utcnow()),
+                                int(referrer_id),
+                            ),
+                        )
             await db.commit()
             return cursor.rowcount == 1
 
@@ -364,253 +486,6 @@ class Database:
             await db.commit()
         return await self.get_user(telegram_id)
 
-
-    async def add_diamonds(
-        self,
-        telegram_id: int,
-        amount: int,
-        reason: str,
-        event_key: str,
-    ) -> bool:
-        amount = int(amount)
-        if amount == 0:
-            return False
-
-        async with aiosqlite.connect(self.path) as db:
-            await db.execute("BEGIN IMMEDIATE")
-
-            exists = await (
-                await db.execute(
-                    "SELECT 1 FROM diamond_ledger WHERE event_key=?",
-                    (event_key,),
-                )
-            ).fetchone()
-            if exists:
-                await db.rollback()
-                return False
-
-            row = await (
-                await db.execute(
-                    "SELECT diamonds FROM users WHERE telegram_id=?",
-                    (telegram_id,),
-                )
-            ).fetchone()
-            if row is None:
-                await db.rollback()
-                return False
-
-            old_balance = int(row[0])
-            new_balance = max(0, old_balance + amount)
-            actual_amount = new_balance - old_balance
-            if actual_amount == 0:
-                await db.rollback()
-                return False
-
-            await db.execute(
-                "UPDATE users SET diamonds=? WHERE telegram_id=?",
-                (new_balance, telegram_id),
-            )
-            await db.execute(
-                """
-                INSERT INTO diamond_ledger (
-                    telegram_id, amount, reason, event_key, created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    telegram_id,
-                    actual_amount,
-                    reason[:120],
-                    event_key[:160],
-                    to_iso(utcnow()),
-                ),
-            )
-            await db.commit()
-            return True
-
-    async def diamond_balance(self, telegram_id: int) -> int:
-        async with aiosqlite.connect(self.path) as db:
-            row = await (
-                await db.execute(
-                    "SELECT diamonds FROM users WHERE telegram_id=?",
-                    (telegram_id,),
-                )
-            ).fetchone()
-        return int(row[0]) if row else 0
-
-    async def diamond_history(
-        self,
-        telegram_id: int,
-        limit: int = 10,
-    ) -> list[dict[str, Any]]:
-        limit = max(1, min(int(limit), 20))
-        async with aiosqlite.connect(self.path) as db:
-            db.row_factory = aiosqlite.Row
-            rows = await (
-                await db.execute(
-                    """
-                    SELECT amount, reason, created_at
-                    FROM diamond_ledger
-                    WHERE telegram_id=?
-                    ORDER BY id DESC
-                    LIMIT ?
-                    """,
-                    (telegram_id, limit),
-                )
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-    async def purchase_vpn_days(
-        self,
-        telegram_id: int,
-        days: int,
-        cost: int,
-        event_key: str,
-    ) -> dict[str, Any] | None:
-        days = max(1, int(days))
-        cost = max(1, int(cost))
-
-        async with aiosqlite.connect(self.path) as db:
-            db.row_factory = aiosqlite.Row
-            await db.execute("BEGIN IMMEDIATE")
-            row = await (
-                await db.execute(
-                    """
-                    SELECT subscription_until, diamonds, max_devices, bonus_devices
-                    FROM users
-                    WHERE telegram_id=?
-                    """,
-                    (telegram_id,),
-                )
-            ).fetchone()
-            if row is None or int(row["diamonds"]) < cost:
-                await db.rollback()
-                return None
-
-            exists = await (
-                await db.execute(
-                    "SELECT 1 FROM diamond_ledger WHERE event_key=?",
-                    (event_key,),
-                )
-            ).fetchone()
-            if exists:
-                await db.rollback()
-                return None
-
-            current = from_iso(row["subscription_until"])
-            start = max(utcnow(), current) if current else utcnow()
-            until = start + timedelta(days=days)
-
-            effective_devices = max(
-                int(row["max_devices"] or 1),
-                5 + int(row["bonus_devices"] or 0),
-            )
-
-            await db.execute(
-                """
-                UPDATE users
-                SET diamonds=diamonds-?,
-                    subscription_until=?,
-                    plan_name=?,
-                    traffic_limit_gb=0,
-                    max_devices=?
-                WHERE telegram_id=?
-                """,
-                (
-                    cost,
-                    to_iso(until),
-                    f"Бонус: {days} дн.",
-                    effective_devices,
-                    telegram_id,
-                ),
-            )
-            await db.execute(
-                """
-                INSERT INTO diamond_ledger (
-                    telegram_id, amount, reason, event_key, created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    telegram_id,
-                    -cost,
-                    f"Магазин: {days} дн. VPN",
-                    event_key[:160],
-                    to_iso(utcnow()),
-                ),
-            )
-            await db.commit()
-
-        return await self.get_user(telegram_id)
-
-    async def purchase_extra_device(
-        self,
-        telegram_id: int,
-        cost: int,
-        event_key: str,
-        max_total_devices: int = 5,
-    ) -> dict[str, Any] | None:
-        cost = max(1, int(cost))
-        max_total_devices = min(5, max(2, int(max_total_devices)))
-
-        async with aiosqlite.connect(self.path) as db:
-            db.row_factory = aiosqlite.Row
-            await db.execute("BEGIN IMMEDIATE")
-            row = await (
-                await db.execute(
-                    """
-                    SELECT diamonds, max_devices, bonus_devices
-                    FROM users
-                    WHERE telegram_id=?
-                    """,
-                    (telegram_id,),
-                )
-            ).fetchone()
-            if row is None:
-                await db.rollback()
-                return None
-            if int(row["diamonds"]) < cost:
-                await db.rollback()
-                return None
-            if int(row["max_devices"]) >= max_total_devices:
-                await db.rollback()
-                return None
-
-            exists = await (
-                await db.execute(
-                    "SELECT 1 FROM diamond_ledger WHERE event_key=?",
-                    (event_key,),
-                )
-            ).fetchone()
-            if exists:
-                await db.rollback()
-                return None
-
-            await db.execute(
-                """
-                UPDATE users
-                SET diamonds=diamonds-?,
-                    bonus_devices=bonus_devices+1,
-                    max_devices=max_devices+1
-                WHERE telegram_id=?
-                """,
-                (cost, telegram_id),
-            )
-            await db.execute(
-                """
-                INSERT INTO diamond_ledger (
-                    telegram_id, amount, reason, event_key, created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    telegram_id,
-                    -cost,
-                    "Магазин: +1 устройство",
-                    event_key[:160],
-                    to_iso(utcnow()),
-                ),
-            )
-            await db.commit()
-
-        return await self.get_user(telegram_id)
 
     async def change_device_slots(
         self,
@@ -680,197 +555,280 @@ class Database:
             max_total_devices=5,
         )
 
-    async def create_promo_product(
+    async def create_service_promo(
         self,
-        slug: str,
-        title: str,
-        price_diamonds: int,
+        *,
+        code: str,
+        promo_type: str,
+        value: int,
+        created_by: int,
+        max_uses: int | None = None,
+        per_user_limit: int = 1,
+        expires_at: str | None = None,
+        applicable_plans: str = "all",
+    ) -> dict[str, Any]:
+        normalized = code.strip().upper()
+        if not normalized or len(normalized) > 40:
+            raise ValueError("invalid promo code")
+        if promo_type not in {"discount", "free_days"}:
+            raise ValueError("invalid promo type")
+        value = int(value)
+        if value < 1 or (promo_type == "discount" and value > 100):
+            raise ValueError("invalid promo value")
+        plans = applicable_plans.strip().lower() or "all"
+        if plans != "all":
+            allowed = {"7", "30", "90", "180", "365"}
+            selected = [part.strip() for part in plans.split(",") if part.strip()]
+            if not selected or any(part not in allowed for part in selected):
+                raise ValueError("invalid applicable plans")
+            plans = ",".join(dict.fromkeys(selected))
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                INSERT INTO service_promo_codes (
+                    code, type, value, max_uses, per_user_limit, expires_at,
+                    active, applicable_plans, created_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                """,
+                (
+                    normalized,
+                    promo_type,
+                    value,
+                    max_uses if max_uses and int(max_uses) > 0 else None,
+                    max(1, int(per_user_limit)),
+                    expires_at,
+                    plans,
+                    created_by,
+                    to_iso(utcnow()),
+                ),
+            )
+            await db.commit()
+            row = await (
+                await db.execute(
+                    "SELECT * FROM service_promo_codes WHERE id=?",
+                    (cursor.lastrowid,),
+                )
+            ).fetchone()
+        return dict(row)
+
+    async def list_service_promos(self, limit: int = 30) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    "SELECT * FROM service_promo_codes ORDER BY id DESC LIMIT ?",
+                    (max(1, min(int(limit), 100)),),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def promo_quote(
+        self,
+        *,
+        code: str,
+        telegram_id: int,
+        plan_code: str,
+        original_price: int,
+    ) -> dict[str, Any] | None:
+        normalized = code.strip().upper()
+        if not normalized:
+            return None
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (
+                await db.execute(
+                    "SELECT * FROM service_promo_codes WHERE code=? COLLATE NOCASE",
+                    (normalized,),
+                )
+            ).fetchone()
+            if row is None or not int(row["active"]):
+                return None
+            expires = from_iso(row["expires_at"])
+            if expires and expires <= utcnow():
+                return None
+            if row["max_uses"] is not None and int(row["used_count"]) >= int(row["max_uses"]):
+                return None
+            used = await (
+                await db.execute(
+                    "SELECT COUNT(*) FROM promo_uses WHERE promo_id=? AND telegram_id=?",
+                    (int(row["id"]), telegram_id),
+                )
+            ).fetchone()
+            if int(used[0]) >= int(row["per_user_limit"]):
+                return None
+            plans = str(row["applicable_plans"] or "all")
+            if plans != "all" and plan_code not in plans.split(","):
+                return None
+        result = dict(row)
+        original = max(0, int(original_price))
+        if result["type"] == "discount":
+            discount = original * int(result["value"]) // 100
+            result.update(original_price=original, discount=discount, final_price=original - discount)
+        else:
+            result.update(original_price=original, discount=0, final_price=original)
+        return result
+
+    async def consume_promo(
+        self,
+        *,
+        promo_id: int,
+        telegram_id: int,
+        payment_id: str | None,
+    ) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT max_uses, used_count, per_user_limit, active, expires_at FROM service_promo_codes WHERE id=?",
+                    (promo_id,),
+                )
+            ).fetchone()
+            if row is None or not int(row[3]):
+                await db.rollback()
+                return False
+            expires = from_iso(row[4])
+            if expires and expires <= utcnow():
+                await db.rollback()
+                return False
+            if row[0] is not None and int(row[1]) >= int(row[0]):
+                await db.rollback()
+                return False
+            used = await (
+                await db.execute(
+                    "SELECT COUNT(*) FROM promo_uses WHERE promo_id=? AND telegram_id=?",
+                    (promo_id, telegram_id),
+                )
+            ).fetchone()
+            if int(used[0]) >= int(row[2]):
+                await db.rollback()
+                return False
+            await db.execute(
+                "INSERT INTO promo_uses (promo_id, telegram_id, payment_id, used_at) VALUES (?, ?, ?, ?)",
+                (promo_id, telegram_id, payment_id, to_iso(utcnow())),
+            )
+            await db.execute(
+                "UPDATE service_promo_codes SET used_count=used_count+1 WHERE id=?",
+                (promo_id,),
+            )
+            await db.commit()
+            return True
+
+    async def create_payment_intent(
+        self,
+        *,
+        intent_id: str,
+        buyer_id: int,
+        target_id: int,
+        product_code: str,
+        original_amount_rub: int,
+        discount_amount_rub: int,
+        final_amount_rub: int,
+        currency: str,
+        currency_amount: int,
+        promo_id: int | None = None,
+        promo_code: str | None = None,
     ) -> None:
-        slug = slug.strip().lower()[:48]
-        if not slug:
-            raise ValueError("empty promo slug")
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 """
-                INSERT INTO promo_products (
-                    slug, title, price_diamonds, active, created_at
-                ) VALUES (?, ?, ?, 1, ?)
-                ON CONFLICT(slug) DO UPDATE SET
-                    title=excluded.title,
-                    price_diamonds=excluded.price_diamonds,
-                    active=1
+                INSERT INTO payment_intents (
+                    intent_id, buyer_telegram_id, target_telegram_id,
+                    product_code, original_amount_rub, discount_amount_rub,
+                    final_amount_rub, currency, currency_amount,
+                    promo_id, promo_code, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    slug,
-                    title.strip()[:80],
-                    max(1, int(price_diamonds)),
+                    intent_id, buyer_id, target_id, product_code,
+                    original_amount_rub, discount_amount_rub, final_amount_rub,
+                    currency.upper(), currency_amount, promo_id, promo_code,
                     to_iso(utcnow()),
                 ),
             )
             await db.commit()
 
-    async def add_promo_code(self, slug: str, code: str) -> bool:
-        async with aiosqlite.connect(self.path) as db:
-            product = await (
-                await db.execute(
-                    "SELECT id FROM promo_products WHERE slug=?",
-                    (slug.strip().lower(),),
-                )
-            ).fetchone()
-            if not product:
-                return False
-            try:
-                await db.execute(
-                    """
-                    INSERT INTO promo_codes (
-                        product_id, code, created_at
-                    ) VALUES (?, ?, ?)
-                    """,
-                    (
-                        int(product[0]),
-                        code.strip()[:300],
-                        to_iso(utcnow()),
-                    ),
-                )
-                await db.commit()
-                return True
-            except aiosqlite.IntegrityError:
-                await db.rollback()
-                return False
-
-    async def promo_products(self) -> list[dict[str, Any]]:
+    async def get_payment_intent(self, intent_id: str) -> dict[str, Any] | None:
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
-            rows = await (
+            row = await (
                 await db.execute(
-                    """
-                    SELECT p.id, p.slug, p.title, p.price_diamonds,
-                           COUNT(c.id) AS stock
-                    FROM promo_products p
-                    LEFT JOIN promo_codes c
-                      ON c.product_id=p.id
-                     AND c.redeemed_by IS NULL
-                    WHERE p.active=1
-                    GROUP BY p.id
-                    HAVING stock > 0
-                    ORDER BY p.id
-                    """
+                    "SELECT * FROM payment_intents WHERE intent_id=?",
+                    (intent_id,),
                 )
-            ).fetchall()
-        return [dict(row) for row in rows]
+            ).fetchone()
+        return dict(row) if row else None
 
-    async def redeem_promo(
-        self,
-        telegram_id: int,
-        slug: str,
-        event_key: str,
-    ) -> dict[str, Any] | None:
+    async def mark_payment_intent_paid(self, intent_id: str) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                "UPDATE payment_intents SET status='paid', paid_at=? WHERE intent_id=? AND status='created'",
+                (to_iso(utcnow()), intent_id),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
+    async def redeem_free_days_promo(self, code: str, telegram_id: int) -> dict[str, Any] | None:
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
-
-            product = await (
+            promo = await (
                 await db.execute(
-                    """
-                    SELECT id, title, price_diamonds
-                    FROM promo_products
-                    WHERE slug=? AND active=1
-                    """,
-                    (slug.strip().lower(),),
+                    "SELECT * FROM service_promo_codes WHERE code=? COLLATE NOCASE",
+                    (code.strip().upper(),),
                 )
             ).fetchone()
-            if product is None:
-                await db.rollback()
-                return None
-
             user = await (
                 await db.execute(
-                    "SELECT diamonds FROM users WHERE telegram_id=?",
+                    "SELECT subscription_until, max_devices FROM users WHERE telegram_id=?",
                     (telegram_id,),
                 )
             ).fetchone()
-            if user is None or int(user["diamonds"]) < int(product["price_diamonds"]):
+            if promo is None or user is None or promo["type"] != "free_days" or not int(promo["active"]):
                 await db.rollback()
                 return None
-
-            code = await (
+            expires = from_iso(promo["expires_at"])
+            if expires and expires <= utcnow():
+                await db.rollback()
+                return None
+            if promo["max_uses"] is not None and int(promo["used_count"]) >= int(promo["max_uses"]):
+                await db.rollback()
+                return None
+            used = await (
                 await db.execute(
-                    """
-                    SELECT id, code
-                    FROM promo_codes
-                    WHERE product_id=? AND redeemed_by IS NULL
-                    ORDER BY id
-                    LIMIT 1
-                    """,
-                    (int(product["id"]),),
+                    "SELECT COUNT(*) FROM promo_uses WHERE promo_id=? AND telegram_id=?",
+                    (int(promo["id"]), telegram_id),
                 )
             ).fetchone()
-            if code is None:
+            if int(used[0]) >= int(promo["per_user_limit"]):
                 await db.rollback()
                 return None
-
-            exists = await (
-                await db.execute(
-                    "SELECT 1 FROM diamond_ledger WHERE event_key=?",
-                    (event_key,),
-                )
-            ).fetchone()
-            if exists:
-                await db.rollback()
-                return None
-
-            now = to_iso(utcnow())
-            price = int(product["price_diamonds"])
+            now = utcnow()
+            current = from_iso(user["subscription_until"])
+            start = max(now, current) if current else now
+            until = start + timedelta(days=int(promo["value"]))
             await db.execute(
-                "UPDATE users SET diamonds=diamonds-? WHERE telegram_id=?",
-                (price, telegram_id),
+                "INSERT INTO promo_uses (promo_id, telegram_id, payment_id, used_at) VALUES (?, ?, NULL, ?)",
+                (int(promo["id"]), telegram_id, to_iso(now)),
+            )
+            await db.execute(
+                "UPDATE service_promo_codes SET used_count=used_count+1 WHERE id=?",
+                (int(promo["id"]),),
             )
             await db.execute(
                 """
-                UPDATE promo_codes
-                SET redeemed_by=?, redeemed_at=?
-                WHERE id=? AND redeemed_by IS NULL
-                """,
-                (telegram_id, now, int(code["id"])),
-            )
-            await db.execute(
-                """
-                INSERT INTO diamond_ledger (
-                    telegram_id, amount, reason, event_key, created_at
-                ) VALUES (?, ?, ?, ?, ?)
+                UPDATE users SET subscription_until=?, plan_name=?, max_devices=?
+                WHERE telegram_id=?
                 """,
                 (
+                    to_iso(until),
+                    f"Промокод +{int(promo['value'])} дней",
+                    min(5, max(1, int(user["max_devices"] or 1))),
                     telegram_id,
-                    -price,
-                    f"Промокод: {product['title']}",
-                    event_key[:160],
-                    now,
                 ),
             )
             await db.commit()
-            return {
-                "title": str(product["title"]),
-                "code": str(code["code"]),
-                "price_diamonds": price,
-            }
-
-    async def promo_stock_overview(self) -> list[dict[str, Any]]:
-        async with aiosqlite.connect(self.path) as db:
-            db.row_factory = aiosqlite.Row
-            rows = await (
-                await db.execute(
-                    """
-                    SELECT p.slug, p.title, p.price_diamonds,
-                           SUM(CASE WHEN c.redeemed_by IS NULL THEN 1 ELSE 0 END) AS stock,
-                           SUM(CASE WHEN c.redeemed_by IS NOT NULL THEN 1 ELSE 0 END) AS issued
-                    FROM promo_products p
-                    LEFT JOIN promo_codes c ON c.product_id=p.id
-                    GROUP BY p.id
-                    ORDER BY p.id
-                    """
-                )
-            ).fetchall()
-        return [dict(row) for row in rows]
+        return await self.get_user(telegram_id)
 
     async def create_sbp_payment(
         self,
@@ -880,14 +838,20 @@ class Database:
         plan_code: str,
         amount_rub: int,
         target_telegram_id: int | None = None,
+        original_amount_rub: int | None = None,
+        discount_amount_rub: int = 0,
+        promo_id: int | None = None,
+        promo_code: str | None = None,
     ) -> None:
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO sbp_payments (
                     payment_id, order_id, telegram_id, target_telegram_id,
-                    plan_code, amount_rub, status, created_at, paid_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'created', ?, NULL)
+                    plan_code, amount_rub, original_amount_rub,
+                    discount_amount_rub, promo_id, promo_code,
+                    status, created_at, paid_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, NULL)
                 """,
                 (
                     payment_id,
@@ -896,6 +860,10 @@ class Database:
                     target_telegram_id or telegram_id,
                     plan_code,
                     amount_rub,
+                    original_amount_rub if original_amount_rub is not None else amount_rub,
+                    max(0, int(discount_amount_rub)),
+                    promo_id,
+                    promo_code,
                     to_iso(utcnow()),
                 ),
             )
@@ -1066,7 +1034,7 @@ class Database:
                 SELECT COUNT(*) FROM users
                 WHERE subscription_until IS NOT NULL
                   AND subscription_until > ?
-                  AND plan_name != 'Пробный'
+                  AND plan_name NOT IN ('Пробный', 'Бесплатный доступ')
                 """,
                 (now,),
             )).fetchone())[0]
