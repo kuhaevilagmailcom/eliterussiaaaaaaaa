@@ -9,12 +9,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Canonical BotHost public endpoint. This is not a secret and is used as the
-# safe fallback for Telegram Mini App and public subscription URLs.
-DEFAULT_PUBLIC_BASE_URL = "https://bot-1790078948-4568-furadev.bothost.tech"
+# Canonical public domains. The Mini App lives on the root domain, while
+# personal VPN subscriptions are isolated on a dedicated subdomain.
+DEFAULT_PUBLIC_BASE_URL = "https://mgnvpn.ru"
+DEFAULT_SUBSCRIPTION_BASE_URL = "https://sub.mgnvpn.ru"
 LEGACY_PUBLIC_BASE_URLS = {
     "https://bot-1789383103-4489-furadev.bothost.tech",
     "http://bot-1789383103-4489-furadev.bothost.tech",
+    "https://bot-1790078948-4568-furadev.bothost.tech",
+    "http://bot-1790078948-4568-furadev.bothost.tech",
 }
 
 
@@ -170,9 +173,11 @@ class Config:
                 int(os.getenv("MINIAPP_INITDATA_MAX_AGE", "3600")),
             ),
             vpn_mode=mode,
-            vpn_sub_base_url=os.getenv(
-                "VPN_SUB_BASE_URL",
-                "https://vpn.example.com/sub",
+            vpn_sub_base_url=_https_public_url(
+                os.getenv(
+                    "VPN_SUB_BASE_URL",
+                    DEFAULT_SUBSCRIPTION_BASE_URL,
+                )
             ).rstrip("/"),
             vpn_api_url=os.getenv("VPN_API_URL", "").rstrip("/"),
             vpn_api_token=os.getenv("VPN_API_TOKEN", ""),
