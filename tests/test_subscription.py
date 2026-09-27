@@ -18,6 +18,41 @@ def test_plain_and_base64_subscriptions_get_pretty_names():
     assert b"#%F0%9F" in base64.b64decode(encoded)
 
 
+def test_h1_legacy_h1cloud_http_api_is_accepted_without_extra_env_flag():
+    async def run():
+        provider = H1CloudVpnProvider(
+            api_url="http://nl1.h1cloud.net:25364/api",
+            api_token="test-token",
+            subscription_template="",
+            server_name="MGN VPN",
+            verify_ssl=True,
+            allow_insecure=False,
+        )
+        try:
+            assert provider.api_url == "http://nl1.h1cloud.net:25364/api"
+            assert provider.verify_ssl is False
+            assert provider.ssl_context is False
+        finally:
+            await provider.close()
+
+    asyncio.run(run())
+
+
+def test_h1_arbitrary_third_party_http_api_still_requires_explicit_override():
+    async def run():
+        with pytest.raises(RuntimeError, match="legacy"):
+            H1CloudVpnProvider(
+                api_url="http://example.invalid/api",
+                api_token="test-token",
+                subscription_template="",
+                server_name="MGN VPN",
+                verify_ssl=True,
+                allow_insecure=False,
+            )
+
+    asyncio.run(run())
+
+
 def test_h1_capabilities_are_explicit():
     capabilities = H1CloudVpnProvider.capabilities
     assert capabilities.supports_federation
