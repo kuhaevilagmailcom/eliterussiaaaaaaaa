@@ -510,11 +510,10 @@ class MiniAppServer:
         if not _active(user):
             raise web.HTTPForbidden(text="Subscription expired")
 
-        self._schedule_subscription_federation_refresh(user, token)
-
         cached = self._subscription_cache.get(token)
         now = time.monotonic()
         if cached and now - float(cached["created"]) <= 30.0:
+            self._schedule_subscription_federation_refresh(user, token)
             return web.Response(
                 body=cached["body"],
                 headers=dict(cached["headers"]),
@@ -526,8 +525,10 @@ class MiniAppServer:
             and token not in self._subscription_cache_invalidated
             and time.time() - float(persistent_cached["created_at"]) <= 300.0
         ):
-            # A recent successful payload is safer and dramatically faster than
-            # rebuilding the federation list for every VPN-client refresh.
+            # Serve first, refresh federation in the background. Starting a
+            # provision task before a cold fetch races the same H1 client and
+            # was a common source of first-import 503 responses.
+            self._schedule_subscription_federation_refresh(user, token)
             return web.Response(
                 body=persistent_cached["body"],
                 headers=dict(persistent_cached["headers"]),
@@ -543,7 +544,7 @@ class MiniAppServer:
             # second full federation provision made clients wait 30+ seconds.
             body, upstream_headers, count = await asyncio.wait_for(
                 load_payload(),
-                8.5,
+                14.0,
             )
             if persistent_cached and time.time() - float(persistent_cached["created_at"]) <= 86400.0:
                 extract = getattr(self.provider, "_subscription_vless_links", None)
@@ -596,6 +597,7 @@ class MiniAppServer:
                 user["telegram_id"],
                 count,
             )
+            self._schedule_subscription_federation_refresh(user, token)
             return web.Response(body=body, headers=headers)
         except Exception as exc:
             # Existing configurations remain useful during a short H1 outage.
@@ -624,9 +626,9 @@ class MiniAppServer:
                     headers=dict(persistent_cached["headers"]),
                 )
             logger.warning(
-                "MGN subscription unavailable for %s: %s",
+                "MGN subscription unavailable for user %s (%s)",
                 user["telegram_id"],
-                exc,
+                type(exc).__name__,
             )
             raise web.HTTPServiceUnavailable(
                 text="MGN VPN subscription is temporarily unavailable"
