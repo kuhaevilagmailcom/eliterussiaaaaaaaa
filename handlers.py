@@ -50,6 +50,7 @@ from config import Config
 from db import Database, from_iso, utcnow
 from emoji import EmojiBank
 from payments import RollyPayError, create_payment, get_payment
+from legal import agreement_telegram
 from vpn import VpnProvider, VpnState
 from vpn_clients import CLIENTS, client_redirect_url
 
@@ -88,6 +89,8 @@ REPLY_NAVIGATION_TEXTS = frozenset(
         "📱 Устройства",
         "Информация",
         "ℹ️ Информация",
+        "О сервисе",
+        "ℹ️ О сервисе",
         "Админ-панель",
         "🛡 Админ-панель",
     }
@@ -802,6 +805,14 @@ def build_router(
             reply_markup = home_markup
 
         async def create_first_menu() -> Message:
+            if len(text) > 1000:
+                sent = await message.bot.send_message(
+                    chat_id=message.chat.id,
+                    text=strip_custom_emoji(text),
+                    reply_markup=reply_markup,
+                )
+                await db.set_last_menu_message(actor.id, sent.message_id)
+                return sent
             banner = current_main_menu_banner()
             try:
                 sent = await message.bot.send_photo(
@@ -1404,25 +1415,7 @@ def build_router(
             await show_subscription(callback.message, callback.from_user)
 
     def user_agreement_text() -> str:
-        return (
-            "<b>Пользовательское соглашение MGN VPN</b>\n\n"
-            "Используя MGN VPN, пользователь подтверждает, что будет применять сервис "
-            "только законным способом и не будет использовать его для атак, спама, "
-            "вредоносной активности или нарушения прав третьих лиц.\n\n"
-            "<b>Персональная ссылка.</b> Ссылка предназначена только владельцу подписки. "
-            "Её нельзя публиковать или передавать другим людям. При подозрении на утечку "
-            "обратитесь в поддержку.\n\n"
-            "<b>Устройства.</b> Одновременно можно использовать не больше количества "
-            "устройств, указанного в тарифе.\n\n"
-            "<b>Доступность.</b> Работа отдельных локаций может временно меняться из-за "
-            "обслуживания, сетевых ограничений или работ инфраструктуры.\n\n"
-            "<b>Данные.</b> Для работы сервиса обрабатываются Telegram ID, username, "
-            "состояние подписки и платежей, технические идентификаторы подключений, "
-            "которые предоставляет VPN-панель, а также обращения в поддержку. "
-            "Секреты и токены не должны передаваться в обращения.\n\n"
-            "Оплата, возвраты и обязательные права пользователя применяются в соответствии "
-            "с правилами платёжного способа и применимым законодательством."
-        )
+        return agreement_telegram()
 
     def support_keyboard() -> Any:
         kb = InlineKeyboardBuilder()
@@ -1574,31 +1567,7 @@ def build_router(
             )
         )
         add_nav_buttons(kb, back_data="home")
-
-        text = (
-            "🌐 <b>О MGN VPN</b>\n\n"
-            "💳 <b>Прозрачная оплата</b>\n"
-            "<blockquote>❤️ Никаких автосписаний и скрытых подписок. "
-            "Оплата происходит только после вашего подтверждения.</blockquote>\n\n"
-            "⚡ <b>Быстрое подключение</b>\n"
-            "<blockquote>📶 Подключение настраивается по персональной ссылке. "
-            "Доступные VPN-локации автоматически попадают в приложение.</blockquote>\n\n"
-            "🛡 <b>Приватность</b>\n"
-            "<blockquote>🔐 MGN VPN не анализирует содержимое вашего интернет-трафика. "
-            "Для работы сервиса используются только необходимые технические данные: "
-            "Telegram ID, состояние подписки, платежные метаданные и данные подключений.</blockquote>\n\n"
-            "📚 <b>Правила сервиса</b>\n"
-            "<blockquote>ℹ️ Используя MGN VPN, вы принимаете правила сервиса. "
-            "Персональная ссылка предназначена только для вашего аккаунта, "
-            "а количество устройств ограничено выбранным лимитом.</blockquote>\n\n"
-            "🔒 <b>Защищённое соединение</b>\n"
-            "<blockquote>⚙️ VPN использует современные протоколы защищённого соединения "
-            "для передачи данных между вашим устройством и VPN-сервером.</blockquote>\n\n"
-            "🔑 <b>Ваша ссылка — ваш доступ</b>\n"
-            "<blockquote>⚠️ Не передавайте персональную ссылку другим людям. "
-            "Если она попала к постороннему, обратитесь в поддержку.</blockquote>"
-        )
-
+        text = user_agreement_text()
         await send_screen(
             callback.message,
             callback.from_user,
@@ -3000,19 +2969,16 @@ def build_router(
             reply_markup=kb.as_markup(),
         )
 
-    @router.message(F.text.in_({"ℹ️ Информация", "Информация"}))
+    @router.message(F.text.in_({"ℹ️ О сервисе", "О сервисе", "ℹ️ Информация", "Информация"}))
     async def information_screen(message: Message) -> None:
         user = await ensure_actor(message.from_user)
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("Пользовательское соглашение", callback_data="menu:terms", icon_index=11))
+        kb.row(blue_inline_button("Поддержка", callback_data="menu:support", icon_index=6))
         add_nav_buttons(kb, back_data="home")
 
         e = emoji.icon(5, pack=PACK_NEWS)
         lines = [
-            f"{e} <b>Информация</b>",
-            "",
-            "Персональная VPN-ссылка предназначена только владельцу аккаунта.",
-            f"Лимит — до <b>{MAX_DEVICES}</b> устройств; список подключений находится в <b>Профиле</b>.",
+            f"{e} " + user_agreement_text(),
         ]
         if not is_active(user):
             lines += ["", "Чтобы подключиться, выберите тариф или пригласите друзей."]

@@ -316,6 +316,16 @@
     if(button)button.onclick=()=>openClientUrl(button.dataset.client||'');
   }
 
+  function renderAgreement(){
+    const root=$('#agreementContent');
+    const agreement=state.data?.agreement;
+    if(!root||!agreement)return;
+    root.innerHTML=(agreement.sections||[]).map(section=>
+      '<h3>'+esc(section.heading||'')+'</h3>'+
+      (section.paragraphs||[]).map(value=>'<p>'+esc(value)+'</p>').join('')
+    ).join('')+'<p><small>Редакция от '+esc(agreement.updated||'')+'.</small></p>';
+  }
+
   function openClientUrl(url){
     if(!url)return;
     try{
@@ -341,6 +351,7 @@
     renderReferrals();
     renderBonuses();
     renderClients();
+    renderAgreement();
     icons();
     const loader=$('#loader');
     loader.classList.add('hidden');

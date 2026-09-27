@@ -17,7 +17,8 @@ async function routeFiles(page, miniApp = false) {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/public/catalog') return route.fulfill({ json: {
       plans: ['7','30','90','180','365'].map((code, index) => ({code, price_rub: [59,100,349,599,1200][index]})),
-      max_devices: 5
+      max_devices: 5,
+      extra_device_price_rub: 100
     }});
     if (url.pathname === '/api/miniapp/me') return route.fulfill({ json: {
       user: {first_name:'Тест', username:'test', telegram_id:42},
@@ -26,6 +27,7 @@ async function routeFiles(page, miniApp = false) {
       plans: [{code:'30',name:'1 месяц',days:30,devices:1,rub:100,stars:63,savings:0}],
       payments: {sbp_enabled:true}, capabilities:{device_list:true,device_removal:false,device_reset:true},
       clients:[], shop:{extra_device_price_rub:100,extra_device_price_stars:63,max_devices:5},
+      agreement:{updated:'27 сентября 2026 года',sections:[{heading:'1. Общие положения',paragraphs:['Условия использования MGN VPN.']}]},
       bot_url:'https://t.me/mgnvpn_bot'
     }});
     const files = miniApp ? {
@@ -40,7 +42,13 @@ async function routeFiles(page, miniApp = false) {
       '/static/site/styles.css': ['miniapp/web/site/styles.css','text/css']
     };
     const match = files[url.pathname];
-    if (match) return route.fulfill({body:read(match[0]),contentType:match[1]});
+    if (match) {
+      var body=read(match[0]);
+      if(url.pathname==='/'&&!miniApp){
+        body=Buffer.from(body.toString().replace('{{AGREEMENT_UPDATED}}','27 сентября 2026 года').replace('{{AGREEMENT_HTML}}','<section class="agreement-part"><h3>1. Общие положения</h3><p>Условия использования MGN VPN.</p></section>'));
+      }
+      return route.fulfill({body,contentType:match[1]});
+    }
     return route.fulfill({status:204,body:''});
   });
 }

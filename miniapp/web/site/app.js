@@ -1,54 +1,38 @@
 (function(){
   var config=window.MGN_SITE_CONFIG||{};
-  var botUsername=String(config.botUsername||'mgnvpn_bot').replace(/^@/,'');
-  var supportUsername=String(config.supportUsername||botUsername).replace(/^@/,'');
-  function applyCatalog(catalog){
-    var plans=Array.isArray(catalog&&catalog.plans)?catalog.plans:[];
-    var byCode={};
-    plans.forEach(function(plan){byCode[String(plan.code)]=plan;});
-    document.querySelectorAll('[data-plan-price]').forEach(function(element){
-      var plan=byCode[String(element.dataset.planPrice||'')];
-      element.textContent=plan?Number(plan.price_rub).toLocaleString('ru-RU')+' ₽':'Открыть в Telegram';
+  var bot=String(config.botUsername||'mgnvpn_bot').replace(/^@/,'');
+  var support=String(config.supportUsername||bot).replace(/^@/,'');
+
+  document.querySelectorAll('[data-bot-link]').forEach(function(link){
+    link.href='https://t.me/'+bot+'?startapp';
+    link.target='_blank'; link.rel='noopener noreferrer';
+  });
+  document.querySelectorAll('[data-support-link]').forEach(function(link){
+    link.href='https://t.me/'+support;
+    link.target='_blank'; link.rel='noopener noreferrer';
+  });
+
+  function showPrices(catalog){
+    var plans={};
+    (catalog&&catalog.plans||[]).forEach(function(plan){plans[String(plan.code)]=plan;});
+    document.querySelectorAll('[data-plan-price]').forEach(function(node){
+      var plan=plans[String(node.dataset.planPrice||'')];
+      var price=plan&&plan.price_rub;
+      node.textContent=Number.isFinite(Number(price))?Number(price).toLocaleString('ru-RU')+' ₽':'В Telegram';
     });
-    document.querySelectorAll('[data-plan-savings]').forEach(function(element){
-      var plan=byCode[String(element.dataset.planSavings||'')];
-      var savings=Number(plan&&plan.savings_rub||0);
-      element.textContent=savings>0?'Выгода '+savings.toLocaleString('ru-RU')+' ₽':'';
-      element.hidden=savings<=0;
+    document.querySelectorAll('[data-plan-label]').forEach(function(node){
+      var plan=plans[String(node.dataset.planLabel||'')];
+      var parts=[];
+      if(plan&&plan.popular) parts.push('Популярный');
+      if(Number(plan&&plan.savings_rub)>0) parts.push('выгода '+Number(plan.savings_rub).toLocaleString('ru-RU')+' ₽');
+      node.textContent=parts.length?parts.join(' · '):'Выбрать';
     });
-    document.querySelectorAll('[data-device-limit]').forEach(function(element){
-      element.textContent=String(Number(catalog&&catalog.max_devices||5));
+    document.querySelectorAll('[data-extra-device-price]').forEach(function(node){
+      var price=catalog&&catalog.extra_device_price_rub;
+      node.textContent=Number.isFinite(Number(price))?Number(price).toLocaleString('ru-RU')+' ₽':'в Telegram';
     });
   }
   fetch('/api/public/catalog',{headers:{Accept:'application/json'}})
     .then(function(response){if(!response.ok)throw new Error('catalog');return response.json();})
-    .then(applyCatalog)
-    .catch(function(){applyCatalog(null);});
-
-  document.querySelectorAll('[data-bot-link]').forEach(function(link){
-    link.href='https://t.me/'+botUsername+'?startapp';
-    link.target='_blank';
-    link.rel='noopener noreferrer';
-  });
-
-  document.querySelectorAll('[data-support-link]').forEach(function(link){
-    link.href='https://t.me/'+supportUsername;
-    link.target='_blank';
-    link.rel='noopener noreferrer';
-  });
-
-  var reducedMotion=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if(!reducedMotion&&'IntersectionObserver' in window){
-    var observer=new IntersectionObserver(function(entries){
-      entries.forEach(function(entry){
-        if(entry.isIntersecting){
-          entry.target.classList.add('is-visible');
-          observer.unobserve(entry.target);
-        }
-      });
-    },{threshold:.12});
-    document.querySelectorAll('.reveal').forEach(function(element){observer.observe(element);});
-  }else{
-    document.querySelectorAll('.reveal').forEach(function(element){element.classList.add('is-visible');});
-  }
+    .then(showPrices).catch(function(){showPrices(null);});
 }());

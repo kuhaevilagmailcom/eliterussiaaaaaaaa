@@ -30,6 +30,7 @@ from catalog import (
 )
 from db import Database, from_iso, utcnow
 from payments import RollyPayError, create_payment, get_payment
+from legal import AGREEMENT_SECTIONS, AGREEMENT_UPDATED, agreement_html
 from vpn import VpnProvider, VpnState, prettify_subscription_payload
 from vpn_clients import client_registry, get_client
 
@@ -451,6 +452,8 @@ class MiniAppServer:
         if not index.exists():
             raise web.HTTPNotFound(text="MGN VPN site files are missing")
         html = await asyncio.to_thread(index.read_text, encoding="utf-8")
+        html = html.replace("{{AGREEMENT_HTML}}", agreement_html())
+        html = html.replace("{{AGREEMENT_UPDATED}}", AGREEMENT_UPDATED)
         for code in PLANS:
             html = html.replace(f'<strong data-plan-price="{code}"></strong>',
                                 f'<strong data-plan-price="{code}">{plan_price_rub(self.config, code)} ₽</strong>')
@@ -732,6 +735,13 @@ class MiniAppServer:
                     "max_devices": MAX_DEVICES,
                 },
                 "bot_url": f"https://t.me/{username}",
+                "agreement": {
+                    "updated": AGREEMENT_UPDATED,
+                    "sections": [
+                        {"heading": heading, "paragraphs": list(paragraphs)}
+                        for heading, paragraphs in AGREEMENT_SECTIONS
+                    ],
+                },
             }
         )
 
