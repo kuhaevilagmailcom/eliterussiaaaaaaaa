@@ -398,6 +398,14 @@ def main_menu_inline_keyboard(
     active: bool = False,
 ) -> Any:
     kb = InlineKeyboardBuilder()
+    if miniapp_url:
+        kb.row(
+            blue_inline_button(
+                "Открыть приложение",
+                web_app=WebAppInfo(url=miniapp_url),
+                icon_index=9,
+            )
+        )
     kb.row(
         blue_inline_button(
             "Моя подписка" if active else "Купить подписку",
@@ -435,7 +443,6 @@ def main_menu_inline_keyboard(
             )
         )
     return kb.as_markup()
-
 
 def plans_keyboard(config: Config) -> Any:
     kb = InlineKeyboardBuilder()
