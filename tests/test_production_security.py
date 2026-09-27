@@ -16,7 +16,7 @@ from aiohttp import ClientSession, web
 from config import Config
 from db import Database, utcnow, from_iso
 from miniapp import MiniAppServer, validate_init_data
-from handlers import build_router, connection_keyboard
+from handlers import build_router, connection_keyboard, main_keyboard
 from vpn import H1CloudVpnProvider
 
 TOKEN = '123456:TEST_ONLY'
@@ -50,6 +50,13 @@ def test_canonical_config_and_back(monkeypatch):
     assert buttons[0][0].url == 'https://mgnvpn.ru/client/happ/'+'a'*32
     assert buttons[2][0].text == 'Назад'
     assert buttons[2][0].icon_custom_emoji_id is None
+
+
+def test_main_reply_keyboard_has_only_vpn_and_home():
+    keyboard = main_keyboard(EmojiBank(()), custom_icons=False, active=True, admin=True)
+    assert [[button.text for button in row] for row in keyboard.keyboard] == [
+        ["VPN", "Главное меню"]
+    ]
 
 
 def test_atomic_payments_and_concurrency(tmp_path):
