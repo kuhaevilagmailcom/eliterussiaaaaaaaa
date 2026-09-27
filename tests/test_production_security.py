@@ -170,6 +170,35 @@ def test_miniapp_render_has_no_out_of_scope_page_reference():
     assert "if(page==='support')loadSupport();" in go_block
 
 
+def test_miniapp_state_failure_provisions_in_background(tmp_path, monkeypatch):
+    monkeypatch.setenv('BOT_TOKEN', TOKEN)
+
+    async def run():
+        config = replace(Config.from_env(), db_path=str(tmp_path/'fast-start.db'))
+        db = Database(config.db_path)
+        await db.init()
+        user = await db.ensure_user(42, None, 'Test')
+        user = await db.extend_subscription(42, 7, 'Test', 1)
+        blocker = asyncio.Event()
+
+        async def provision(_user):
+            await blocker.wait()
+
+        provider = SimpleNamespace(
+            mode_name='h1cloud', service_ready=True,
+            get_state=AsyncMock(side_effect=RuntimeError('offline')),
+            provision=AsyncMock(side_effect=provision),
+        )
+        server = MiniAppServer(SimpleNamespace(), config, db, provider)
+        state, ok = await server._load_state(user)
+        assert not ok
+        assert state.devices == []
+        assert 42 in server._reconcile_tasks
+        await server.close()
+
+    asyncio.run(run())
+
+
 def test_admin_users_screen_fits_telegram_caption_and_search_does_not_collide(tmp_path, monkeypatch):
     monkeypatch.setenv('BOT_TOKEN', TOKEN)
 

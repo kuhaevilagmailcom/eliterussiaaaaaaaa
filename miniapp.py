@@ -368,7 +368,7 @@ class MiniAppServer:
         try:
             state = await asyncio.wait_for(
                 self.provider.get_state(user),
-                5.0,
+                2.5,
             )
             if (
                 is_h1
@@ -385,22 +385,14 @@ class MiniAppServer:
                     str(state_exc).strip() or type(state_exc).__name__,
                 )
 
-        # First activation or a missing main client: provisioning is required.
-        try:
-            state = await asyncio.wait_for(
-                self.provider.provision(user),
-                15.0,
-            )
-            if is_h1:
-                self._last_reconcile[user_id] = time.monotonic()
-            return state, True
-        except Exception as exc:
-            logger.warning(
-                "Mini App VPN state unavailable for %s: %s",
-                user_id,
-                str(exc).strip() or type(exc).__name__,
-            )
-            return self._fallback_state(user), False
+        # Provisioning can take tens of seconds when a linked VPN node is
+        # unavailable. Keep Mini App startup bounded and repair H1 state in the
+        # background; the stable public subscription URL remains available.
+        if is_h1:
+            self._schedule_h1_reconcile(user)
+        else:
+            logger.warning("Mini App VPN state unavailable for %s", user_id)
+        return self._fallback_state(user), False
 
 
     def _external_base_url(self, request: web.Request) -> str:
