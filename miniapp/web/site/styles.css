@@ -180,7 +180,8 @@ svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.9;stroke
 .plan-hot{border-color:rgba(255,58,167,.4);background:linear-gradient(160deg,rgba(255,58,167,.08),var(--surface) 58%)}
 .popular{position:absolute;right:15px;top:15px;color:var(--pink);font-size:.54rem;font-weight:850;letter-spacing:.09em}
 .plan h3{margin:0 0 28px;font-size:.98rem}
-.price{display:flex;flex-direction:column;margin-bottom:18px}.price strong{font-size:2rem;line-height:1;letter-spacing:-.045em}.price small{margin-top:7px;color:var(--muted);font-size:.72rem}
+.price{display:flex;flex-direction:column;margin-bottom:10px}.price strong{font-size:2rem;line-height:1;letter-spacing:-.045em}.price small{margin-top:7px;color:var(--muted);font-size:.72rem}
+.plan-saving{display:block;min-height:18px;margin:0 0 12px;color:var(--pink);font-size:.7rem;font-weight:800}
 .plan a{height:42px;border-radius:12px;display:grid;place-items:center;border:1px solid var(--line);background:#151519;font-size:.75rem;font-weight:800}.plan-hot a{background:var(--pink);border-color:transparent}
 
 .faq-list{border-top:1px solid var(--line)}
