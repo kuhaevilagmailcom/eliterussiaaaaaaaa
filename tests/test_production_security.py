@@ -380,6 +380,8 @@ def test_reply_keyboard_navigation_replaces_screen_and_removes_button_message(tm
 
 
 def test_admin_device_update_ignores_expired_callback_query(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", TOKEN)
+
     async def run():
         config = replace(Config.from_env(), admin_ids=(1,), db_path=str(tmp_path / "expired-callback.db"))
         db = Database(config.db_path)
