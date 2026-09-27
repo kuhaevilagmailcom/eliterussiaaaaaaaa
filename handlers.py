@@ -1356,8 +1356,17 @@ def build_router(
     @router.message(CommandStart())
     async def start(message: Message, command: CommandObject) -> None:
         user = await ensure_actor(message.from_user)
-        if command.args and command.args.startswith("ref_"):
-            raw = command.args.removeprefix("ref_")
+        start_arg = str(command.args or "").strip().lower()
+
+        if start_arg == "anonchat_mgn":
+            await db.set_attribution_source_once(
+                message.from_user.id,
+                "anonchat_mgn",
+            )
+            user = await db.get_user(message.from_user.id)
+
+        if start_arg.startswith("ref_"):
+            raw = start_arg.removeprefix("ref_")
             if raw.isdigit() and bool(user.get("_is_new")):
                 await db.set_referrer_once(
                     message.from_user.id,
@@ -3083,6 +3092,7 @@ def build_router(
             return
 
         stats = await db.admin_overview()
+        anonchat = await db.attribution_stats("anonchat_mgn")
         recent = await db.recent_users(5)
         pay_status = "работает" if config.rollypay_enabled else "не настроена"
         vpn_status = (
@@ -3106,6 +3116,11 @@ def build_router(
             "💰 <b>Оплаты</b>",
             f"├ СБП: <b>{pay_status}</b> · {stats['sbp_revenue']} ₽",
             f"└ Stars: <b>{stats['star_revenue']} ⭐</b>",
+            "",
+            "📣 <b>Anonymous Chat MGN</b>",
+            f"├ Пришло: <b>{anonchat['arrived']}</b>",
+            f"├ Купили VPN: <b>{anonchat['buyers']}</b>",
+            f"└ Конверсия: <b>{anonchat['conversion']:.1f}%</b>",
             "",
             f"🌐 VPN: <b>{vpn_status}</b>",
             "",
@@ -3216,6 +3231,7 @@ def build_router(
         if not role:
             return
         stats = await db.admin_overview()
+        anonchat = await db.attribution_stats("anonchat_mgn")
         recent = await db.recent_users(10)
 
         kb = InlineKeyboardBuilder()
@@ -3239,6 +3255,11 @@ def build_router(
             f"├ СБП оборот — <b>{stats['sbp_revenue']} ₽</b>",
             f"├ Stars оплат — <b>{stats['star_paid']}</b>",
             f"└ Stars получено — <b>{stats['star_revenue']} ⭐</b>",
+            "",
+            "📣 <b>Источник: Anonymous Chat MGN</b>",
+            f"├ Перешли и запустили бота — <b>{anonchat['arrived']}</b>",
+            f"├ Совершили оплату — <b>{anonchat['buyers']}</b>",
+            f"└ Конверсия в покупку — <b>{anonchat['conversion']:.1f}%</b>",
             "",
             "🕒 <b>Последние регистрации</b>",
         ]
