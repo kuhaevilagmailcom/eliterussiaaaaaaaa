@@ -143,7 +143,7 @@ def test_h1_rejects_insecure_transport_configuration():
         ("https://localhost/sub/x", ("localhost",)),
         ("https://127.0.0.1/sub/x", ("127.0.0.1",)),
         ("https://[::1]/sub/x", ("::1",)),
-        ("http://us3.h1cloud.net/sub/x", (".h1cloud.net",)),
+        ("http://evil.example/sub/x", (".h1cloud.net",)),
         ("https://evil.example/sub/x", (".h1cloud.net",)),
     ],
 )
@@ -153,6 +153,23 @@ def test_h1_subscription_ssrf_targets_are_rejected(url, hosts):
         provider.subscription_hosts = hosts
         with pytest.raises(RuntimeError):
             await provider._validate_subscription_url(url)
+
+    asyncio.run(scenario())
+
+
+def test_h1_subscription_allows_legacy_h1cloud_http_host(monkeypatch):
+    async def scenario():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider.subscription_hosts = (".h1cloud.net",)
+        provider.allow_insecure = False
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(
+            loop,
+            "getaddrinfo",
+            AsyncMock(return_value=[(2, 1, 6, "", ("8.8.8.8", 80))]),
+        )
+        url = "http://us3.h1cloud.net/sub/token"
+        assert await provider._validate_subscription_url(url) == url
 
     asyncio.run(scenario())
 
