@@ -23,14 +23,15 @@ PLANS: dict[str, dict[str, Any]] = {
         "months": 3,
         "name": "3 месяца",
         "devices": 1,
-        "price_rub": 269,
+        "price_rub": 249,
+        "popular": True,
     },
     "180": {
         "days": 180,
         "months": 6,
         "name": "6 месяцев",
         "devices": 1,
-        "price_rub": 529,
+        "price_rub": 499,
     },
     "365": {
         "days": 365,
@@ -47,6 +48,7 @@ DEVICE_PRODUCT_CODE = "device"
 EXTRA_DEVICE_PRICE_RUB = 100
 REFERRAL_REWARD_DAYS = 1
 MAX_REFERRAL_REWARDS = 3
+POPULAR_PLAN_CODE = "90"
 
 STAR_RATE_XTR = 50
 STAR_RATE_RUB = 80
