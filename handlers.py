@@ -1213,7 +1213,17 @@ def build_router(
             )
             return
 
-        state, ok = await load_state(user, provider, config)
+        # The public MGN subscription URL is stable for H1Cloud, so the
+        # bot screen must not wait for a slow provision cycle just to display
+        # connection controls. Read live device state briefly when available;
+        # /sub itself performs the bounded self-heal.
+        state = fallback_state(user, config)
+        ok = True
+        if getattr(provider, "service_ready", True):
+            try:
+                state = await asyncio.wait_for(provider.get_state(user), 2.0)
+            except Exception:
+                ok = False
         subscription_url = await public_subscription_url(
             user,
             state,
@@ -1313,6 +1323,14 @@ def build_router(
 
     @router.message(Command("sub"))
     async def subscription_command(message: Message) -> None:
+        try:
+            cleanup = await message.answer("\u2063", reply_markup=ReplyKeyboardRemove())
+            try:
+                await cleanup.delete()
+            except Exception:
+                pass
+        except Exception:
+            pass
         await show_subscription(message, message.from_user)
 
     @router.message(F.text.in_({"🏠 Главное", "Главное", "🏠 Главное меню", "Главное меню"}))
