@@ -1134,7 +1134,7 @@ class H1CloudVpnProvider(VpnProvider):
         self,
         user: dict[str, Any],
     ) -> tuple[bytes, dict[str, str]]:
-        """Build one MGN subscription from every reachable linked H1 node."""
+        """Build a fast, resilient MGN subscription for one active user."""
         name = self._name(user)
         standard_channels = ["main", "reality", "bs", "wscdn"]
 
@@ -1155,12 +1155,67 @@ class H1CloudVpnProvider(VpnProvider):
                     traffic_limit=max(0, int(user.get("traffic_limit_gb") or 0)),
                     device_limit=max(1, int(user.get("max_devices") or 1)),
                 ),
-                timeout=5.0,
+                timeout=5.5,
             )
 
-        main_links = self._client_vless_links(main)
-        if not main_links:
-            # Repair legacy clients that were created with channels=[].
+        links: list[str] = []
+        seen: set[str] = set()
+
+        def add_many(values: list[str]) -> None:
+            for value in values:
+                if value and value not in seen:
+                    seen.add(value)
+                    links.append(value)
+
+        # Direct links are the fastest fallback and make a first import usable
+        # even when federation metadata is temporarily slow.
+        add_many(self._client_vless_links(main))
+        main_uuid = str((main or {}).get("uuid") or "").strip()
+
+        # H1's own sub_url normally contains every linked country. Prefer it
+        # before billing-node discovery: this removes the old 503-prone race
+        # where /sub waited for several panel calls before fetching the actual
+        # subscription.
+        aggregate_url = str((main or {}).get("sub_url") or "").strip()
+        aggregate_error: str | None = None
+        if aggregate_url.startswith(("http://", "https://")):
+            try:
+                body = await asyncio.wait_for(
+                    self._fetch_public_subscription(aggregate_url),
+                    timeout=5.5,
+                )
+                aggregate_links = self._subscription_vless_links(body)
+                add_many(aggregate_links)
+                if aggregate_links:
+                    logger.info(
+                        "H1Cloud aggregate subscription built for %s with %s VLESS link(s)",
+                        name,
+                        len(links),
+                    )
+                    payload = ("\n".join(links) + "\n").encode("utf-8")
+                    return base64.b64encode(payload), {}
+            except Exception as exc:
+                aggregate_error = type(exc).__name__
+        else:
+            aggregate_error = "sub_url_missing"
+
+        # If the main panel already supplied at least one direct VLESS link,
+        # return it instead of failing the entire subscription because a remote
+        # federation endpoint is unavailable. Background reconcile will add
+        # countries on a later refresh.
+        if links:
+            if aggregate_error:
+                logger.warning(
+                    "H1Cloud aggregate unavailable for %s (%s); serving main link(s)",
+                    name,
+                    aggregate_error,
+                )
+            payload = ("\n".join(links) + "\n").encode("utf-8")
+            return base64.b64encode(payload), {}
+
+        # Repair old clients created with channels=[] only after the fast
+        # aggregate path failed. This keeps normal /sub requests quick.
+        try:
             patched = await asyncio.wait_for(
                 self._request(
                     "PATCH",
@@ -1170,57 +1225,46 @@ class H1CloudVpnProvider(VpnProvider):
                 timeout=2.5,
             )
             repaired = self._extract_client(patched)
+            if repaired is None:
+                repaired = await asyncio.wait_for(
+                    self._get_client(name),
+                    timeout=1.5,
+                )
             if repaired is not None:
                 main = repaired
-            else:
-                main = await asyncio.wait_for(self._get_client(name), timeout=1.5)
-            main_links = self._client_vless_links(main)
+                main_uuid = str(main.get("uuid") or main_uuid).strip()
+                add_many(self._client_vless_links(main))
+        except Exception as exc:
+            logger.warning(
+                "H1Cloud main-link repair failed for %s (%s)",
+                name,
+                type(exc).__name__,
+            )
 
-        links: list[str] = []
-        seen: set[str] = set()
+        if links:
+            payload = ("\n".join(links) + "\n").encode("utf-8")
+            return base64.b64encode(payload), {}
 
-        def add_many(values: list[str]) -> None:
-            for value in values:
-                if value not in seen:
-                    seen.add(value)
-                    links.append(value)
-
-        add_many(main_links)
-        main_uuid = str((main or {}).get("uuid") or "").strip()
-
-        # H1 already has its own unified subscription endpoint (sub_url). It
-        # merges every server marked "Добавлена" in the H1 panel and does not
-        # depend on lproxy authentication. Prefer it as the federation source.
-        aggregate_url = str((main or {}).get("sub_url") or "").strip()
-
-        async def load_h1_aggregate() -> tuple[list[str], str | None]:
-            if not aggregate_url.startswith(("http://", "https://")):
-                return [], "sub_url_missing"
-            try:
-                async with asyncio.timeout(6.0):
-                    body = await self._fetch_public_subscription(aggregate_url)
-                    return self._subscription_vless_links(body), None
-            except Exception as exc:
-                return [], str(exc).strip() or type(exc).__name__
-
-        # In parallel, inspect linked billing nodes directly. This supplements
-        # the H1 aggregate if one remote public /sub endpoint is slow.
+        # Last-resort fallback: inspect linked nodes directly. Failures of one
+        # country never invalidate links returned by another.
         try:
             nodes = await asyncio.wait_for(self._federated_nodes(), timeout=1.8)
         except Exception as exc:
             logger.warning(
-                "H1Cloud linked-node discovery failed for %s: %s",
+                "H1Cloud linked-node discovery failed for %s (%s)",
                 name,
-                str(exc).strip() or type(exc).__name__,
+                type(exc).__name__,
             )
             nodes = []
 
-        async def load_remote(
-            node: dict[str, Any],
-        ) -> tuple[str, list[str], str | None]:
-            node_id = self._node_id(node)
+        remote_nodes = [
+            node
+            for node in nodes
+            if self._node_id(node) and self._node_prefix(node)
+        ]
+
+        async def load_remote(node: dict[str, Any]) -> list[str]:
             prefix = self._node_prefix(node)
-            label = f"{node.get('proxy_kind')}:{node_id}"
             try:
                 client = await asyncio.wait_for(
                     self._get_client(name, prefix=prefix),
@@ -1228,15 +1272,13 @@ class H1CloudVpnProvider(VpnProvider):
                 )
                 remote_links = self._client_vless_links(client)
                 if remote_links:
-                    return label, remote_links, None
-
+                    return remote_links
                 if not main_uuid:
-                    return label, [], "main_uuid_missing"
+                    return []
 
                 desired_expiry = self._desired_expiry(user)
                 if desired_expiry <= int(datetime.now().timestamp()):
                     desired_expiry = int(datetime.now().timestamp()) + 86400
-
                 repaired = await asyncio.wait_for(
                     self._upsert_location(
                         name=name,
@@ -1246,72 +1288,30 @@ class H1CloudVpnProvider(VpnProvider):
                         device_limit=max(1, int(user.get("max_devices") or 1)),
                         prefix=prefix,
                     ),
-                    timeout=6.0,
+                    timeout=5.0,
                 )
-                return label, self._client_vless_links(repaired), None
-            except Exception as exc:
-                return label, [], str(exc).strip() or type(exc).__name__
+                return self._client_vless_links(repaired)
+            except Exception:
+                return []
 
-        aggregate_task = asyncio.create_task(load_h1_aggregate())
-        remote_nodes = [
-            node
-            for node in nodes
-            if self._node_id(node) and self._node_prefix(node)
-        ]
-        remote_tasks = [
-            asyncio.create_task(load_remote(node))
-            for node in remote_nodes
-        ]
-
-        # Keep the whole /sub response inside normal VPN-client timeouts.
-        all_tasks = [aggregate_task, *remote_tasks]
-        done, pending = await asyncio.wait(all_tasks, timeout=6.2)
-        for task in pending:
-            task.cancel()
-
-        federation_errors: list[str] = []
-        if aggregate_task in done:
-            try:
-                aggregate_links, aggregate_error = aggregate_task.result()
-                add_many(aggregate_links)
-                if aggregate_error:
-                    federation_errors.append(f"aggregate: {aggregate_error}")
-            except Exception as exc:
-                federation_errors.append(
-                    f"aggregate: {str(exc).strip() or type(exc).__name__}"
-                )
-        else:
-            federation_errors.append("aggregate: timeout")
-
-        for task in remote_tasks:
-            if task not in done:
-                federation_errors.append("remote: timeout")
-                continue
-            try:
-                node_id, remote_links, error = task.result()
-                add_many(remote_links)
-                if error:
-                    federation_errors.append(f"{node_id}: {error}")
-            except Exception as exc:
-                federation_errors.append(
-                    str(exc).strip() or type(exc).__name__
-                )
-
-        if federation_errors:
-            logger.warning(
-                "H1Cloud subscription federation partial for %s: %s",
-                name,
-                "; ".join(federation_errors),
-            )
+        if remote_nodes:
+            tasks = [asyncio.create_task(load_remote(node)) for node in remote_nodes]
+            done, pending = await asyncio.wait(tasks, timeout=5.2)
+            for task in pending:
+                task.cancel()
+            for task in done:
+                try:
+                    add_many(task.result())
+                except Exception:
+                    pass
 
         if not links:
             raise RuntimeError("H1Cloud returned no VLESS links")
 
         logger.info(
-            "H1Cloud unified subscription built for %s with %s VLESS link(s) from %s linked node(s)",
+            "H1Cloud fallback subscription built for %s with %s VLESS link(s)",
             name,
             len(links),
-            len(remote_nodes),
         )
         payload = ("\n".join(links) + "\n").encode("utf-8")
         return base64.b64encode(payload), {}
