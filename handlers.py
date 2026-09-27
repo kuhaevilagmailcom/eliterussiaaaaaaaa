@@ -28,6 +28,7 @@ from aiogram.types import (
     Message,
     PreCheckoutQuery,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     WebAppInfo,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -349,6 +350,20 @@ def connection_keyboard(
     )
     kb.row(
         blue_inline_button(
+            "Продлить подписку",
+            callback_data="plans",
+            icon_index=1,
+        )
+    )
+    kb.row(
+        blue_inline_button(
+            "Устройства",
+            callback_data="menu:devices",
+            icon_index=3,
+        )
+    )
+    kb.row(
+        blue_inline_button(
             "Назад",
             callback_data=back_data,
             premium_icon=False,
@@ -384,35 +399,34 @@ def main_menu_inline_keyboard(
     active: bool = False,
 ) -> Any:
     kb = InlineKeyboardBuilder()
-    if miniapp_url:
-        kb.row(
-            blue_inline_button(
-                "Открыть MGN VPN",
-                web_app=WebAppInfo(url=miniapp_url),
-                icon_index=9,
-            )
-        )
-    kb.row(blue_inline_button("Подключить VPN", callback_data="menu:connect", icon_index=2))
     kb.row(
-        blue_inline_button("Профиль", callback_data="menu:profile", icon_index=0),
-        blue_inline_button("Информация", callback_data="menu:info", icon_index=5),
+        blue_inline_button(
+            "Моя подписка" if active else "Купить подписку",
+            callback_data="menu:connect" if active else "plans",
+            icon_index=1 if not active else 2,
+        )
     )
     kb.row(
         blue_inline_button(
-            "Продлить VPN" if active else "Купить VPN",
-            callback_data="plans",
-            icon_index=1,
-        ),
-        blue_inline_button("Пригласить друзей", callback_data="menu:friends", icon_index=8),
+            "Подарить другу",
+            callback_data="menu:gift",
+            icon_index=4,
+        )
     )
     kb.row(
-        blue_inline_button("Промокод", callback_data="menu:promo", icon_index=7),
-        blue_inline_button("Поддержка", callback_data="menu:support", icon_index=6),
-    )
-    if admin_role:
-        kb.row(
-            blue_inline_button("Админка", callback_data="admin:home", icon_index=10),
+        blue_inline_button(
+            "Реферальная система",
+            callback_data="menu:friends",
+            icon_index=8,
         )
+    )
+    kb.row(
+        blue_inline_button(
+            "О сервисе",
+            callback_data="menu:info",
+            icon_index=5,
+        )
+    )
     return kb.as_markup()
 
 
@@ -425,6 +439,19 @@ def plans_keyboard(config: Config) -> Any:
             blue_inline_button(
                 f"💳 {plan['name']} · {plan_price_rub(config, code)} ₽{suffix}",
                 callback_data=f"plan:{code}",
+            )
+        )
+    add_nav_buttons(kb, back_data="home")
+    return kb.as_markup()
+
+
+def gift_plans_keyboard(config: Config) -> Any:
+    kb = InlineKeyboardBuilder()
+    for code, plan in PLANS.items():
+        kb.row(
+            blue_inline_button(
+                f"🎁 {plan['name']} · {plan_price_rub(config, code)} ₽",
+                callback_data=f"gift:{code}",
             )
         )
     add_nav_buttons(kb, back_data="home")
@@ -609,14 +636,16 @@ def connection_text(
     emoji: EmojiBank,
     subscription_url: str,
 ) -> str:
-    e_link = emoji.icon(2, pack=PACK_NEWS)
-    safe_url = html.escape(subscription_url)
+    max_devices = int(user.get("max_devices") or 1)
+    connected = len(list(state.devices or []))
+    plan = html.escape(str(user.get("plan_name") or "VPN"))
     return (
-        f"{e_link} <b>Подключить VPN</b>\n\n"
-        "<b>Ваша персональная ссылка</b>\n"
-        f"<blockquote><code>{safe_url}</code></blockquote>\n"
-        "<i>Не пересылайте её другим людям: ссылка даёт доступ к вашей подписке.</i>\n\n"
-        f"Доступно устройств: <b>{int(user.get('max_devices') or 1)}</b>."
+        "🔐 <b>Моя подписка</b>\n\n"
+        f"Тариф: <b>{plan}</b>\n"
+        f"Осталось: <b>{remaining_text(user)}</b>\n"
+        f"Устройства: <b>{connected}/{max_devices}</b>\n\n"
+        "Нажмите «Добавить в Happ» или скопируйте персональную ссылку.\n"
+        "<i>Не передавайте ссылку другим людям.</i>"
     )
 
 
@@ -1077,36 +1106,36 @@ def build_router(
     ) -> None:
         user = await ensure_actor(actor)
         active = is_active(user)
-
-        e_logo = emoji.icon(0, pack=PACK_CRYPTO)
-        e_sub = emoji.icon(1, pack=PACK_CRYPTO)
+        display_name = html.escape(
+            str(
+                getattr(actor, "first_name", None)
+                or (f"@{getattr(actor, 'username', '')}" if getattr(actor, "username", None) else "")
+                or "Пользователь"
+            )
+        )
 
         lines = [
-            f"{e_logo} <b>MGN VPN</b>",
-            "Простой доступ к VPN прямо в Telegram.",
+            f"👤 <b>Профиль: {display_name}</b>",
+            f"ID: <code>{int(user['telegram_id'])}</code>",
             "",
-            f"{e_sub} <b>Подписка:</b>",
-            f"├ Статус: <b>{'Активна' if active else 'Не активна'}</b>",
         ]
 
         if active:
             lines += [
-                f"├ Тариф: <b>{html.escape(user.get('plan_name') or 'VPN')}</b>",
-                f"├ До: <b>{format_until(user, config)}</b>",
-                f"└ Устройства: <b>до {int(user.get('max_devices') or 1)}</b>",
+                "🔑 <b>Подписка активна</b>",
+                f"Тариф: <b>{html.escape(str(user.get('plan_name') or 'VPN'))}</b>",
+                f"До: <b>{format_until(user, config)}</b>",
+                f"Осталось: <b>{remaining_text(user)}</b>",
+                f"Устройства: <b>до {int(user.get('max_devices') or 1)}</b>",
+                "",
+                "Управляйте подпиской кнопками ниже.",
             ]
         else:
-            stats = await db.referral_stats(int(actor.id))
             lines += [
-                "└ Выберите тариф или пригласите друзей.",
+                "🔒 <b>Подписка не активна</b>",
                 "",
-                "<b>Нет подписки?</b>",
-                "Пригласите 3 друзей и получите до 3 дней VPN бесплатно.",
-                f"Приглашено: <b>{min(stats['invited'], 3)} / 3</b>",
+                "Выберите действие ниже.",
             ]
-
-        if active and not getattr(provider, "service_ready", True):
-            lines += ["", "<i>VPN-серверы ещё не подключены.</i>"]
 
         await send_screen(
             message,
@@ -1116,12 +1145,22 @@ def build_router(
             recover_on_edit_failure=recover_on_edit_failure,
             force_new=force_new,
         )
+
         if ensure_reply_keyboard:
-            role = await get_admin_role(int(actor.id))
-            await message.answer(
-                "Выберите раздел:",
-                reply_markup=main_keyboard(emoji, active=active, admin=bool(role)),
-            )
+            # Remove the old persistent ReplyKeyboard without leaving a visible
+            # service message in the chat. From now on navigation is inline and
+            # through /start and /sub only.
+            try:
+                cleanup = await message.answer(
+                    "\u2063",
+                    reply_markup=ReplyKeyboardRemove(),
+                )
+                try:
+                    await cleanup.delete()
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
     async def show_profile(message: Message, actor) -> None:
         user = await ensure_actor(actor)
@@ -1156,6 +1195,53 @@ def build_router(
             actor,
             profile_text(user, state, emoji, ok, config),
             reply_markup=kb.as_markup(),
+        )
+
+
+    async def show_subscription(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        if not is_active(user):
+            kb = InlineKeyboardBuilder()
+            kb.row(blue_inline_button("Купить подписку", callback_data="plans", icon_index=1))
+            add_nav_buttons(kb, back_data="home")
+            await send_screen(
+                message,
+                actor,
+                "🔐 <b>Моя подписка</b>\n\n"
+                "У вас пока нет активной подписки.",
+                reply_markup=kb.as_markup(),
+            )
+            return
+
+        state, ok = await load_state(user, provider, config)
+        subscription_url = await public_subscription_url(
+            user,
+            state,
+            config,
+            bot=message.bot,
+        )
+        if not subscription_url:
+            await send_screen(
+                message,
+                actor,
+                "🔐 <b>Моя подписка</b>\n\n"
+                "Подписка активна, но ссылка подключения временно недоступна. "
+                "Попробуйте ещё раз через несколько секунд.",
+                reply_markup=section_nav_keyboard(),
+            )
+            return
+
+        if not ok:
+            logger.warning(
+                "Showing stable public subscription URL despite provider state failure for user %s",
+                user.get("telegram_id"),
+            )
+
+        await send_screen(
+            message,
+            actor,
+            connection_text(user, state, emoji, subscription_url),
+            reply_markup=connection_keyboard(subscription_url),
         )
 
     async def apply_paid_purchase(
@@ -1225,6 +1311,10 @@ def build_router(
             ensure_reply_keyboard=True,
         )
 
+    @router.message(Command("sub"))
+    async def subscription_command(message: Message) -> None:
+        await show_subscription(message, message.from_user)
+
     @router.message(F.text.in_({"🏠 Главное", "Главное", "🏠 Главное меню", "Главное меню"}))
     async def home(message: Message) -> None:
         await show_home(message, message.from_user)
@@ -1245,66 +1335,8 @@ def build_router(
     @router.callback_query(F.data == "menu:connect")
     async def menu_connect(callback: CallbackQuery) -> None:
         await callback.answer()
-        if not callback.message:
-            return
-        user = await ensure_actor(callback.from_user)
-        if not is_active(user):
-            kb = InlineKeyboardBuilder()
-            kb.row(blue_inline_button("Купить VPN", callback_data="plans"))
-            kb.row(blue_inline_button("Пригласить друзей", callback_data="menu:friends"))
-            add_nav_buttons(kb, back_data="home")
-            await send_screen(
-                callback.message,
-                callback.from_user,
-                "🔗 <b>Подключение VPN</b>\n\nВыберите тариф или пригласите друзей.",
-                reply_markup=kb.as_markup(),
-            )
-            return
-
-        state, ok = await load_state(user, provider, config)
-        subscription_url = await public_subscription_url(
-            user,
-            state,
-            config,
-            bot=callback.message.bot,
-        )
-
-        # For H1Cloud the public MGN /sub/<token> URL is stable and does not
-        # depend on a successful live panel read. The proxy can provision,
-        # retry and serve its short stale cache itself, so the bot must not
-        # hide the copy/open buttons just because H1 timed out for this screen.
-        if not subscription_url:
-            if not getattr(provider, "service_ready", True):
-                text = (
-                    "🔗 <b>Подключение VPN</b>\n\n"
-                    "Подписка активна, но VPN-серверы пока ещё не подключены."
-                )
-            else:
-                text = (
-                    "🔗 <b>Подключение VPN</b>\n\n"
-                    "Не удалось сформировать персональную ссылку. "
-                    "Попробуйте ещё раз через несколько секунд."
-                )
-            await send_screen(
-                callback.message,
-                callback.from_user,
-                text,
-                reply_markup=section_nav_keyboard(),
-            )
-            return
-
-        if not ok:
-            logger.warning(
-                "Showing stable public subscription URL despite H1 state failure for user %s",
-                user.get("telegram_id"),
-            )
-
-        await send_screen(
-            callback.message,
-            callback.from_user,
-            connection_text(user, state, emoji, subscription_url),
-            reply_markup=connection_keyboard(subscription_url),
-        )
+        if callback.message:
+            await show_subscription(callback.message, callback.from_user)
 
     def user_agreement_text() -> str:
         return (
@@ -1460,24 +1492,19 @@ def build_router(
         await callback.answer()
         if not callback.message:
             return
-        user = await ensure_actor(callback.from_user)
         kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("Поддержка", callback_data="menu:support", icon_index=6))
         kb.row(blue_inline_button("Пользовательское соглашение", callback_data="menu:terms", icon_index=11))
         add_nav_buttons(kb, back_data="home")
-        e = emoji.icon(5, pack=PACK_NEWS)
-        lines = [
-            f"{e} <b>Информация</b>",
-            "",
-            "Персональная VPN-ссылка выдаётся только владельцу аккаунта.",
-            f"В подписку входит от <b>1</b> до <b>{MAX_DEVICES}</b> устройств.",
-            "Управление подпиской и подключёнными устройствами находится в <b>Профиле</b>.",
-        ]
-        if not is_active(user):
-            lines += ["", "Для подключения выберите тариф или пригласите друзей."]
         await send_screen(
             callback.message,
             callback.from_user,
-            "\n".join(lines),
+            "🌐 <b>О сервисе</b>\n\n"
+            "MGN VPN — простой VPN с подключением через персональную ссылку.\n\n"
+            "• без автосписаний\n"
+            "• до 5 устройств\n"
+            "• управление прямо в Telegram\n"
+            "• поддержка через бота",
             reply_markup=kb.as_markup(),
         )
 
@@ -1694,17 +1721,11 @@ def build_router(
         await send_screen(
             callback.message,
             callback.from_user,
-            f"{e} <b>Пригласить друзей</b>\n\n"
-            "За каждого нового друга получаете +1 день MGN VPN.\n\n"
-            "1 друг — 1 день\n2 друга — 2 дня\n3 друга — 3 дня\n\n"
+            "👥 <b>Реферальная система</b>\n\n"
+            "Приглашайте друзей и получайте <b>+1 день VPN</b> за каждого нового пользователя.\n"
+            "Максимум — <b>3 дня</b>.\n\n"
             f"Приглашено: <b>{min(stats['invited'], 3)} / 3</b>\n"
-            f"Получено: <b>+{stats['rewarded']} дней</b>\n"
-            + (
-                "До следующего бонуса: <b>1 друг</b>\n\n"
-                if stats["rewarded"] < 3
-                else "🎉 <b>Максимальный бонус получен</b>\n\n"
-            )
-            + f"Ваша ссылка:\n<code>{html.escape(link)}</code>",
+            f"Получено: <b>+{stats['rewarded']} дней</b>.",
             reply_markup=kb.as_markup(),
         )
 
@@ -1843,11 +1864,21 @@ def build_router(
         await send_screen(
             message,
             message.from_user,
-            f"{e} <b>Выберите подписку</b>\n\n"
-            "В каждый тариф входит <b>1 устройство</b>.\n"
-            f"Дополнительный слот — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>, максимум <b>{MAX_DEVICES}</b>.\n"
-            "Оплата через СБП или Telegram Stars.",
+            "💳 <b>Выберите тариф</b>\n\n"
+            "В подписку входит 1 устройство. Оплата — СБП или Telegram Stars.",
             reply_markup=plans_keyboard(config),
+        )
+
+    @router.callback_query(F.data == "menu:gift")
+    async def gift_menu(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not callback.message:
+            return
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "🎁 <b>Подарить подписку</b>\n\nВыберите срок подарка.",
+            reply_markup=gift_plans_keyboard(config),
         )
 
     @router.callback_query(F.data == "plans")
@@ -1859,10 +1890,8 @@ def build_router(
         await send_screen(
             callback.message,
             callback.from_user,
-            f"{e} <b>Выберите подписку</b>\n\n"
-            "В каждый тариф входит <b>1 устройство</b>.\n"
-            f"Дополнительный слот — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>, максимум <b>{MAX_DEVICES}</b>.\n"
-            "Оплата через СБП или Telegram Stars.",
+            "💳 <b>Выберите тариф</b>\n\n"
+            "В подписку входит 1 устройство. Оплата — СБП или Telegram Stars.",
             reply_markup=plans_keyboard(config),
         )
 
