@@ -346,6 +346,13 @@ def test_reply_keyboard_navigation_replaces_screen_and_removes_button_message(tm
         deleted_ids = [call.kwargs['message_id'] for call in bot.delete_message.await_args_list]
         assert deleted_ids == [55, 77]
         assert bot.send_photo.await_count == 1
+        sent_markup = bot.send_photo.await_args.kwargs['reply_markup']
+        # A bottom ReplyKeyboard tap may recreate the tracked photo message,
+        # but it must keep the destination screen's inline controls.
+        assert sent_markup.inline_keyboard[0][0].text == 'Купить VPN'
+        assert sent_markup.inline_keyboard[0][0].callback_data == 'plans'
+        assert sent_markup.inline_keyboard[-1][0].text == 'Назад'
+        assert sent_markup.inline_keyboard[-1][0].callback_data == 'home'
         assert (await db.get_user(42))['last_menu_message_id'] == 88
 
     asyncio.run(run())
