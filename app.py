@@ -208,6 +208,52 @@ def make_provider(config: Config) -> VpnProvider:
     )
 
 
+async def notify_admins_restarted(
+    bot: Bot,
+    config: Config,
+    db: Database,
+    provider: VpnProvider,
+) -> None:
+    """Notify every configured/stored admin after a successful startup."""
+    logger = logging.getLogger(__name__)
+    recipients = {int(value) for value in config.admin_ids}
+    try:
+        recipients.update(
+            int(item["telegram_id"])
+            for item in await db.list_admin_roles()
+        )
+    except Exception:
+        logger.exception("Could not load admin recipients for restart notice")
+
+    if not recipients:
+        return
+
+    started_at = datetime.now(config.display_tz).strftime("%d.%m.%Y · %H:%M:%S")
+    vpn_status = (
+        "работает"
+        if getattr(provider, "service_ready", True)
+        else "ожидает подключения"
+    )
+    text = (
+        "♻️ <b>MGN VPN перезапущен</b>\n\n"
+        f"🕒 <b>Время:</b> {started_at}\n"
+        "✅ <b>Бот:</b> запущен\n"
+        "🌐 <b>Mini App:</b> запущен\n"
+        f"🔐 <b>VPN:</b> {vpn_status}\n\n"
+        "<i>Сервис снова принимает команды.</i>"
+    )
+
+    for admin_id in sorted(recipients):
+        try:
+            await bot.send_message(chat_id=admin_id, text=text)
+        except Exception as exc:
+            logger.warning(
+                "Could not send restart notice to admin %s: %s",
+                admin_id,
+                type(exc).__name__,
+            )
+
+
 async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -267,6 +313,8 @@ async def main() -> None:
                 "Could not configure Telegram command menu: %s",
                 exc,
             )
+
+        await notify_admins_restarted(bot, config, db, provider)
 
         dp = Dispatcher()
         dp.include_router(build_router(config, db, emoji, provider))
