@@ -63,6 +63,7 @@ REPLY_NAVIGATION_TEXTS = frozenset(
         "Главное меню",
         "🏠 Главное",
         "🏠 Главное меню",
+        "VPN",
         "Подключить VPN",
         "Подключиться",
         "🔗 Подключить VPN",
@@ -276,10 +277,7 @@ def main_keyboard(
 
     return ReplyKeyboardMarkup(
         keyboard=[
-            [button("Подключить VPN", 2), button("Подписка", 1)],
-            [button("Профиль", 0), button("Рефералы", 8)],
-            [button("Поддержка", 6)],
-            *([[button("Админ-панель", 10)]] if admin else []),
+            [button("VPN", 2), button("Главное меню", 4)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -2770,7 +2768,7 @@ def build_router(
                 show_alert=True,
             )
 
-    @router.message(F.text.in_({"🔗 Подключить VPN", "🔗 Подключиться", "Подключить VPN", "Подключиться"}))
+    @router.message(F.text.in_({"VPN", "🔗 Подключить VPN", "🔗 Подключиться", "Подключить VPN", "Подключиться"}))
     async def connect(message: Message) -> None:
         user = await ensure_actor(message.from_user)
         if not is_active(user):
