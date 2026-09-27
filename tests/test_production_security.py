@@ -379,6 +379,39 @@ def test_reply_keyboard_navigation_replaces_screen_and_removes_button_message(tm
     asyncio.run(run())
 
 
+def test_admin_device_update_ignores_expired_callback_query(tmp_path, monkeypatch):
+    async def run():
+        config = replace(Config.from_env(), admin_ids=(1,), db_path=str(tmp_path / "expired-callback.db"))
+        db = Database(config.db_path)
+        await db.init()
+        await db.ensure_user(42, "user", "User")
+
+        provider = SimpleNamespace(provision=AsyncMock())
+        router = build_router(config, db, EmojiBank(()), provider)
+        handler = next(
+            item.callback
+            for item in router.callback_query.handlers
+            if item.callback.__name__ == "admin_set_device"
+        )
+
+        callback = SimpleNamespace(
+            from_user=SimpleNamespace(id=1),
+            data="admin:setdevice:42:2",
+            message=None,
+            answer=AsyncMock(
+                side_effect=TelegramBadRequest(
+                    method=SendMessage(chat_id=1, text="x"),
+                    message="query is too old and response timeout expired or query ID is invalid",
+                )
+            ),
+        )
+
+        await handler(callback)
+        assert (await db.get_user(42))["max_devices"] == 2
+
+    asyncio.run(run())
+
+
 def test_restart_notice_is_sent_once_to_all_admins():
     async def run():
         bot = SimpleNamespace(send_message=AsyncMock())
