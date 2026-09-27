@@ -62,6 +62,54 @@ def test_h1_capabilities_are_explicit():
     assert capabilities.supports_device_reset
 
 
+def test_h1_get_state_finds_device_on_remote_federation_node():
+    async def run():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider.server_name = "MGN VPN"
+        provider.subscription_template = ""
+
+        main_client = {
+            "name": "mgn_private",
+            "sub_url": "https://nl1.h1cloud.net/sub/test",
+            "devices": [],
+            "traffic_used_gb": 0,
+            "traffic_limit_gb": 0,
+        }
+        remote_client = {
+            "name": "mgn_private",
+            "devices": [
+                {
+                    "hwid": "pc-1",
+                    "device_name": "Desktop",
+                    "os": "Windows",
+                }
+            ],
+        }
+
+        async def get_client(_name, *, prefix=""):
+            return remote_client if prefix else main_client
+
+        provider._get_client = AsyncMock(side_effect=get_client)
+        provider._federated_nodes = AsyncMock(
+            return_value=[{"id": "us", "proxy_kind": "proxy"}]
+        )
+
+        state = await provider.get_state(
+            {
+                "telegram_id": 42,
+                "vpn_client_id": "private",
+                "max_devices": 1,
+                "traffic_limit_gb": 0,
+            }
+        )
+
+        assert len(state.devices) == 1
+        assert state.devices[0]["name"] == "Desktop"
+        assert state.devices[0]["platform"] == "Windows"
+
+    asyncio.run(run())
+
+
 def test_h1_converts_absolute_expiry_to_panel_days():
     assert H1CloudVpnProvider._desired_expiry(
         {"subscription_until": "1970-01-02T00:00:00+00:00"}
