@@ -106,11 +106,11 @@ def test_payment_events_are_idempotent(tmp_path):
             buyer_id=30,
             target_id=30,
             product_code="30",
-            original_amount_rub=100,
+            original_amount_rub=99,
             discount_amount_rub=0,
-            final_amount_rub=100,
+            final_amount_rub=99,
             currency="XTR",
-            currency_amount=63,
+            currency_amount=62,
         )
         assert await db.mark_payment_intent_paid("intent-1")
         assert not await db.mark_payment_intent_paid("intent-1")
@@ -168,8 +168,8 @@ def test_paid_promo_is_revalidated_atomically_at_settlement(tmp_path):
                 target_telegram_id=user_id,
                 plan_code="30",
                 amount_rub=50,
-                original_amount_rub=100,
-                discount_amount_rub=50,
+                original_amount_rub=99,
+                discount_amount_rub=49,
                 promo_id=int(promo["id"]),
                 promo_code="ONLYONE",
             )
@@ -205,8 +205,8 @@ def test_paid_promo_rejects_expiry_or_disable_after_invoice(tmp_path, change):
             buyer_id=110,
             target_id=110,
             product_code="30",
-            original_amount_rub=100,
-            discount_amount_rub=20,
+            original_amount_rub=99,
+            discount_amount_rub=19,
             final_amount_rub=80,
             currency="XTR",
             currency_amount=50,
@@ -244,25 +244,25 @@ def test_stars_intent_expires_and_replay_is_idempotent(tmp_path):
             buyer_id=120,
             target_id=120,
             product_code="30",
-            original_amount_rub=100,
+            original_amount_rub=99,
             discount_amount_rub=0,
-            final_amount_rub=100,
+            final_amount_rub=99,
             currency="XTR",
-            currency_amount=63,
+            currency_amount=62,
         )
-        assert await db.settle_star_payment("charge-fresh", 120, 120, "30", 63, intent_id="fresh")
-        assert not await db.settle_star_payment("charge-fresh", 120, 120, "30", 63, intent_id="fresh")
+        assert await db.settle_star_payment("charge-fresh", 120, 120, "30", 62, intent_id="fresh")
+        assert not await db.settle_star_payment("charge-fresh", 120, 120, "30", 62, intent_id="fresh")
 
         await db.create_payment_intent(
             intent_id="expired",
             buyer_id=120,
             target_id=120,
             product_code="30",
-            original_amount_rub=100,
+            original_amount_rub=99,
             discount_amount_rub=0,
-            final_amount_rub=100,
+            final_amount_rub=99,
             currency="XTR",
-            currency_amount=63,
+            currency_amount=62,
         )
         async with aiosqlite.connect(db.path) as connection:
             await connection.execute(
@@ -271,7 +271,7 @@ def test_stars_intent_expires_and_replay_is_idempotent(tmp_path):
             )
             await connection.commit()
         with pytest.raises(ValueError, match="expired"):
-            await db.settle_star_payment("charge-expired", 120, 120, "30", 63, intent_id="expired")
+            await db.settle_star_payment("charge-expired", 120, 120, "30", 62, intent_id="expired")
 
     run(scenario())
 
