@@ -11,7 +11,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import BotCommand, MenuButtonCommands
+from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
 
 from config import Config
 from db import Database
@@ -307,7 +307,12 @@ async def main() -> None:
                     BotCommand(command="sub", description="Моя подписка"),
                 ]
             )
-            await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+            await bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(
+                    text="MGN VPN",
+                    web_app=WebAppInfo(url=config.miniapp_url),
+                )
+            )
         except Exception as exc:
             logging.getLogger(__name__).warning(
                 "Could not configure Telegram command menu: %s",
