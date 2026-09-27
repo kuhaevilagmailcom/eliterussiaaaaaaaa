@@ -17,7 +17,7 @@ from app import notify_admins_restarted
 from config import Config
 from db import Database, utcnow, from_iso
 from miniapp import MiniAppServer, validate_init_data
-from handlers import build_router, connection_keyboard, main_keyboard
+from handlers import build_router, connection_keyboard, main_keyboard, main_menu_inline_keyboard
 from vpn import H1CloudVpnProvider
 
 TOKEN = '123456:TEST_ONLY'
@@ -54,6 +54,18 @@ def test_canonical_config_and_back(monkeypatch):
     assert buttons[3][0].callback_data == 'menu:devices'
     assert buttons[4][0].text == 'Назад'
     assert buttons[4][0].icon_custom_emoji_id is None
+
+
+def test_main_inline_menu_has_direct_miniapp_entry():
+    markup = main_menu_inline_keyboard(
+        None,
+        "https://mgnvpn.ru/app",
+        active=True,
+    )
+    buttons = markup.inline_keyboard
+    assert buttons[0][0].text == "Открыть приложение"
+    assert buttons[0][0].web_app.url == "https://mgnvpn.ru/app"
+    assert buttons[1][0].text == "Моя подписка"
 
 
 def test_main_reply_keyboard_has_only_vpn_and_home():
