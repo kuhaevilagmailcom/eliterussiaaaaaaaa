@@ -177,6 +177,45 @@ def test_paid_tariff_switch_stacks_days_instead_of_replacing_them(tmp_path):
     run(scenario())
 
 
+def test_attribution_source_is_first_touch_and_counts_paid_buyers(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "attribution.sqlite3"))
+        await db.init()
+        await db.ensure_user(101, "from_chat", "From Chat")
+        await db.ensure_user(102, "no_payment", "No Payment")
+
+        assert await db.set_attribution_source_once(101, "anonchat_mgn")
+        assert not await db.set_attribution_source_once(101, "other_campaign")
+        assert await db.set_attribution_source_once(102, "anonchat_mgn")
+
+        user = await db.get_user(101)
+        assert user["attribution_source"] == "anonchat_mgn"
+        assert user["attribution_at"]
+
+        before = await db.attribution_stats("anonchat_mgn")
+        assert before["arrived"] == 2
+        assert before["buyers"] == 0
+        assert before["conversion"] == 0.0
+
+        await db.create_sbp_payment(
+            payment_id="src-paid",
+            order_id="src-order",
+            telegram_id=101,
+            target_telegram_id=101,
+            plan_code="30",
+            amount_rub=99,
+            original_amount_rub=99,
+        )
+        assert await db.settle_sbp_payment("src-paid")
+
+        after = await db.attribution_stats("anonchat_mgn")
+        assert after["arrived"] == 2
+        assert after["buyers"] == 1
+        assert after["conversion"] == 50.0
+
+    asyncio.run(scenario())
+
+
 def test_star_conversion_uses_single_50_to_80_rate():
     assert {
         amount: rub_to_stars(amount)
