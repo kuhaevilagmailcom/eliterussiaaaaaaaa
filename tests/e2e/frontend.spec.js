@@ -98,3 +98,28 @@ test('Mini App loads and navigates core screens', async ({page}) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   expect(errors).toEqual([]);
 });
+
+
+test('Mini App payment sheet stays inside desktop viewport with reduced motion', async ({page}) => {
+  const errors=[]; page.on('pageerror', error => errors.push(error.message));
+  await page.setViewportSize({width:390,height:844});
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await routeFiles(page, true);
+  await page.goto('http://mgn.test/app');
+
+  await page.locator('[data-nav="plans"]:visible').first().click();
+  await page.locator('[data-buy="30"]').click();
+  const sheet=page.locator('#paymentSheet');
+  await expect(sheet).toBeVisible();
+
+  const box=await sheet.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.x+box.width).toBeLessThanOrEqual(390);
+  expect(box.y+box.height).toBeLessThanOrEqual(844);
+
+  const center=box.x+box.width/2;
+  expect(Math.abs(center-195)).toBeLessThanOrEqual(3);
+  expect(errors).toEqual([]);
+});
