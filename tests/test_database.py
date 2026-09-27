@@ -106,11 +106,11 @@ def test_payment_events_are_idempotent(tmp_path):
             buyer_id=30,
             target_id=30,
             product_code="30",
-            original_amount_rub=149,
+            original_amount_rub=100,
             discount_amount_rub=0,
-            final_amount_rub=149,
+            final_amount_rub=100,
             currency="XTR",
-            currency_amount=94,
+            currency_amount=63,
         )
         assert await db.mark_payment_intent_paid("intent-1")
         assert not await db.mark_payment_intent_paid("intent-1")
@@ -144,6 +144,180 @@ def test_star_conversion_uses_single_50_to_80_rate():
         amount: rub_to_stars(amount)
         for amount in (80, 100, 150, 200, 300, 400, 500, 600, 1000)
     } == {80: 50, 100: 63, 150: 94, 200: 125, 300: 188, 400: 250, 500: 313, 600: 375, 1000: 625}
+
+
+def test_paid_promo_is_revalidated_atomically_at_settlement(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "promo-settlement.sqlite3"))
+        await db.init()
+        for user_id in (101, 102):
+            await db.ensure_user(user_id, f"u{user_id}", "Buyer")
+        promo = await db.create_service_promo(
+            code="ONLYONE",
+            promo_type="discount",
+            value=50,
+            max_uses=1,
+            created_by=1,
+            applicable_plans="30",
+        )
+        for index, user_id in enumerate((101, 102), 1):
+            await db.create_sbp_payment(
+                payment_id=f"pay-{index}",
+                order_id=f"order-{index}",
+                telegram_id=user_id,
+                target_telegram_id=user_id,
+                plan_code="30",
+                amount_rub=50,
+                original_amount_rub=100,
+                discount_amount_rub=50,
+                promo_id=int(promo["id"]),
+                promo_code="ONLYONE",
+            )
+
+        results = await asyncio.gather(
+            db.settle_sbp_payment("pay-1"),
+            db.settle_sbp_payment("pay-2"),
+            return_exceptions=True,
+        )
+        assert sum(result is True for result in results) == 1
+        assert sum(isinstance(result, ValueError) for result in results) == 1
+        promos = await db.list_service_promos()
+        assert promos[0]["used_count"] == 1
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("change", ["expired", "disabled"])
+def test_paid_promo_rejects_expiry_or_disable_after_invoice(tmp_path, change):
+    async def scenario():
+        db = Database(str(tmp_path / f"promo-{change}.sqlite3"))
+        await db.init()
+        await db.ensure_user(110, "buyer", "Buyer")
+        promo = await db.create_service_promo(
+            code="LATE",
+            promo_type="discount",
+            value=20,
+            created_by=1,
+            applicable_plans="30",
+        )
+        await db.create_payment_intent(
+            intent_id="intent-late",
+            buyer_id=110,
+            target_id=110,
+            product_code="30",
+            original_amount_rub=100,
+            discount_amount_rub=20,
+            final_amount_rub=80,
+            currency="XTR",
+            currency_amount=50,
+            promo_id=int(promo["id"]),
+            promo_code="LATE",
+        )
+        async with aiosqlite.connect(db.path) as connection:
+            if change == "expired":
+                await connection.execute(
+                    "UPDATE service_promo_codes SET expires_at=? WHERE id=?",
+                    ("2000-01-01T00:00:00+00:00", promo["id"]),
+                )
+            else:
+                await connection.execute(
+                    "UPDATE service_promo_codes SET active=0 WHERE id=?",
+                    (promo["id"],),
+                )
+            await connection.commit()
+        with pytest.raises(ValueError):
+            await db.settle_star_payment(
+                "charge-late", 110, 110, "30", 50, intent_id="intent-late"
+            )
+        assert (await db.get_payment_intent("intent-late"))["status"] == "created"
+
+    run(scenario())
+
+
+def test_stars_intent_expires_and_replay_is_idempotent(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "intent-expiry.sqlite3"))
+        await db.init()
+        await db.ensure_user(120, "buyer", "Buyer")
+        await db.create_payment_intent(
+            intent_id="fresh",
+            buyer_id=120,
+            target_id=120,
+            product_code="30",
+            original_amount_rub=100,
+            discount_amount_rub=0,
+            final_amount_rub=100,
+            currency="XTR",
+            currency_amount=63,
+        )
+        assert await db.settle_star_payment("charge-fresh", 120, 120, "30", 63, intent_id="fresh")
+        assert not await db.settle_star_payment("charge-fresh", 120, 120, "30", 63, intent_id="fresh")
+
+        await db.create_payment_intent(
+            intent_id="expired",
+            buyer_id=120,
+            target_id=120,
+            product_code="30",
+            original_amount_rub=100,
+            discount_amount_rub=0,
+            final_amount_rub=100,
+            currency="XTR",
+            currency_amount=63,
+        )
+        async with aiosqlite.connect(db.path) as connection:
+            await connection.execute(
+                "UPDATE payment_intents SET expires_at=? WHERE intent_id='expired'",
+                ("2000-01-01T00:00:00+00:00",),
+            )
+            await connection.commit()
+        with pytest.raises(ValueError, match="expired"):
+            await db.settle_star_payment("charge-expired", 120, 120, "30", 63, intent_id="expired")
+
+    run(scenario())
+
+
+def test_full_discount_is_atomic_and_does_not_create_payment(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "free-promo.sqlite3"))
+        await db.init()
+        await db.ensure_user(130, "free", "Free")
+        promo = await db.create_service_promo(
+            code="FREE100", promo_type="discount", value=100,
+            max_uses=1, created_by=1, applicable_plans="30",
+        )
+        granted = await db.redeem_full_discount(
+            promo_id=int(promo["id"]), buyer_id=130,
+            target_id=130, product_code="30",
+        )
+        assert from_iso(granted["subscription_until"]) > utcnow() + timedelta(days=29)
+        with pytest.raises(ValueError):
+            await db.redeem_full_discount(
+                promo_id=int(promo["id"]), buyer_id=130,
+                target_id=130, product_code="30",
+            )
+        async with aiosqlite.connect(db.path) as connection:
+            assert (await (await connection.execute("SELECT COUNT(*) FROM star_payments")).fetchone())[0] == 0
+            assert (await (await connection.execute("SELECT COUNT(*) FROM sbp_payments")).fetchone())[0] == 0
+
+    run(scenario())
+
+
+def test_private_vpn_id_and_interaction_session_survive_restart(tmp_path):
+    async def scenario():
+        path = str(tmp_path / "session.sqlite3")
+        db = Database(path)
+        await db.init()
+        created = await db.ensure_user(140, "gift", "Gift")
+        assert created["vpn_client_id"]
+        assert str(created["telegram_id"]) not in created["vpn_client_id"]
+        await db.set_support_session(140, "gift", payload="90")
+
+        reopened = Database(path)
+        await reopened.init()
+        session = await reopened.get_support_session(140)
+        assert session and session["mode"] == "gift" and session["payload"] == "90"
+
+    run(scenario())
 
 
 def test_support_threads_persist_messages_permissions_and_soft_delete(tmp_path):

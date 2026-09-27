@@ -274,10 +274,9 @@ def main_keyboard(
                 kwargs["icon_custom_emoji_id"] = custom_id
         return KeyboardButton(**kwargs)
 
-    purchase_label = "Продлить VPN" if active else "Купить VPN"
     return ReplyKeyboardMarkup(
         keyboard=[
-            [button("Подключить VPN", 2), button(purchase_label, 1)],
+            [button("Подключить VPN", 2), button("Подписка", 1)],
             [button("Профиль", 0), button("Рефералы", 8)],
             [button("Поддержка", 6)],
             *([[button("Админ-панель", 10)]] if admin else []),
@@ -655,9 +654,6 @@ def build_router(
             return
 
     router.callback_query.outer_middleware(callback_guard)
-    pending_gift_plans: dict[int, str] = {}
-    pending_support_users: set[int] = set()
-    pending_support_admins: dict[int, int] = {}
     support_cooldowns: dict[int, float] = {}
 
     banner_file_id_path = Path(config.db_path).with_name("main_menu_banner_file_id.txt")
@@ -1488,14 +1484,8 @@ def build_router(
         )
 
     async def refresh_main_keyboard(message: Message, actor) -> None:
-        user = await ensure_actor(actor)
-        role = await get_admin_role(int(actor.id))
-        await message.answer(
-            "Нижнее меню обновлено.",
-            reply_markup=main_keyboard(
-                emoji, active=is_active(user), admin=bool(role)
-            ),
-        )
+        # Labels are stable now, so state changes do not need a noisy message.
+        return None
 
     @router.callback_query(F.data == "menu:support")
     async def menu_support(callback: CallbackQuery) -> None:
@@ -1848,7 +1838,7 @@ def build_router(
     async def profile(message: Message) -> None:
         await show_profile(message, message.from_user)
 
-    @router.message(F.text.in_({"💳 Купить VPN", "Купить VPN", "Продлить VPN"}))
+    @router.message(F.text.in_({"Подписка", "💳 Подписка", "💳 Купить VPN", "Купить VPN", "Продлить VPN"}))
     async def plans_message(message: Message) -> None:
         await ensure_actor(message.from_user)
         e = emoji.icon(0, pack=PACK_NEWS)
@@ -1917,7 +1907,7 @@ def build_router(
             await callback.answer("Тариф не найден", show_alert=True)
             return
 
-        pending_gift_plans[callback.from_user.id] = code
+        await db.set_support_session(callback.from_user.id, "gift", payload=code)
         await callback.answer()
         await send_screen(
             callback.message,
@@ -1930,8 +1920,9 @@ def build_router(
 
     @router.message(F.text.regexp(r"^@[A-Za-z0-9_]{3,32}$"))
     async def gift_username(message: Message) -> None:
-        code = pending_gift_plans.get(message.from_user.id)
-        if not code:
+        session = await db.get_support_session(message.from_user.id)
+        code = str(session.get("payload") or "") if session and session.get("mode") == "gift" else ""
+        if code not in PLANS:
             return
 
         target = await db.get_user_by_username(message.text or "")
@@ -1954,7 +1945,7 @@ def build_router(
             else f"<code>{target_id}</code>"
         )
 
-        pending_gift_plans.pop(message.from_user.id, None)
+        await db.clear_support_session(message.from_user.id)
         plan = PLANS[code]
 
         await send_screen(
@@ -2072,6 +2063,12 @@ def build_router(
             else str(target_telegram_id)
         )
 
+        local_id = await db.create_sbp_order(
+            order_id=order_id, telegram_id=callback.from_user.id,
+            target_telegram_id=target_telegram_id, plan_code=code,
+            amount_rub=amount, original_amount_rub=amount,
+        )
+
         try:
             payment = await create_payment(
                 config,
@@ -2086,15 +2083,9 @@ def build_router(
             )
             payment_id = str(payment["payment_id"])
             pay_url = str(payment["pay_url"])
-            await db.create_sbp_payment(
-                payment_id=payment_id,
-                order_id=order_id,
-                telegram_id=callback.from_user.id,
-                target_telegram_id=target_telegram_id,
-                plan_code=code,
-                amount_rub=amount,
-            )
-        except (RollyPayError, KeyError):
+            await db.attach_sbp_provider_payment(local_id, payment_id, pay_url)
+        except (RollyPayError, KeyError, ValueError):
+            await db.set_sbp_status(local_id, "create_failed")
             await send_screen(
                 callback.message,
                 callback.from_user,
@@ -2172,6 +2163,12 @@ def build_router(
 
         await callback.answer()
         order_id = f"device-{callback.from_user.id}-{uuid4().hex[:12]}"
+        local_id = await db.create_sbp_order(
+            order_id=order_id, telegram_id=callback.from_user.id,
+            target_telegram_id=callback.from_user.id,
+            plan_code=DEVICE_PRODUCT_CODE, amount_rub=EXTRA_DEVICE_PRICE_RUB,
+            original_amount_rub=EXTRA_DEVICE_PRICE_RUB,
+        )
         try:
             payment = await create_payment(
                 config,
@@ -2182,15 +2179,9 @@ def build_router(
             )
             payment_id = str(payment["payment_id"])
             pay_url = str(payment["pay_url"])
-            await db.create_sbp_payment(
-                payment_id=payment_id,
-                order_id=order_id,
-                telegram_id=callback.from_user.id,
-                target_telegram_id=callback.from_user.id,
-                plan_code=DEVICE_PRODUCT_CODE,
-                amount_rub=EXTRA_DEVICE_PRICE_RUB,
-            )
-        except (RollyPayError, KeyError):
+            await db.attach_sbp_provider_payment(local_id, payment_id, pay_url)
+        except (RollyPayError, KeyError, ValueError):
+            await db.set_sbp_status(local_id, "create_failed")
             await callback.answer(
                 "Не удалось создать платёж.",
                 show_alert=True,
@@ -2198,7 +2189,7 @@ def build_router(
             return
 
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("🏦 Оплатить 100 ₽", url=pay_url))
+        kb.row(blue_inline_button(f"🏦 Оплатить {EXTRA_DEVICE_PRICE_RUB} ₽", url=pay_url))
         kb.row(
             blue_inline_button(
                 "✅ Проверить оплату",
@@ -2237,11 +2228,21 @@ def build_router(
             )
             return
 
+        amount_rub = plan_price_rub(config, code)
         stars = plan_price_stars(config, code)
-        payload = (
-            f"xtr|{code}|{callback.from_user.id}|"
-            f"{target_telegram_id}|{uuid4().hex[:12]}"
+        intent_id = uuid4().hex
+        await db.create_payment_intent(
+            intent_id=intent_id,
+            buyer_id=callback.from_user.id,
+            target_id=target_telegram_id,
+            product_code=code,
+            original_amount_rub=amount_rub,
+            discount_amount_rub=0,
+            final_amount_rub=amount_rub,
+            currency="XTR",
+            currency_amount=stars,
         )
+        payload = f"xtr2|{intent_id}"
         target_label = (
             f"@{target['username']}"
             if target.get("username")
@@ -2295,7 +2296,7 @@ def build_router(
             f"{gift_line}"
             f"Тариф — <b>{plan['name']}</b>\n"
             f"Стоимость — <b>{stars} ⭐</b>\n"
-            f"Эквивалент тарифа — <b>{plan_price_rub(config, code)} ₽</b>\n\n"
+            f"Эквивалент тарифа — <b>{amount_rub} ₽</b>\n\n"
             "Нажмите кнопку ниже и подтвердите оплату в Telegram.",
             reply_markup=kb.as_markup(),
         )
@@ -2336,10 +2337,19 @@ def build_router(
             return
 
         stars = extra_device_price_stars()
-        payload = (
-            f"xtr|{DEVICE_PRODUCT_CODE}|{callback.from_user.id}|"
-            f"{callback.from_user.id}|{uuid4().hex[:12]}"
+        intent_id = uuid4().hex
+        await db.create_payment_intent(
+            intent_id=intent_id,
+            buyer_id=callback.from_user.id,
+            target_id=callback.from_user.id,
+            product_code=DEVICE_PRODUCT_CODE,
+            original_amount_rub=EXTRA_DEVICE_PRICE_RUB,
+            discount_amount_rub=0,
+            final_amount_rub=EXTRA_DEVICE_PRICE_RUB,
+            currency="XTR",
+            currency_amount=stars,
         )
+        payload = f"xtr2|{intent_id}"
         try:
             invoice_url = await callback.message.bot.create_invoice_link(
                 title="MGN VPN · +1 устройство",
@@ -2386,13 +2396,24 @@ def build_router(
         parts = payload.split("|")
         if len(parts) == 2 and parts[0] == "xtr2":
             intent = await db.get_payment_intent(parts[1])
+            product_code = str(intent.get("product_code") or "") if intent else ""
+            expected_original = (
+                EXTRA_DEVICE_PRICE_RUB
+                if product_code == DEVICE_PRODUCT_CODE
+                else plan_price_rub(config, product_code)
+                if product_code in PLANS
+                else -1
+            )
             valid = bool(
                 intent
                 and intent["status"] == "created"
+                and from_iso(intent.get("expires_at"))
+                and from_iso(intent.get("expires_at")) > utcnow()
                 and int(intent["buyer_telegram_id"]) == pre_checkout_query.from_user.id
                 and intent["currency"] == "XTR"
                 and pre_checkout_query.currency == "XTR"
                 and int(intent["currency_amount"]) == pre_checkout_query.total_amount
+                and int(intent["original_amount_rub"]) == expected_original
             )
             await pre_checkout_query.answer(
                 ok=valid,
@@ -2487,14 +2508,19 @@ def build_router(
                 logger.error("Rejected Stars payment intent %s", parts[1])
                 return
             charge_id = payment.telegram_payment_charge_id
-            fresh_charge = await db.settle_star_payment(
-                telegram_payment_charge_id=charge_id,
-                buyer_telegram_id=message.from_user.id,
-                target_telegram_id=int(intent["target_telegram_id"]),
-                plan_code=str(intent["product_code"]),
-                stars=int(payment.total_amount),
-                intent_id=parts[1],
-            )
+            try:
+                fresh_charge = await db.settle_star_payment(
+                    telegram_payment_charge_id=charge_id,
+                    buyer_telegram_id=message.from_user.id,
+                    target_telegram_id=int(intent["target_telegram_id"]),
+                    plan_code=str(intent["product_code"]),
+                    stars=int(payment.total_amount),
+                    intent_id=parts[1],
+                )
+            except ValueError as exc:
+                logger.error("Paid Stars intent requires review: %s", type(exc).__name__)
+                await message.answer("Платёж получен, но требует проверки. Напишите в поддержку.")
+                return
             if fresh_charge:
                 await apply_paid_purchase(
                     message.from_user.id,
@@ -2661,7 +2687,15 @@ def build_router(
             return
 
         if status == "paid":
-            fresh = await db.settle_sbp_payment(payment_id)
+            try:
+                fresh = await db.settle_sbp_payment(payment_id)
+            except ValueError as exc:
+                logger.error("Paid SBP order requires review: %s", type(exc).__name__)
+                await callback.answer(
+                    "Оплата получена, но требует проверки. Напишите в поддержку.",
+                    show_alert=True,
+                )
+                return
             code = str(local["plan_code"])
             target_id = int(
                 local.get("target_telegram_id")

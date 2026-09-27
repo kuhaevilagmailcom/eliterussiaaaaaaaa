@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import json as json_module
 import base64
+import ipaddress
 import math
+import socket
+import ssl
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 import logging
 from typing import Any
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urljoin, urlsplit
 
 import aiohttp
 
@@ -268,18 +271,40 @@ class H1CloudVpnProvider(VpnProvider):
         api_token: str,
         subscription_template: str,
         server_name: str,
-        verify_ssl: bool = False,
+        verify_ssl: bool = True,
+        ca_file: str = "",
+        subscription_hosts: tuple[str, ...] = (".h1cloud.net",),
+        allow_insecure: bool = False,
     ):
         if not api_url:
             raise RuntimeError("H1_API_URL is required for VPN_MODE=h1cloud")
         if not api_token:
             raise RuntimeError("H1_API_TOKEN is required for VPN_MODE=h1cloud")
 
+        parsed_api = urlsplit(api_url)
+        if parsed_api.scheme != "https" and not allow_insecure:
+            raise RuntimeError("H1_API_URL must use HTTPS")
+        if not verify_ssl and not allow_insecure:
+            raise RuntimeError("H1 TLS verification cannot be disabled")
         self.api_url = api_url.rstrip("/")
         self.api_token = api_token
         self.subscription_template = subscription_template.strip()
         self.server_name = server_name
         self.verify_ssl = verify_ssl
+        self.ssl_context: ssl.SSLContext | bool = (
+            ssl.create_default_context(cafile=ca_file or None) if verify_ssl else False
+        )
+        configured_hosts = {
+            str(host).strip().lower().rstrip(".")
+            for host in subscription_hosts
+            if str(host).strip()
+        }
+        if parsed_api.hostname:
+            configured_hosts.add(parsed_api.hostname.lower().rstrip("."))
+        template_host = urlsplit(subscription_template).hostname
+        if template_host:
+            configured_hosts.add(template_host.lower().rstrip("."))
+        self.subscription_hosts = tuple(sorted(configured_hosts))
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=20),
             headers={
@@ -300,7 +325,8 @@ class H1CloudVpnProvider(VpnProvider):
 
     @staticmethod
     def _name(user: dict[str, Any]) -> str:
-        return f'mgn_{int(user["telegram_id"])}'
+        private_id = str(user.get("vpn_client_id") or "").strip()
+        return f"mgn_{private_id}" if private_id else f'mgn_{int(user["telegram_id"])}'
 
     @staticmethod
     def _desired_expiry(user: dict[str, Any]) -> int:
@@ -352,7 +378,7 @@ class H1CloudVpnProvider(VpnProvider):
             method,
             f"{self.api_url}{path}",
             json=json,
-            ssl=self.verify_ssl,
+            ssl=self.ssl_context,
         ) as response:
             raw = await response.text()
             data: dict[str, Any] = {}
@@ -729,6 +755,57 @@ class H1CloudVpnProvider(VpnProvider):
                 result.append(line)
         return result
 
+    def _subscription_host_allowed(self, hostname: str) -> bool:
+        host = hostname.lower().rstrip(".")
+        return any(
+            host == allowed or (allowed.startswith(".") and host.endswith(allowed))
+            for allowed in self.subscription_hosts
+        )
+
+    async def _validate_subscription_url(self, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or not self._subscription_host_allowed(parsed.hostname)
+        ):
+            raise RuntimeError("H1 subscription URL is not allowed")
+        try:
+            addresses = await asyncio.get_running_loop().getaddrinfo(
+                parsed.hostname,
+                parsed.port or 443,
+                type=socket.SOCK_STREAM,
+            )
+        except OSError as exc:
+            raise RuntimeError("H1 subscription host cannot be resolved") from exc
+        for address in addresses:
+            ip = ipaddress.ip_address(address[4][0].split("%", 1)[0])
+            if not ip.is_global:
+                raise RuntimeError("H1 subscription host resolved to a private address")
+        return value
+
+    async def _fetch_public_subscription(self, value: str) -> bytes:
+        current = await self._validate_subscription_url(value)
+        for _redirect in range(4):
+            async with self.public_session.get(
+                current,
+                allow_redirects=False,
+                ssl=self.ssl_context,
+            ) as response:
+                if response.status in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("Location", "")
+                    if not location:
+                        raise RuntimeError("H1 subscription redirect is missing a location")
+                    current = await self._validate_subscription_url(urljoin(current, location))
+                    continue
+                body = await response.read()
+                if response.status >= 400:
+                    raise RuntimeError(f"H1 subscription HTTP {response.status}")
+                return body
+        raise RuntimeError("H1 subscription has too many redirects")
+
     def _subscription_url(self, client: dict[str, Any]) -> str:
         for key in ("subscription_url", "sub_url", "subscription"):
             value = client.get(key)
@@ -1088,15 +1165,8 @@ class H1CloudVpnProvider(VpnProvider):
                 return [], "sub_url_missing"
             try:
                 async with asyncio.timeout(6.0):
-                    async with self.public_session.get(
-                        aggregate_url,
-                        allow_redirects=True,
-                        ssl=self.verify_ssl,
-                    ) as response:
-                        body = await response.read()
-                        if response.status >= 400:
-                            return [], f"HTTP {response.status}"
-                        return self._subscription_vless_links(body), None
+                    body = await self._fetch_public_subscription(aggregate_url)
+                    return self._subscription_vless_links(body), None
             except Exception as exc:
                 return [], str(exc).strip() or type(exc).__name__
 

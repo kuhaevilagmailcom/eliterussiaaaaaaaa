@@ -10,15 +10,15 @@ from catalog import (
 def test_prices_and_savings_are_centralized():
     assert {code: plan_price_rub(None, code) for code in PLANS} == {
         "7": 59,
-        "30": 149,
+        "30": 100,
         "90": 349,
         "180": 599,
         "365": 1200,
     }
     assert {code: plan_savings_rub(code) for code in ("90", "180", "365")} == {
-        "90": 98,
-        "180": 295,
-        "365": 588,
+        "90": 0,
+        "180": 1,
+        "365": 0,
     }
 
 

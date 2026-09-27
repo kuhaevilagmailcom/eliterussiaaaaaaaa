@@ -44,7 +44,7 @@ def test_canonical_config_and_back(monkeypatch):
     config = Config.from_env()
     assert config.miniapp_url == 'https://mgnvpn.ru/app'
     assert config.vpn_sub_base_url == 'https://mgnvpn.ru/sub'
-    assert config.admin_ids == (8464597898,)
+    assert config.admin_ids == ()
     buttons = connection_keyboard('https://mgnvpn.ru/sub/'+'a'*32).inline_keyboard
     assert len(buttons) == 3
     assert buttons[0][0].url == 'https://mgnvpn.ru/client/happ/'+'a'*32
@@ -57,7 +57,7 @@ def test_atomic_payments_and_concurrency(tmp_path):
         db = Database(str(tmp_path/'test.db'))
         await db.init()
         await db.ensure_user(42, None, 'Test')
-        await db.create_sbp_payment('p', 'o', 42, '30', 149)
+        await db.create_sbp_payment('p', 'o', 42, '30', 100)
         results = await asyncio.gather(*(db.settle_sbp_payment('p') for _ in range(8)))
         assert results.count(True) == 1
         until = (await db.get_user(42))['subscription_until']
@@ -67,9 +67,9 @@ def test_atomic_payments_and_concurrency(tmp_path):
         assert not await Database(db.path).settle_sbp_payment('p')
         assert (await db.get_user(42))['subscription_until'] == until
         with pytest.raises(aiosqlite.IntegrityError):
-            await db.create_sbp_payment('p', 'o', 42, '30', 149)
+            await db.create_sbp_payment('p', 'o', 42, '30', 100)
         await db.create_sbp_payment('invalid', 'invalid', 42, 'missing-plan', 1)
-        with pytest.raises(KeyError):
+        with pytest.raises(ValueError):
             await db.settle_sbp_payment('invalid')
         assert (await db.get_sbp_payment('invalid'))['status'] == 'created'
         await db.create_payment_intent(intent_id='intent', buyer_id=42, target_id=42, product_code='7', original_amount_rub=59, discount_amount_rub=0, final_amount_rub=59, currency='XTR', currency_amount=37)
@@ -100,8 +100,13 @@ def test_http_security_routes_and_subscription(tmp_path, monkeypatch):
             assert root.status == app.status == 200
             root_html=await root.text()
             assert 'hero-copy' in root_html
-            assert all(f'{price} ₽' in root_html for price in (59,149,349,599,1200))
+            assert all(f'{price} ₽' in root_html for price in (59,100,349,599,1200))
             assert 'bottomNav' in await app.text()
+            catalog_response = await client.get('/api/public/catalog')
+            assert catalog_response.status == 200
+            catalog = await catalog_response.json()
+            assert {item['code']: item['price_rub'] for item in catalog['plans']}['30'] == 100
+            assert catalog['max_devices'] == 5
             assert (await client.get('/api/miniapp/me')).status == 401
             for data in ('[]', 'null', '{', '{"code":12}', '{"code":"'+'x'*65+'"}'):
                 response = await client.post('/api/miniapp/promo/redeem', data=data, headers={'X-Telegram-Init-Data': signed()})
@@ -405,10 +410,10 @@ def test_sbp_rejects_provider_mismatch(tmp_path, monkeypatch, override):
     async def run():
         db = Database(str(tmp_path/'payment.db')); await db.init()
         await db.ensure_user(42,None,'Test')
-        await db.create_sbp_payment('p','o',42,'30',149)
+        await db.create_sbp_payment('p','o',42,'30',100)
         server = MiniAppServer(None, replace(Config.from_env(),db_path=db.path),db,SimpleNamespace(service_ready=False))
         server._auth=AsyncMock(return_value=(42,{},{}))
-        remote={'payment_id':'p','order_id':'o','currency':'RUB','amount':'149','status':'paid',**override}
+        remote={'payment_id':'p','order_id':'o','currency':'RUB','amount':'100','status':'paid',**override}
         monkeypatch.setattr(miniapp,'get_payment',AsyncMock(return_value=remote))
         with pytest.raises(web.HTTPConflict):
             await server.sbp_check(make_mocked_request('GET','/',match_info={'payment_id':'p'}))
@@ -433,3 +438,20 @@ def test_support_validation_and_device_payment_limits(tmp_path):
             await db.settle_star_payment('device-excess',42,42,'device',63)
         assert (await db.get_user(42))['max_devices']==5
     asyncio.run(run())
+
+
+def test_forwarded_client_ip_is_used_only_for_trusted_proxy():
+    server = object.__new__(MiniAppServer)
+    server.config = SimpleNamespace(trusted_proxy_ips=("10.0.0.10",))
+    trusted = SimpleNamespace(
+        remote="10.0.0.10", headers={"X-Forwarded-For": "203.0.113.7, 10.0.0.10"}
+    )
+    untrusted = SimpleNamespace(
+        remote="198.51.100.9", headers={"X-Forwarded-For": "203.0.113.8"}
+    )
+    malformed = SimpleNamespace(
+        remote="10.0.0.10", headers={"X-Forwarded-For": "not-an-ip"}
+    )
+    assert server._client_identity(trusted) == "203.0.113.7"
+    assert server._client_identity(untrusted) == "198.51.100.9"
+    assert server._client_identity(malformed) == "10.0.0.10"

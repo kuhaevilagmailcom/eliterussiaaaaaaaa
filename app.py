@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import sqlite3
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from db import Database
 from emoji import EmojiBank, EmojiFallbackMiddleware
 from handlers import build_router
 from miniapp import MiniAppServer
+from payments import RollyPayError, get_payment
 from vpn import (
     DemoVpnProvider,
     H1CloudVpnProvider,
@@ -44,8 +46,16 @@ class SecretSafeFormatter(logging.Formatter):
 
 def _sqlite_backup(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target.parent.chmod(0o700)
+    except OSError:
+        pass
     with sqlite3.connect(str(source)) as src, sqlite3.connect(str(target)) as dst:
         src.backup(dst)
+    try:
+        target.chmod(0o600)
+    except OSError:
+        pass
 
 
 def prepare_persistent_database(db_path: str) -> None:
@@ -125,6 +135,44 @@ async def database_backup_loop(db_path: str) -> None:
             logger.exception("Could not create scheduled SQLite safety backup")
 
 
+async def payment_reconciliation_loop(config: Config, db: Database, provider: VpnProvider) -> None:
+    logger = logging.getLogger(__name__)
+    while True:
+        await asyncio.sleep(60)
+        if not config.rollypay_enabled:
+            continue
+        for local in await db.list_sbp_for_reconciliation():
+            payment_id = str(local["payment_id"])
+            try:
+                remote = await get_payment(config, payment_id)
+                status = str(remote.get("status") or "").lower()
+                try:
+                    amount = Decimal(str(remote.get("amount")))
+                except (InvalidOperation, ValueError):
+                    amount = Decimal("-1")
+                valid = (
+                    str(remote.get("payment_id") or "") == payment_id
+                    and str(remote.get("order_id") or "") == str(local["order_id"])
+                    and str(remote.get("currency") or remote.get("payment_currency") or "").upper() == "RUB"
+                    and amount.is_finite()
+                    and amount == Decimal(int(local["amount_rub"]))
+                )
+                if not valid:
+                    logger.error("Payment reconciliation mismatch for local order %s", local["order_id"])
+                    continue
+                if status == "paid" and str(local["status"]) != "paid":
+                    if await db.settle_sbp_payment(payment_id):
+                        user = await db.get_user(int(local.get("target_telegram_id") or local["telegram_id"]))
+                        try:
+                            await asyncio.wait_for(provider.provision(user), 10.0)
+                        except Exception as exc:
+                            logger.warning("Payment provision deferred: %s", type(exc).__name__)
+                elif status in {"refunded", "chargeback", "canceled", "expired"}:
+                    await db.set_sbp_status(payment_id, status)
+            except (RollyPayError, ValueError, KeyError) as exc:
+                logger.warning("Payment reconciliation failed for %s: %s", local["order_id"], type(exc).__name__)
+
+
 def make_provider(config: Config) -> VpnProvider:
     if config.vpn_mode == "h1cloud":
         return H1CloudVpnProvider(
@@ -133,6 +181,9 @@ def make_provider(config: Config) -> VpnProvider:
             subscription_template=config.h1_subscription_template,
             server_name=config.vpn_server_name,
             verify_ssl=config.h1_verify_ssl,
+            ca_file=config.h1_ca_file,
+            subscription_hosts=config.h1_subscription_hosts,
+            allow_insecure=config.allow_insecure_h1,
         )
 
     if config.vpn_mode == "3xui":
@@ -167,7 +218,7 @@ async def main() -> None:
     for handler in logging.getLogger().handlers:
         handler.setFormatter(SecretSafeFormatter(config))
     logging.getLogger(__name__).info(
-        "MGN VPN build: h1cloud-v27-dual-federation | vpn_mode=%s",
+        "MGN VPN build: production | vpn_mode=%s",
         config.vpn_mode,
     )
     prepare_persistent_database(config.db_path)
@@ -197,6 +248,7 @@ async def main() -> None:
     emoji = EmojiBank(config.emoji_packs)
     provider = make_provider(config)
     miniapp = MiniAppServer(bot, config, db, provider)
+    payment_task = asyncio.create_task(payment_reconciliation_loop(config, db, provider))
 
     try:
         await emoji.load(bot)
@@ -222,8 +274,13 @@ async def main() -> None:
         await dp.start_polling(bot)
     finally:
         backup_task.cancel()
+        payment_task.cancel()
         try:
             await backup_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await payment_task
         except asyncio.CancelledError:
             pass
         await miniapp.close()

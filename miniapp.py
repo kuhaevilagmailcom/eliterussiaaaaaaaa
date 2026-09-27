@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import hmac
 import json
 import logging
@@ -124,7 +125,10 @@ class MiniAppServer:
         self._last_reconcile: dict[int, float] = {}
         self._reconcile_tasks: dict[int, asyncio.Task] = {}
         self._subscription_refresh_tasks: dict[int, asyncio.Task] = {}
+        self._subscription_refresh_last: dict[int, float] = {}
+        self._h1_semaphore = asyncio.Semaphore(4)
         self._subscription_cache: dict[str, dict] = {}
+        self._subscription_cache_invalidated: set[str] = set()
         self._rate_events: dict[str, list[float]] = {}
         self._last_rate_cleanup = 0.0
         self._subscription_cache_dir = Path(self.config.db_path).with_name(
@@ -181,6 +185,17 @@ class MiniAppServer:
             tmp.replace(path)
         except Exception:
             logger.exception("Could not persist subscription cache")
+
+    def _client_identity(self, request: web.Request) -> str:
+        """Use forwarded identity only when the immediate peer is trusted."""
+        remote = str(request.remote or "").strip()
+        if remote not in self.config.trusted_proxy_ips:
+            return remote or "unknown"
+        forwarded = request.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+        try:
+            return str(ipaddress.ip_address(forwarded))
+        except ValueError:
+            return remote or "unknown"
 
     def _rate_limit(
         self,
@@ -281,10 +296,8 @@ class MiniAppServer:
     async def _reconcile_h1(self, user: dict) -> None:
         user_id = int(user["telegram_id"])
         try:
-            await asyncio.wait_for(
-                self.provider.provision(user),
-                45.0,
-            )
+            async with self._h1_semaphore:
+                await asyncio.wait_for(self.provider.provision(user), 45.0)
             self._last_reconcile[user_id] = time.monotonic()
         except Exception as exc:
             logger.warning(
@@ -311,21 +324,12 @@ class MiniAppServer:
     ) -> None:
         user_id = int(user["telegram_id"])
         try:
-            await asyncio.wait_for(self.provider.provision(user), 45.0)
-            # The old cached payload may contain only NL/US. Remove it after
-            # reconciliation so the next client refresh is rebuilt from all
-            # reachable linked nodes.
+            async with self._h1_semaphore:
+                await asyncio.wait_for(self.provider.provision(user), 45.0)
+            # Force one rebuild, but keep the last payload available so a
+            # temporarily unavailable country (for example US) is not dropped.
             self._subscription_cache.pop(token, None)
-            try:
-                self._subscription_cache_path(token).unlink()
-            except FileNotFoundError:
-                pass
-            except Exception as exc:
-                logger.warning(
-                    "Could not invalidate subscription cache for %s: %s",
-                    user_id,
-                    exc,
-                )
+            self._subscription_cache_invalidated.add(token)
             logger.info(
                 "H1Cloud background federation refresh completed for %s",
                 user_id,
@@ -347,9 +351,13 @@ class MiniAppServer:
         if getattr(self.provider, "mode_name", "") != "h1cloud":
             return
         user_id = int(user["telegram_id"])
+        now = time.monotonic()
+        if now - self._subscription_refresh_last.get(user_id, 0.0) < 300.0:
+            return
         current = self._subscription_refresh_tasks.get(user_id)
         if current and not current.done():
             return
+        self._subscription_refresh_last[user_id] = now
         self._subscription_refresh_tasks[user_id] = asyncio.create_task(
             self._refresh_subscription_federation(dict(user), token)
         )
@@ -460,15 +468,42 @@ class MiniAppServer:
             {
                 "ok": True,
                 "service": "MGN VPN Mini App",
-                "build": "h1cloud-v27-dual-federation",
-                "vpn_mode": getattr(self.provider, "mode_name", "vpn"),
+                "build": "mgn-vpn",
+                "vpn_mode": "ready" if getattr(self.provider, "service_ready", True) else "unavailable",
                 "vpn_ready": bool(getattr(self.provider, "service_ready", True)),
             }
         )
 
+    async def public_catalog(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "plans": [
+                    {
+                        "code": code,
+                        "name": str(plan["name"]),
+                        "days": int(plan["days"]),
+                        "price_rub": plan_price_rub(self.config, code),
+                        "price_stars": plan_price_stars(self.config, code),
+                        "devices": int(plan.get("devices") or 1),
+                    }
+                    for code, plan in PLANS.items()
+                ],
+                "base_devices": 1,
+                "max_devices": MAX_DEVICES,
+                "extra_device_price_rub": EXTRA_DEVICE_PRICE_RUB,
+                "extra_device_price_stars": rub_to_stars(EXTRA_DEVICE_PRICE_RUB),
+            },
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+
     async def subscription(self, request: web.Request) -> web.Response:
-        self._rate_limit(f"subscription-ip:{request.remote}", limit=120, window_seconds=60)
         token = str(request.match_info.get("token") or "").strip()
+        token_key = hashlib.sha256(token.encode("utf-8")).hexdigest()[:20]
+        self._rate_limit(
+            f"subscription:{token_key}:{self._client_identity(request)}",
+            limit=120,
+            window_seconds=60,
+        )
         user = await self.db.get_user_by_sub_token(token)
         if user is None:
             raise web.HTTPNotFound(text="Subscription not found")
@@ -488,6 +523,7 @@ class MiniAppServer:
         persistent_cached = await asyncio.to_thread(self._read_persistent_subscription_cache, token)
         if (
             persistent_cached
+            and token not in self._subscription_cache_invalidated
             and time.time() - float(persistent_cached["created_at"]) <= 300.0
         ):
             # A recent successful payload is safer and dramatically faster than
@@ -509,6 +545,20 @@ class MiniAppServer:
                 load_payload(),
                 8.5,
             )
+            if persistent_cached and time.time() - float(persistent_cached["created_at"]) <= 86400.0:
+                extract = getattr(self.provider, "_subscription_vless_links", None)
+                if callable(extract):
+                    current_links = list(extract(body))
+                    previous_links = list(extract(persistent_cached["body"]))
+                    if len(previous_links) > len(current_links):
+                        merged = list(dict.fromkeys([*current_links, *previous_links]))
+                        body, count = prettify_subscription_payload(
+                            ("\n".join(merged) + "\n").encode("utf-8")
+                        )
+                        logger.warning(
+                            "Subscription rebuild returned fewer nodes for %s; preserved %s cached node(s)",
+                            user["telegram_id"], len(previous_links) - len(current_links),
+                        )
             if count < 1:
                 raise RuntimeError("H1Cloud subscription contains no VLESS nodes")
 
@@ -540,6 +590,7 @@ class MiniAppServer:
                 "headers": headers,
             }
             await asyncio.to_thread(self._write_persistent_subscription_cache, token, body, headers)
+            self._subscription_cache_invalidated.discard(token)
             logger.info(
                 "MGN subscription served for %s with %s node(s)",
                 user["telegram_id"],
@@ -700,6 +751,18 @@ class MiniAppServer:
             if not quote or quote["type"] != "discount":
                 raise _json_error(400, "Промокод не подходит для этой покупки")
         final = int(quote["final_price"]) if quote else original
+        if final == 0:
+            if not quote:
+                raise _json_error(400, "Некорректная нулевая стоимость")
+            try:
+                await self.db.redeem_full_discount(
+                    promo_id=int(quote["id"]), buyer_id=uid,
+                    target_id=uid, product_code=code,
+                )
+            except ValueError:
+                raise _json_error(409, "Промокод уже использован или больше не действует")
+            await self._activate_paid(uid, uid, code, f"promo:{quote['id']}")
+            return web.json_response({"granted": True, "final_price": 0})
         stars = rub_to_stars(final)
         intent_id = uuid4().hex
         await self.db.create_payment_intent(
@@ -760,7 +823,26 @@ class MiniAppServer:
             if not quote or quote["type"] != "discount":
                 raise _json_error(400, "Промокод не подходит для этой покупки")
         amount = int(quote["final_price"]) if quote else original
+        if amount == 0:
+            if not quote:
+                raise _json_error(400, "Некорректная нулевая стоимость")
+            try:
+                await self.db.redeem_full_discount(
+                    promo_id=int(quote["id"]), buyer_id=uid,
+                    target_id=uid, product_code=code,
+                )
+            except ValueError:
+                raise _json_error(409, "Промокод уже использован или больше не действует")
+            await self._activate_paid(uid, uid, code, f"promo:{quote['id']}")
+            return web.json_response({"granted": True, "amount_rub": 0})
         order_id = f"vpn-mini-{uid}-{uuid4().hex[:12]}"
+        local_id = await self.db.create_sbp_order(
+            order_id=order_id, telegram_id=uid, target_telegram_id=uid,
+            plan_code=code, amount_rub=amount, original_amount_rub=original,
+            discount_amount_rub=int(quote["discount"]) if quote else 0,
+            promo_id=int(quote["id"]) if quote else None,
+            promo_code=str(quote["code"]) if quote else None,
+        )
         try:
             payment = await create_payment(
                 self.config,
@@ -771,19 +853,9 @@ class MiniAppServer:
             )
             payment_id = str(payment["payment_id"])
             pay_url = str(payment["pay_url"])
-            await self.db.create_sbp_payment(
-                payment_id=payment_id,
-                order_id=order_id,
-                telegram_id=uid,
-                target_telegram_id=uid,
-                plan_code=code,
-                amount_rub=amount,
-                original_amount_rub=original,
-                discount_amount_rub=int(quote["discount"]) if quote else 0,
-                promo_id=int(quote["id"]) if quote else None,
-                promo_code=str(quote["code"]) if quote else None,
-            )
-        except (RollyPayError, KeyError) as exc:
+            await self.db.attach_sbp_provider_payment(local_id, payment_id, pay_url)
+        except (RollyPayError, KeyError, ValueError) as exc:
+            await self.db.set_sbp_status(local_id, "create_failed")
             logger.warning("Mini App SBP create failed: %s", exc)
             raise _json_error(503, "Не удалось создать платёж")
 
@@ -834,7 +906,10 @@ class MiniAppServer:
             raise _json_error(409, "Данные платежа не совпали")
 
         if status == "paid":
-            fresh = await self.db.settle_sbp_payment(payment_id)
+            try:
+                fresh = await self.db.settle_sbp_payment(payment_id)
+            except ValueError:
+                raise _json_error(409, "Оплата получена и требует проверки поддержки")
             if fresh:
                 if str(local["plan_code"]) == "device":
                     updated = await self.db.get_user(uid)
@@ -864,6 +939,11 @@ class MiniAppServer:
             raise _json_error(503, "СБП пока не настроена")
 
         order_id = f"device-mini-{uid}-{uuid4().hex[:12]}"
+        local_id = await self.db.create_sbp_order(
+            order_id=order_id, telegram_id=uid, target_telegram_id=uid,
+            plan_code="device", amount_rub=EXTRA_DEVICE_PRICE_RUB,
+            original_amount_rub=EXTRA_DEVICE_PRICE_RUB,
+        )
         try:
             payment = await create_payment(
                 self.config,
@@ -874,16 +954,9 @@ class MiniAppServer:
             )
             payment_id = str(payment["payment_id"])
             pay_url = str(payment["pay_url"])
-            await self.db.create_sbp_payment(
-                payment_id=payment_id,
-                order_id=order_id,
-                telegram_id=uid,
-                target_telegram_id=uid,
-                plan_code="device",
-                amount_rub=EXTRA_DEVICE_PRICE_RUB,
-                original_amount_rub=EXTRA_DEVICE_PRICE_RUB,
-            )
-        except (RollyPayError, KeyError) as exc:
+            await self.db.attach_sbp_provider_payment(local_id, payment_id, pay_url)
+        except (RollyPayError, KeyError, ValueError) as exc:
+            await self.db.set_sbp_status(local_id, "create_failed")
             logger.warning("Mini App device payment failed: %s", exc)
             raise _json_error(503, "Не удалось создать платёж")
         return web.json_response(
@@ -1207,6 +1280,7 @@ class MiniAppServer:
         app.router.add_get("/sub/{token}", self.subscription)
         app.router.add_get("/client/{client}/{token}", self.client_redirect)
         app.router.add_get("/api/miniapp/health", self.health)
+        app.router.add_get("/api/public/catalog", self.public_catalog)
         app.router.add_get("/api/miniapp/me", self.me)
         app.router.add_post("/api/miniapp/payment/stars", self.stars_invoice)
         app.router.add_post("/api/miniapp/payment/sbp", self.sbp_create)

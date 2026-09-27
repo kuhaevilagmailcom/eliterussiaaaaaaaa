@@ -16,7 +16,7 @@ PLANS: dict[str, dict[str, Any]] = {
         "months": 1,
         "name": "1 месяц",
         "devices": 1,
-        "price_rub": 149,
+        "price_rub": 100,
     },
     "90": {
         "days": 90,
@@ -81,7 +81,9 @@ def discounted_price_rub(code: str, discount_percent: int = 0) -> tuple[int, int
 
 def rub_to_stars(amount_rub: int) -> int:
     amount = max(0, int(amount_rub))
-    return max(1, (amount * STAR_RATE_XTR + STAR_RATE_RUB - 1) // STAR_RATE_RUB)
+    if amount == 0:
+        return 0
+    return (amount * STAR_RATE_XTR + STAR_RATE_RUB - 1) // STAR_RATE_RUB
 
 
 def extra_device_price_stars() -> int:

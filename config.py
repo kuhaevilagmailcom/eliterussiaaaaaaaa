@@ -65,6 +65,10 @@ class Config:
     h1_api_token: str
     h1_subscription_template: str
     h1_verify_ssl: bool
+    h1_ca_file: str
+    h1_subscription_hosts: tuple[str, ...]
+    allow_insecure_h1: bool
+    trusted_proxy_ips: tuple[str, ...]
 
     xui_url: str
     xui_token: str
@@ -131,7 +135,7 @@ class Config:
 
         return cls(
             bot_token=token,
-            admin_ids=_ints(os.getenv("ADMIN_IDS", "8464597898")),
+            admin_ids=_ints(os.getenv("ADMIN_IDS", "")),
             db_path=db_path,
             display_tz=ZoneInfo(os.getenv("DISPLAY_TZ", "Asia/Yekaterinburg")),
             miniapp_url=miniapp_url,
@@ -159,7 +163,19 @@ class Config:
                 "H1_SUBSCRIPTION_TEMPLATE",
                 "",
             ).strip(),
-            h1_verify_ssl=_bool(os.getenv("H1_VERIFY_SSL", "false"), default=False),
+            h1_verify_ssl=_bool(os.getenv("H1_VERIFY_SSL", "true"), default=True),
+            h1_ca_file=os.getenv("H1_CA_FILE", "").strip(),
+            h1_subscription_hosts=tuple(
+                host.strip().lower().rstrip(".")
+                for host in os.getenv("H1_SUBSCRIPTION_HOSTS", ".h1cloud.net").split(",")
+                if host.strip()
+            ),
+            allow_insecure_h1=_bool(os.getenv("ALLOW_INSECURE_H1", "false"), default=False),
+            trusted_proxy_ips=tuple(
+                value.strip()
+                for value in os.getenv("TRUSTED_PROXY_IPS", "").split(",")
+                if value.strip()
+            ),
             xui_url=os.getenv("XUI_URL", "").rstrip("/"),
             xui_token=os.getenv("XUI_TOKEN", "").strip(),
             xui_inbound_ids=_ints(os.getenv("XUI_INBOUND_IDS", "")),
