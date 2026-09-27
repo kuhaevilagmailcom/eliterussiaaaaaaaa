@@ -1246,8 +1246,10 @@ class Database:
         page_size = max(1, min(int(page_size), 20))
         params: list[Any] = []
         clauses = ["deleted_at IS NULL"]
-        if status in {"open", "answered", "closed"}:
-            clauses.append("status=?")
+        if status == "closed":
+            clauses.append("closed_at IS NOT NULL")
+        elif status in {"open", "answered"}:
+            clauses.extend(["closed_at IS NULL", "status=?"])
             params.append(status)
         where = "WHERE " + " AND ".join(clauses)
         async with aiosqlite.connect(self.path) as db:
@@ -1269,7 +1271,7 @@ class Database:
                     (*params, page_size, page * page_size),
                 )
             ).fetchall()
-        return [dict(row) for row in rows], total
+        return [self._support_dict(row) for row in rows], total
 
     async def answer_support_ticket(
         self,
@@ -1303,6 +1305,13 @@ class Database:
                 (telegram_id, mode, ticket_id, payload, to_iso(utcnow())),
             )
             await db.commit()
+
+    @staticmethod
+    def _support_dict(row: Any) -> dict[str, Any]:
+        result = dict(row)
+        if result.get("closed_at"):
+            result["status"] = "closed"
+        return result
 
     async def get_support_session(self, telegram_id: int) -> dict[str, Any] | None:
         async with aiosqlite.connect(self.path) as db:
@@ -1384,7 +1393,7 @@ class Database:
             if ticket is None or (not is_admin and int(ticket["telegram_id"]) != int(owner_id or 0)):
                 await db.rollback()
                 return None
-            if ticket["status"] == "closed":
+            if ticket["status"] == "closed" or ticket["closed_at"]:
                 await db.rollback()
                 raise ValueError("ticket closed")
             await self._insert_support_message(
@@ -1419,7 +1428,7 @@ class Database:
             row = await (await db.execute(
                 f"SELECT * FROM support_tickets WHERE {' AND '.join(clauses)}", tuple(params)
             )).fetchone()
-        return dict(row) if row else None
+        return self._support_dict(row) if row else None
 
     async def list_support_messages(
         self, ticket_id: int, *, owner_id: int | None = None, is_admin: bool = False,
@@ -1446,7 +1455,7 @@ class Database:
                 "ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 (telegram_id, page_size, page * page_size),
             )).fetchall()
-        return [dict(row) for row in rows], total
+        return [self._support_dict(row) for row in rows], total
 
     async def recent_support_ticket_count(self, telegram_id: int, minutes: int = 10) -> int:
         since = to_iso(utcnow() - timedelta(minutes=max(1, int(minutes))))
@@ -1472,11 +1481,16 @@ class Database:
             if not is_admin and status != "closed":
                 return None
             now = to_iso(utcnow())
-            await db.execute(
-                "UPDATE support_tickets SET status=?, updated_at=?, closed_at=?, closed_by=? WHERE id=?",
-                (status, now, now if status == "closed" else None,
-                 actor_id if status == "closed" else None, ticket_id),
-            )
+            if status == "closed":
+                await db.execute(
+                    "UPDATE support_tickets SET updated_at=?, closed_at=?, closed_by=? WHERE id=?",
+                    (now, now, actor_id, ticket_id),
+                )
+            else:
+                await db.execute(
+                    "UPDATE support_tickets SET status='open', updated_at=?, closed_at=NULL, closed_by=NULL WHERE id=?",
+                    (now, ticket_id),
+                )
             await db.commit()
         return await self.get_support_ticket(ticket_id, owner_id=actor_id, is_admin=is_admin)
 

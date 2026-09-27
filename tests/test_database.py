@@ -1,6 +1,7 @@
 import asyncio
 from datetime import timedelta
 
+import aiosqlite
 import pytest
 
 from db import Database, from_iso, utcnow
@@ -177,5 +178,67 @@ def test_support_threads_persist_messages_permissions_and_soft_delete(tmp_path):
         assert await db.soft_delete_support_ticket(ticket_id, 1)
         assert await db.get_support_ticket(ticket_id, owner_id=50) is None
         assert await db.get_support_ticket(ticket_id, is_admin=True, include_deleted=True)
+
+    run(scenario())
+
+
+def test_support_close_is_compatible_with_legacy_status_constraint(tmp_path):
+    async def scenario():
+        path = tmp_path / "legacy-support.sqlite3"
+        async with aiosqlite.connect(path) as connection:
+            await connection.execute(
+                """
+                CREATE TABLE support_tickets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_id INTEGER NOT NULL,
+                    username TEXT,
+                    first_name TEXT NOT NULL DEFAULT '',
+                    message TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open'
+                        CHECK(status IN ('open', 'answered')),
+                    created_at TEXT NOT NULL,
+                    answered_at TEXT,
+                    answered_by INTEGER,
+                    answer_text TEXT
+                )
+                """
+            )
+            await connection.commit()
+
+        db = Database(str(path))
+        await db.init()
+        await db.ensure_user(50, "owner", "Owner")
+        ticket = await db.create_support_thread(
+            telegram_id=50,
+            username="owner",
+            first_name="Owner",
+            message_type="text",
+            text="Не работает подключение",
+        )
+        ticket_id = int(ticket["id"])
+
+        closed = await db.set_support_status(ticket_id, "closed", 1, is_admin=True)
+        assert closed and closed["status"] == "closed"
+        closed_tickets, total = await db.list_support_tickets(status="closed")
+        assert total == 1
+        assert closed_tickets[0]["id"] == ticket_id
+        with pytest.raises(ValueError):
+            await db.add_support_message(
+                ticket_id=ticket_id,
+                sender_type="admin",
+                sender_telegram_id=1,
+                message_type="text",
+                text="Ответ после закрытия",
+                is_admin=True,
+            )
+
+        reopened = await db.set_support_status(ticket_id, "open", 1, is_admin=True)
+        assert reopened and reopened["status"] == "open"
+        answered = await db.answer_support_ticket(
+            ticket_id=ticket_id,
+            answered_by=1,
+            answer_text="Проверили и исправили",
+        )
+        assert answered and answered["status"] == "answered"
 
     run(scenario())

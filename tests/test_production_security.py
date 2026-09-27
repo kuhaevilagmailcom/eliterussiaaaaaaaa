@@ -16,7 +16,7 @@ from aiohttp import ClientSession, web
 from config import Config
 from db import Database, utcnow, from_iso
 from miniapp import MiniAppServer, validate_init_data
-from handlers import connection_keyboard
+from handlers import build_router, connection_keyboard
 from vpn import H1CloudVpnProvider
 
 TOKEN = '123456:TEST_ONLY'
@@ -139,7 +139,6 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from app import SecretSafeFormatter
 from emoji import EmojiBank, EmojiFallbackMiddleware
-from handlers import build_router
 from payments import get_payment, create_payment, RollyPayError
 
 
@@ -159,6 +158,65 @@ def test_admin_callbacks_reject_regular_user(tmp_path, monkeypatch):
                 checked.append(handler.callback.__name__)
         assert len(checked) >= 5
         assert (await db.get_user(42))['subscription_until'] is None
+    asyncio.run(run())
+
+
+def test_admin_can_reply_to_support_ticket_and_user_is_notified(tmp_path, monkeypatch):
+    monkeypatch.setenv('BOT_TOKEN', TOKEN)
+
+    async def run():
+        config = replace(Config.from_env(), admin_ids=(1,), db_path=str(tmp_path/'support-reply.db'))
+        db = Database(config.db_path)
+        await db.init()
+        await db.ensure_user(1, 'admin', 'Admin')
+        await db.ensure_user(42, 'client', 'Client')
+        ticket = await db.create_support_thread(
+            telegram_id=42,
+            username='client',
+            first_name='Client',
+            message_type='text',
+            text='VPN не подключается',
+        )
+        ticket_id = int(ticket['id'])
+        router = build_router(config, db, EmojiBank(()), SimpleNamespace())
+        reply_start = next(
+            item.callback for item in router.callback_query.handlers
+            if item.callback.__name__ == 'support_reply_start'
+        )
+        text_router = next(
+            item.callback for item in router.message.handlers
+            if item.callback.__name__ == 'support_text_router'
+        )
+
+        prompt = SimpleNamespace(answer=AsyncMock())
+        callback = SimpleNamespace(
+            from_user=SimpleNamespace(id=1, username='admin', first_name='Admin'),
+            answer=AsyncMock(),
+            message=prompt,
+            data=f'support:reply:{ticket_id}',
+        )
+        await reply_start(callback)
+        assert (await db.get_support_session(1))['mode'] == 'admin_reply'
+
+        bot = SimpleNamespace(send_message=AsyncMock())
+        message = SimpleNamespace(
+            from_user=callback.from_user,
+            text='Перезапустите приложение — исправление уже установлено.',
+            photo=None,
+            video=None,
+            bot=bot,
+            answer=AsyncMock(),
+        )
+        await text_router(message)
+
+        messages = await db.list_support_messages(ticket_id, is_admin=True)
+        assert len(messages) == 2
+        assert messages[-1]['sender_type'] == 'admin'
+        assert messages[-1]['text'] == message.text
+        assert await db.get_support_session(1) is None
+        assert bot.send_message.await_args.kwargs['chat_id'] == 42
+        assert 'Ответ поддержки' in bot.send_message.await_args.kwargs['text']
+
     asyncio.run(run())
 
 
