@@ -342,7 +342,6 @@
     renderBonuses();
     renderClients();
     icons();
-    if(page==='support')loadSupport();
     const loader=$('#loader');
     loader.classList.add('hidden');
     if(!initialMotionDone){
@@ -375,6 +374,7 @@
     }catch(_){}
     haptic();
     icons();
+    if(page==='support')loadSupport();
     requestAnimationFrame(()=>animatePage(activePage));
   }
 

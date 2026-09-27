@@ -162,6 +162,14 @@ def test_admin_callbacks_reject_regular_user(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+def test_miniapp_render_has_no_out_of_scope_page_reference():
+    source = (__import__('pathlib').Path(__file__).parents[1] / 'miniapp' / 'web' / 'app.js').read_text(encoding='utf-8')
+    render_block = source.split('function render(){', 1)[1].split('function go(page){', 1)[0]
+    go_block = source.split('function go(page){', 1)[1].split('async function load(', 1)[0]
+    assert "if(page==='support')" not in render_block
+    assert "if(page==='support')loadSupport();" in go_block
+
+
 def test_admin_users_screen_fits_telegram_caption_and_search_does_not_collide(tmp_path, monkeypatch):
     monkeypatch.setenv('BOT_TOKEN', TOKEN)
 
