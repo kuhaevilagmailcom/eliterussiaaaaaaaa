@@ -680,6 +680,25 @@ def build_router(
     router = Router()
     callback_events: dict[int, list[float]] = {}
 
+    async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> bool:
+        """Answer Telegram callbacks without crashing on an expired query id."""
+        try:
+            await safe_callback_answer(callback, *args, **kwargs)
+            return True
+        except TelegramBadRequest as exc:
+            error_text = str(exc).lower()
+            if (
+                "query is too old" in error_text
+                or "response timeout expired" in error_text
+                or "query id is invalid" in error_text
+            ):
+                logger.debug(
+                    "Ignored expired callback query for user %s",
+                    getattr(getattr(callback, "from_user", None), "id", "?"),
+                )
+                return False
+            raise
+
     async def callback_guard(handler, event, data):
         now = asyncio.get_running_loop().time()
         if len(callback_events) > 4096:
@@ -690,7 +709,7 @@ def build_router(
         recent = [stamp for stamp in callback_events.get(uid, []) if stamp > now - 60]
         callback_events[uid] = recent
         if len(recent) >= 40:
-            await event.answer("Слишком много запросов. Подождите немного.")
+            await safe_callback_answer(event, "Слишком много запросов. Подождите немного.")
             return
         recent.append(now)
         try:
@@ -1360,20 +1379,20 @@ def build_router(
 
     @router.callback_query(F.data == "home")
     async def home_callback(callback: CallbackQuery) -> None:
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await show_home(callback.message, callback.from_user)
 
 
     @router.callback_query(F.data == "menu:profile")
     async def menu_profile(callback: CallbackQuery) -> None:
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await show_profile(callback.message, callback.from_user)
 
     @router.callback_query(F.data == "menu:connect")
     async def menu_connect(callback: CallbackQuery) -> None:
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await show_subscription(callback.message, callback.from_user)
 
@@ -1517,7 +1536,7 @@ def build_router(
 
     @router.callback_query(F.data == "menu:terms")
     async def menu_terms(callback: CallbackQuery) -> None:
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await send_screen(
                 callback.message,
@@ -1528,7 +1547,7 @@ def build_router(
 
     @router.callback_query(F.data == "menu:info")
     async def menu_info(callback: CallbackQuery) -> None:
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if not callback.message:
             return
 
@@ -1586,7 +1605,7 @@ def build_router(
 
     @router.callback_query(F.data == "menu:support")
     async def menu_support(callback: CallbackQuery) -> None:
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             e = emoji.icon(6, pack=PACK_NEWS)
             await send_screen(
@@ -1600,7 +1619,7 @@ def build_router(
 
     @router.callback_query(F.data == "support:new")
     async def support_new(callback: CallbackQuery) -> None:
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if not callback.message:
             return
         await db.set_support_session(int(callback.from_user.id), "new")
@@ -1616,18 +1635,18 @@ def build_router(
     @router.callback_query(F.data.startswith("support:reply:"))
     async def support_reply_start(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         raw = callback.data.rsplit(":", 1)[-1]
         if not raw.isdigit():
-            await callback.answer("Некорректное обращение", show_alert=True)
+            await safe_callback_answer(callback, "Некорректное обращение", show_alert=True)
             return
         ticket = await db.get_support_ticket(int(raw), is_admin=True)
         if not ticket or ticket.get("status") == "closed":
-            await callback.answer("Обращение не найдено", show_alert=True)
+            await safe_callback_answer(callback, "Обращение не найдено", show_alert=True)
             return
         await db.set_support_session(int(callback.from_user.id), "admin_reply", int(raw))
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await callback.message.answer(
                 f"Ответ на обращение <b>#{int(raw)}</b>. "
@@ -1658,35 +1677,35 @@ def build_router(
             kb.row(*nav)
         kb.row(blue_inline_button("Новое обращение", callback_data="support:new"))
         kb.row(blue_inline_button("Назад", callback_data="menu:support", premium_icon=False))
-        await callback.answer()
+        await safe_callback_answer(callback, )
         await send_screen(callback.message, callback.from_user, "\n".join(lines) if tickets else "<b>Мои обращения</b>\n\nОбращений пока нет.", reply_markup=kb.as_markup())
 
     @router.callback_query(F.data.startswith("support:view:"))
     async def support_view(callback: CallbackQuery) -> None:
         raw = callback.data.rsplit(":", 1)[-1]
         if not raw.isdigit() or not callback.message:
-            await callback.answer("Некорректное обращение", show_alert=True)
+            await safe_callback_answer(callback, "Некорректное обращение", show_alert=True)
             return
         admin = await has_admin_access(callback.from_user.id)
         ticket = await db.get_support_ticket(int(raw), owner_id=callback.from_user.id, is_admin=admin)
         if not ticket:
-            await callback.answer("Обращение не найдено", show_alert=True)
+            await safe_callback_answer(callback, "Обращение не найдено", show_alert=True)
             return
-        await callback.answer()
+        await safe_callback_answer(callback, )
         await show_support_ticket(callback.message, callback.from_user, int(raw), admin=admin)
 
     @router.callback_query(F.data.startswith("support:write:"))
     async def support_write(callback: CallbackQuery) -> None:
         raw = callback.data.rsplit(":", 1)[-1]
         if not raw.isdigit():
-            await callback.answer("Некорректное обращение", show_alert=True)
+            await safe_callback_answer(callback, "Некорректное обращение", show_alert=True)
             return
         ticket = await db.get_support_ticket(int(raw), owner_id=callback.from_user.id)
         if not ticket or ticket.get("status") == "closed":
-            await callback.answer("Обращение закрыто", show_alert=True)
+            await safe_callback_answer(callback, "Обращение закрыто", show_alert=True)
             return
         await db.set_support_session(callback.from_user.id, "user_reply", int(raw))
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await callback.message.answer(f"Напишите сообщение в обращение #{raw}. Можно отправить текст, фото или видео.")
 
@@ -1694,64 +1713,64 @@ def build_router(
     async def support_close(callback: CallbackQuery) -> None:
         raw = callback.data.rsplit(":", 1)[-1]
         if not raw.isdigit():
-            await callback.answer("Некорректное обращение", show_alert=True)
+            await safe_callback_answer(callback, "Некорректное обращение", show_alert=True)
             return
         admin = await has_admin_access(callback.from_user.id)
         ticket = await db.set_support_status(int(raw), "closed", callback.from_user.id, is_admin=admin)
         if not ticket:
-            await callback.answer("Обращение не найдено", show_alert=True)
+            await safe_callback_answer(callback, "Обращение не найдено", show_alert=True)
             return
         await db.clear_support_session(callback.from_user.id)
-        await callback.answer("Обращение закрыто")
+        await safe_callback_answer(callback, "Обращение закрыто")
         if callback.message:
             await show_support_ticket(callback.message, callback.from_user, int(raw), admin=admin)
 
     @router.callback_query(F.data.startswith("support:reopen:"))
     async def support_reopen(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         raw = callback.data.rsplit(":", 1)[-1]
         if not raw.isdigit():
-            await callback.answer("Некорректное обращение", show_alert=True)
+            await safe_callback_answer(callback, "Некорректное обращение", show_alert=True)
             return
         ticket = await db.set_support_status(int(raw), "open", callback.from_user.id, is_admin=True)
-        await callback.answer("Обращение переоткрыто" if ticket else "Обращение не найдено")
+        await safe_callback_answer(callback, "Обращение переоткрыто" if ticket else "Обращение не найдено")
         if ticket and callback.message:
             await show_support_ticket(callback.message, callback.from_user, int(raw), admin=True)
 
     @router.callback_query(F.data.startswith("support:deleteconfirm:"))
     async def support_delete_confirm(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         raw = callback.data.rsplit(":", 1)[-1]
         if not raw.isdigit() or not callback.message:
-            await callback.answer("Некорректное обращение", show_alert=True)
+            await safe_callback_answer(callback, "Некорректное обращение", show_alert=True)
             return
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("Удалить", callback_data=f"support:delete:{raw}"))
         kb.row(blue_inline_button("Отмена", callback_data=f"support:view:{raw}", premium_icon=False))
-        await callback.answer()
+        await safe_callback_answer(callback, )
         await send_screen(callback.message, callback.from_user, f"<b>Удалить обращение #{raw}?</b>\n\nЭто действие нельзя отменить.", reply_markup=kb.as_markup())
 
     @router.callback_query(F.data.startswith("support:delete:"))
     async def support_delete(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         raw = callback.data.rsplit(":", 1)[-1]
         if not raw.isdigit():
-            await callback.answer("Некорректное обращение", show_alert=True)
+            await safe_callback_answer(callback, "Некорректное обращение", show_alert=True)
             return
         deleted = await db.soft_delete_support_ticket(int(raw), callback.from_user.id)
-        await callback.answer("Обращение удалено" if deleted else "Обращение не найдено")
+        await safe_callback_answer(callback, "Обращение удалено" if deleted else "Обращение не найдено")
         if deleted and callback.message:
             await show_admin_support(callback.message, callback.from_user)
 
     @router.callback_query(F.data == "menu:promo")
     async def menu_promo(callback: CallbackQuery) -> None:
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if not callback.message:
             return
         kb = InlineKeyboardBuilder()
@@ -1775,7 +1794,7 @@ def build_router(
 
     @router.callback_query(F.data == "menu:friends")
     async def menu_friends(callback: CallbackQuery) -> None:
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if not callback.message:
             return
         bot_info = await callback.message.bot.get_me()
@@ -1876,7 +1895,7 @@ def build_router(
 
     @router.callback_query(F.data == "menu:devices")
     async def menu_devices(callback: CallbackQuery) -> None:
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await show_devices_panel(
                 callback.message,
@@ -1890,19 +1909,19 @@ def build_router(
             return
         user = await ensure_actor(callback.from_user)
         if not is_active(user):
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Сначала активируйте подписку.",
                 show_alert=True,
             )
             return
         if int(user.get("max_devices") or BASE_DEVICES) >= MAX_DEVICES:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "У вас уже максимум: 5 устройств.",
                 show_alert=True,
             )
             return
 
-        await callback.answer()
+        await safe_callback_answer(callback, )
         e = emoji.icon(4, pack=PACK_NEWS)
         await send_screen(
             callback.message,
@@ -1944,7 +1963,7 @@ def build_router(
 
     @router.callback_query(F.data == "menu:gift")
     async def gift_menu(callback: CallbackQuery) -> None:
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if not callback.message:
             return
         await send_screen(
@@ -1956,7 +1975,7 @@ def build_router(
 
     @router.callback_query(F.data == "plans")
     async def plans_callback(callback: CallbackQuery) -> None:
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if not callback.message:
             return
         e = emoji.icon(0, pack=PACK_NEWS)
@@ -1976,10 +1995,10 @@ def build_router(
         code = callback.data.split(":", 1)[1]
         plan = PLANS.get(code)
         if not plan:
-            await callback.answer("Тариф не найден", show_alert=True)
+            await safe_callback_answer(callback, "Тариф не найден", show_alert=True)
             return
 
-        await callback.answer()
+        await safe_callback_answer(callback, )
         e = emoji.icon(1, pack=PACK_NEWS)
         await send_screen(
             callback.message,
@@ -2008,11 +2027,11 @@ def build_router(
             return
         code = callback.data.split(":", 1)[1]
         if code not in PLANS:
-            await callback.answer("Тариф не найден", show_alert=True)
+            await safe_callback_answer(callback, "Тариф не найден", show_alert=True)
             return
 
         await db.set_support_session(callback.from_user.id, "gift", payload=code)
-        await callback.answer()
+        await safe_callback_answer(callback, )
         await send_screen(
             callback.message,
             callback.from_user,
@@ -2142,22 +2161,22 @@ def build_router(
             return
         plan = PLANS.get(code)
         if not plan:
-            await callback.answer("Тариф не найден", show_alert=True)
+            await safe_callback_answer(callback, "Тариф не найден", show_alert=True)
             return
         if not config.rollypay_enabled:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "СБП пока не настроена на этом хостинге.",
                 show_alert=True,
             )
             return
 
-        await callback.answer()
+        await safe_callback_answer(callback, )
         await ensure_actor(callback.from_user)
 
         try:
             target = await db.get_user(target_telegram_id)
         except KeyError:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Получатель больше не найден в базе.",
                 show_alert=True,
             )
@@ -2241,7 +2260,7 @@ def build_router(
     async def buy_sbp_gift(callback: CallbackQuery) -> None:
         parts = callback.data.split(":")
         if len(parts) != 3 or not parts[2].isdigit():
-            await callback.answer("Некорректный получатель", show_alert=True)
+            await safe_callback_answer(callback, "Некорректный получатель", show_alert=True)
             return
         await begin_sbp_checkout(callback, parts[1], int(parts[2]))
 
@@ -2251,25 +2270,25 @@ def build_router(
             return
         user = await ensure_actor(callback.from_user)
         if not is_active(user):
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Сначала активируйте VPN-подписку.",
                 show_alert=True,
             )
             return
         if int(user.get("max_devices") or BASE_DEVICES) >= MAX_DEVICES:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "У вас уже максимум: 5 устройств.",
                 show_alert=True,
             )
             return
         if not config.rollypay_enabled:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "СБП пока не настроена.",
                 show_alert=True,
             )
             return
 
-        await callback.answer()
+        await safe_callback_answer(callback, )
         order_id = f"device-{callback.from_user.id}-{uuid4().hex[:12]}"
         local_id = await db.create_sbp_order(
             order_id=order_id, telegram_id=callback.from_user.id,
@@ -2290,7 +2309,7 @@ def build_router(
             await db.attach_sbp_provider_payment(local_id, payment_id, pay_url)
         except (RollyPayError, KeyError, ValueError):
             await db.set_sbp_status(local_id, "create_failed")
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Не удалось создать платёж.",
                 show_alert=True,
             )
@@ -2324,13 +2343,13 @@ def build_router(
 
         plan = PLANS.get(code)
         if not plan:
-            await callback.answer("Тариф не найден", show_alert=True)
+            await safe_callback_answer(callback, "Тариф не найден", show_alert=True)
             return
 
         try:
             target = await db.get_user(target_telegram_id)
         except KeyError:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Получатель не найден в базе.",
                 show_alert=True,
             )
@@ -2376,13 +2395,13 @@ def build_router(
             )
         except Exception as exc:
             logger.exception("Stars invoice creation failed: %s", exc)
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Не удалось создать оплату Stars.",
                 show_alert=True,
             )
             return
 
-        await callback.answer()
+        await safe_callback_answer(callback, )
         kb = InlineKeyboardBuilder()
         kb.row(
             blue_inline_button(
@@ -2422,7 +2441,7 @@ def build_router(
     async def buy_stars_gift(callback: CallbackQuery) -> None:
         parts = callback.data.split(":")
         if len(parts) != 3 or not parts[2].isdigit():
-            await callback.answer("Некорректный получатель", show_alert=True)
+            await safe_callback_answer(callback, "Некорректный получатель", show_alert=True)
             return
         await begin_stars_checkout(callback, parts[1], int(parts[2]))
 
@@ -2432,13 +2451,13 @@ def build_router(
             return
         user = await ensure_actor(callback.from_user)
         if not is_active(user):
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Сначала активируйте VPN-подписку.",
                 show_alert=True,
             )
             return
         if int(user.get("max_devices") or BASE_DEVICES) >= MAX_DEVICES:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "У вас уже максимум: 5 устройств.",
                 show_alert=True,
             )
@@ -2473,13 +2492,13 @@ def build_router(
             )
         except Exception as exc:
             logger.exception("Device Stars invoice failed: %s", exc)
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Не удалось создать оплату Stars.",
                 show_alert=True,
             )
             return
 
-        await callback.answer()
+        await safe_callback_answer(callback, )
         kb = InlineKeyboardBuilder()
         kb.row(
             blue_inline_button(
@@ -2756,13 +2775,13 @@ def build_router(
         payment_id = callback.data.split(":", 1)[1]
         local = await db.get_sbp_payment(payment_id)
         if not local or int(local["telegram_id"]) != callback.from_user.id:
-            await callback.answer("Платёж не найден", show_alert=True)
+            await safe_callback_answer(callback, "Платёж не найден", show_alert=True)
             return
 
         try:
             remote = await get_payment(config, payment_id)
         except RollyPayError:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Не удалось проверить платёж. Попробуйте ещё раз.",
                 show_alert=True,
             )
@@ -2788,7 +2807,7 @@ def build_router(
             and remote_amount == Decimal(int(local["amount_rub"]))
         )
         if not matches:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Данные платежа не совпали.",
                 show_alert=True,
             )
@@ -2799,7 +2818,7 @@ def build_router(
                 fresh = await db.settle_sbp_payment(payment_id)
             except ValueError as exc:
                 logger.error("Paid SBP order requires review: %s", type(exc).__name__)
-                await callback.answer(
+                await safe_callback_answer(callback, 
                     "Оплата получена, но требует проверки. Напишите в поддержку.",
                     show_alert=True,
                 )
@@ -2816,12 +2835,12 @@ def build_router(
                         callback.from_user.id
                     )
                     if updated is None:
-                        await callback.answer(
+                        await safe_callback_answer(callback, 
                             "Оплата получена, но слот не добавлен. Напишите в поддержку.",
                             show_alert=True,
                         )
                         return
-                await callback.answer("Оплата получена · +1 устройство")
+                await safe_callback_answer(callback, "Оплата получена · +1 устройство")
                 await show_devices_panel(
                     callback.message,
                     callback.from_user,
@@ -2838,7 +2857,7 @@ def build_router(
                     payment_event_key=f"sbp:{payment_id}",
                 )
 
-            await callback.answer("Оплата получена")
+            await safe_callback_answer(callback, "Оплата получена")
 
             if target_id == callback.from_user.id:
                 await show_profile(callback.message, callback.from_user)
@@ -2868,12 +2887,12 @@ def build_router(
 
         await db.set_sbp_status(payment_id, status or "processing")
         if status in {"canceled", "expired", "refunded", "chargeback"}:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Этот платёж больше не активен.",
                 show_alert=True,
             )
         else:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Оплата пока не подтверждена.",
                 show_alert=True,
             )
@@ -3573,27 +3592,27 @@ def build_router(
     @router.callback_query(F.data == "admin:home")
     async def admin_home(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await show_admin(callback.message, callback.from_user)
 
     @router.callback_query(F.data == "admin:stats")
     async def admin_stats_callback(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await show_admin_stats(callback.message, callback.from_user)
 
     @router.callback_query(F.data.regexp(r"^admin:users(?::\d+)?$"))
     async def admin_users_callback(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             parts = callback.data.split(":")
             page = int(parts[2]) if len(parts) == 3 and parts[2].isdigit() else 0
@@ -3602,19 +3621,19 @@ def build_router(
     @router.callback_query(F.data == "admin:usersearch")
     async def admin_user_search(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         await db.set_support_session(callback.from_user.id, "admin_search")
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await callback.message.answer("Отправьте Telegram ID или @username.")
 
     @router.callback_query(F.data.startswith("admin:support"))
     async def admin_support_callback(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             parts = callback.data.split(":")
             status = parts[2] if len(parts) > 2 else "all"
@@ -3624,66 +3643,66 @@ def build_router(
     @router.callback_query(F.data == "admin:payments")
     async def admin_payments_callback(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await show_admin_payments(callback.message, callback.from_user)
 
     @router.callback_query(F.data == "admin:bonuses")
     async def admin_bonuses_callback(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Нужна полная админка.",
                 show_alert=True,
             )
             return
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await show_admin_bonuses(callback.message, callback.from_user)
 
     @router.callback_query(F.data == "admin:system")
     async def admin_system_callback(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Нужна полная админка.",
                 show_alert=True,
             )
             return
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await show_admin_system(callback.message, callback.from_user)
 
     @router.callback_query(F.data == "admin:admins")
     async def admin_admins_callback(callback: CallbackQuery) -> None:
         if not is_owner(callback.from_user.id):
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Управление администраторами доступно только владельцу.",
                 show_alert=True,
             )
             return
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await show_admin_admins(callback.message, callback.from_user)
 
     @router.callback_query(F.data.startswith("admin:user:"))
     async def admin_user_callback(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         if not callback.message:
             return
         raw = callback.data.rsplit(":", 1)[-1]
         if not raw.isdigit():
-            await callback.answer("Некорректный ID", show_alert=True)
+            await safe_callback_answer(callback, "Некорректный ID", show_alert=True)
             return
-        await callback.answer()
+        await safe_callback_answer(callback, )
         await show_admin_user(callback.message, callback.from_user, int(raw))
 
     @router.callback_query(F.data.startswith("admin:role:"))
     async def admin_role_callback(callback: CallbackQuery) -> None:
         if not is_owner(callback.from_user.id):
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Выдавать админки может только владелец.",
                 show_alert=True,
             )
@@ -3693,13 +3712,13 @@ def build_router(
 
         parts = callback.data.split(":")
         if len(parts) != 4 or not parts[2].isdigit():
-            await callback.answer("Некорректные данные", show_alert=True)
+            await safe_callback_answer(callback, "Некорректные данные", show_alert=True)
             return
 
         telegram_id = int(parts[2])
         role = parts[3]
         if telegram_id in config.admin_ids:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Доступ владельца нельзя изменить из панели.",
                 show_alert=True,
             )
@@ -3708,7 +3727,7 @@ def build_router(
         try:
             await db.get_user(telegram_id)
         except KeyError:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Пользователь ещё не запускал бота.",
                 show_alert=True,
             )
@@ -3716,20 +3735,20 @@ def build_router(
 
         if role == "remove":
             await db.remove_admin_role(telegram_id)
-            await callback.answer("Админка забрана")
+            await safe_callback_answer(callback, "Админка забрана")
         elif role in {"full", "limited"}:
             await db.set_admin_role(
                 telegram_id=telegram_id,
                 role=role,
                 granted_by=callback.from_user.id,
             )
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Выдана полная админка"
                 if role == "full"
                 else "Выдана ограниченная админка"
             )
         else:
-            await callback.answer("Неизвестная роль", show_alert=True)
+            await safe_callback_answer(callback, "Неизвестная роль", show_alert=True)
             return
 
         await show_admin_user(
@@ -3741,11 +3760,11 @@ def build_router(
     @router.callback_query(F.data.startswith("admin:grantmenu:"))
     async def admin_grant_menu(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         raw = callback.data.rsplit(":", 1)[-1]
         if not raw.isdigit() or not callback.message:
-            await callback.answer("Некорректный пользователь", show_alert=True)
+            await safe_callback_answer(callback, "Некорректный пользователь", show_alert=True)
             return
         uid = int(raw)
         kb = InlineKeyboardBuilder()
@@ -3754,17 +3773,17 @@ def build_router(
         kb.adjust(2)
         kb.row(blue_inline_button("Ввести вручную", callback_data=f"admin:manualdays:{uid}:grant"))
         kb.row(blue_inline_button("Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
-        await callback.answer()
+        await safe_callback_answer(callback, )
         await send_screen(callback.message, callback.from_user, "<b>Выдать подписку</b>\n\nВыберите срок.", reply_markup=kb.as_markup())
 
     @router.callback_query(F.data.startswith("admin:daysmenu:"))
     async def admin_days_menu(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         parts = callback.data.split(":")
         if len(parts) != 4 or not parts[2].isdigit() or parts[3] not in {"add", "sub"} or not callback.message:
-            await callback.answer("Некорректная команда", show_alert=True)
+            await safe_callback_answer(callback, "Некорректная команда", show_alert=True)
             return
         uid, action = int(parts[2]), parts[3]
         kb = InlineKeyboardBuilder()
@@ -3773,73 +3792,73 @@ def build_router(
         kb.adjust(3)
         kb.row(blue_inline_button("Ввести вручную", callback_data=f"admin:manualdays:{uid}:{action}"))
         kb.row(blue_inline_button("Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
-        await callback.answer()
+        await safe_callback_answer(callback, )
         title = "Добавить дни" if action == "add" else "Списать дни"
         await send_screen(callback.message, callback.from_user, f"<b>{title}</b>", reply_markup=kb.as_markup())
 
     @router.callback_query(F.data.startswith("admin:manualdays:"))
     async def admin_manual_days(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         parts = callback.data.split(":")
         if len(parts) != 4 or not parts[2].isdigit() or parts[3] not in {"grant", "add", "sub"}:
-            await callback.answer("Некорректная команда", show_alert=True)
+            await safe_callback_answer(callback, "Некорректная команда", show_alert=True)
             return
         await db.set_support_session(callback.from_user.id, "admin_days", payload=f"{parts[2]}:{parts[3]}")
-        await callback.answer()
+        await safe_callback_answer(callback, )
         if callback.message:
             await callback.message.answer("Отправьте целое количество дней от 1 до 3650.")
 
     @router.callback_query(F.data.startswith("admin:adjust:"))
     async def admin_adjust_days(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         parts = callback.data.split(":")
         if len(parts) != 5 or not parts[2].isdigit() or parts[3] not in {"add", "sub"} or not parts[4].isdigit():
-            await callback.answer("Некорректная команда", show_alert=True)
+            await safe_callback_answer(callback, "Некорректная команда", show_alert=True)
             return
         uid, days = int(parts[2]), int(parts[4])
         if days not in {1, 3, 7, 14, 30}:
-            await callback.answer("Некорректный срок", show_alert=True)
+            await safe_callback_answer(callback, "Некорректный срок", show_alert=True)
             return
+        await safe_callback_answer(callback, "Обновляю срок…")
         updated = await db.adjust_subscription_days(uid, days if parts[3] == "add" else -days)
         await sync_device_limit(updated)
-        await callback.answer("Срок обновлён")
         if callback.message:
             await show_admin_user(callback.message, callback.from_user, uid)
 
     @router.callback_query(F.data.startswith("admin:adjustconfirmed:"))
     async def admin_adjust_days_confirmed(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         parts = callback.data.split(":")
         if (
             len(parts) != 5 or not parts[2].isdigit()
             or parts[3] != "sub" or not parts[4].isdigit()
         ):
-            await callback.answer("Некорректная команда", show_alert=True)
+            await safe_callback_answer(callback, "Некорректная команда", show_alert=True)
             return
         uid, days = int(parts[2]), int(parts[4])
         if not 31 <= days <= 3650:
-            await callback.answer("Некорректный срок", show_alert=True)
+            await safe_callback_answer(callback, "Некорректный срок", show_alert=True)
             return
+        await safe_callback_answer(callback, "Обновляю срок…")
         updated = await db.adjust_subscription_days(uid, -days)
         await sync_device_limit(updated)
-        await callback.answer("Срок обновлён")
         if callback.message:
             await show_admin_user(callback.message, callback.from_user, uid)
 
     @router.callback_query(F.data.startswith("admin:devicemenu:"))
     async def admin_device_menu(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         raw = callback.data.rsplit(":", 1)[-1]
         if not raw.isdigit() or not callback.message:
-            await callback.answer("Некорректный пользователь", show_alert=True)
+            await safe_callback_answer(callback, "Некорректный пользователь", show_alert=True)
             return
         uid = int(raw)
         kb = InlineKeyboardBuilder()
@@ -3847,63 +3866,63 @@ def build_router(
             kb.button(text=str(limit), callback_data=f"admin:setdevice:{uid}:{limit}")
         kb.adjust(3)
         kb.row(blue_inline_button("Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
-        await callback.answer()
+        await safe_callback_answer(callback, )
         await send_screen(callback.message, callback.from_user, "<b>Лимит устройств</b>\n\nВыберите значение от 1 до 5.", reply_markup=kb.as_markup())
 
     @router.callback_query(F.data.startswith("admin:setdevice:"))
     async def admin_set_device(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         parts = callback.data.split(":")
         if len(parts) != 4 or not parts[2].isdigit() or not parts[3].isdigit():
-            await callback.answer("Некорректное значение", show_alert=True)
+            await safe_callback_answer(callback, "Некорректное значение", show_alert=True)
             return
         uid, limit = int(parts[2]), int(parts[3])
         if not 1 <= limit <= 5:
-            await callback.answer("Допустимо от 1 до 5", show_alert=True)
+            await safe_callback_answer(callback, "Допустимо от 1 до 5", show_alert=True)
             return
+        await safe_callback_answer(callback, "Обновляю лимит…")
         updated = await db.set_device_limit(uid, limit)
         await sync_device_limit(updated)
-        await callback.answer("Лимит обновлён")
         if callback.message:
             await show_admin_user(callback.message, callback.from_user, uid)
 
     @router.callback_query(F.data.startswith("admin:revokeconfirm:"))
     async def admin_revoke_confirm(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         raw = callback.data.rsplit(":", 1)[-1]
         if not raw.isdigit() or not callback.message:
-            await callback.answer("Некорректный пользователь", show_alert=True)
+            await safe_callback_answer(callback, "Некорректный пользователь", show_alert=True)
             return
         uid = int(raw)
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("Отключить", callback_data=f"admin:revoke:{uid}"))
         kb.row(blue_inline_button("Отмена", callback_data=f"admin:user:{uid}", premium_icon=False))
-        await callback.answer()
+        await safe_callback_answer(callback, )
         await send_screen(callback.message, callback.from_user, f"<b>Отключить подписку?</b>\n\nПользователь <code>{uid}</code> потеряет доступ.", reply_markup=kb.as_markup())
 
     @router.callback_query(F.data.startswith("admin:revoke:"))
     async def admin_revoke(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
-            await callback.answer("Нет доступа", show_alert=True)
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         raw = callback.data.rsplit(":", 1)[-1]
         if not raw.isdigit():
-            await callback.answer("Некорректный пользователь", show_alert=True)
+            await safe_callback_answer(callback, "Некорректный пользователь", show_alert=True)
             return
         uid = int(raw)
         await db.revoke_subscription(uid)
-        await callback.answer("Подписка отключена")
+        await safe_callback_answer(callback, "Подписка отключена")
         if callback.message:
             await show_admin_user(callback.message, callback.from_user, uid)
 
     @router.callback_query(F.data.startswith("admin:device:"))
     async def admin_device_callback(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Нужна полная админка.",
                 show_alert=True,
             )
@@ -3913,7 +3932,7 @@ def build_router(
 
         parts = callback.data.split(":")
         if len(parts) != 4 or not parts[2].isdigit():
-            await callback.answer("Некорректная команда", show_alert=True)
+            await safe_callback_answer(callback, "Некорректная команда", show_alert=True)
             return
 
         telegram_id = int(parts[2])
@@ -3921,14 +3940,14 @@ def build_router(
         try:
             current = await db.get_user(telegram_id)
         except KeyError:
-            await callback.answer("Пользователь не найден", show_alert=True)
+            await safe_callback_answer(callback, "Пользователь не найден", show_alert=True)
             return
 
         current_limit = int(current.get("max_devices") or BASE_DEVICES)
 
         if action == "add":
             if current_limit >= MAX_DEVICES:
-                await callback.answer(
+                await safe_callback_answer(callback, 
                     "Уже максимум: 5 устройств.",
                     show_alert=True,
                 )
@@ -3940,7 +3959,7 @@ def build_router(
             success_text = "+1 устройство выдано"
         elif action == "remove":
             if current_limit <= BASE_DEVICES:
-                await callback.answer(
+                await safe_callback_answer(callback, 
                     "Нельзя опустить ниже 1 устройства.",
                     show_alert=True,
                 )
@@ -3948,18 +3967,18 @@ def build_router(
             updated = await db.revoke_extra_device(telegram_id)
             success_text = "−1 устройство"
         else:
-            await callback.answer("Неизвестное действие", show_alert=True)
+            await safe_callback_answer(callback, "Неизвестное действие", show_alert=True)
             return
 
         if not updated:
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Не удалось изменить лимит.",
                 show_alert=True,
             )
             return
 
+        await safe_callback_answer(callback, success_text)
         await sync_device_limit(updated)
-        await callback.answer(success_text)
         await show_admin_user(
             callback.message,
             callback.from_user,
@@ -3969,7 +3988,7 @@ def build_router(
     @router.callback_query(F.data.startswith("admin:grant:"))
     async def admin_grant_callback(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
-            await callback.answer(
+            await safe_callback_answer(callback, 
                 "Нужна полная админка.",
                 show_alert=True,
             )
@@ -3979,20 +3998,21 @@ def build_router(
 
         parts = callback.data.split(":")
         if len(parts) != 4 or not parts[2].isdigit() or not parts[3].isdigit():
-            await callback.answer("Некорректная команда", show_alert=True)
+            await safe_callback_answer(callback, "Некорректная команда", show_alert=True)
             return
 
         telegram_id = int(parts[2])
         days = int(parts[3])
         if days not in {7, 30, 90, 180, 365}:
-            await callback.answer("Некорректный срок", show_alert=True)
+            await safe_callback_answer(callback, "Некорректный срок", show_alert=True)
             return
         try:
             await db.get_user(telegram_id)
         except KeyError:
-            await callback.answer("Пользователь не найден", show_alert=True)
+            await safe_callback_answer(callback, "Пользователь не найден", show_alert=True)
             return
 
+        await safe_callback_answer(callback, f"Добавляю {days} дней…")
         user = await db.extend_subscription(
             telegram_id=telegram_id,
             days=days,
@@ -4009,7 +4029,6 @@ def build_router(
             )
 
         await notify_subscription_granted(callback.message.bot, user, days)
-        await callback.answer(f"Добавлено {days} дней")
         await show_admin_user(
             callback.message,
             callback.from_user,
