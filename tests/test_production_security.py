@@ -4,7 +4,7 @@ import hmac
 import json
 import time
 from dataclasses import replace
-from datetime import timedelta
+from datetime import timedelta, timezone
 from types import SimpleNamespace
 from urllib.parse import urlencode
 from unittest.mock import AsyncMock
@@ -13,6 +13,7 @@ import aiosqlite
 import pytest
 from aiohttp import ClientSession, web
 
+from app import notify_admins_restarted
 from config import Config
 from db import Database, utcnow, from_iso
 from miniapp import MiniAppServer, validate_init_data
@@ -369,6 +370,40 @@ def test_reply_keyboard_navigation_replaces_screen_and_removes_button_message(tm
         assert sent_markup.inline_keyboard[-1][0].text == 'Назад'
         assert sent_markup.inline_keyboard[-1][0].callback_data == 'home'
         assert (await db.get_user(42))['last_menu_message_id'] == 88
+
+    asyncio.run(run())
+
+
+def test_restart_notice_is_sent_once_to_all_admins():
+    async def run():
+        bot = SimpleNamespace(send_message=AsyncMock())
+        db = SimpleNamespace(
+            list_admin_roles=AsyncMock(
+                return_value=[
+                    {"telegram_id": 2, "role": "full"},
+                    {"telegram_id": 3, "role": "limited"},
+                ]
+            )
+        )
+        config = SimpleNamespace(
+            admin_ids=(1, 2),
+            display_tz=timezone.utc,
+        )
+        provider = SimpleNamespace(service_ready=True)
+
+        await notify_admins_restarted(bot, config, db, provider)
+
+        recipients = [
+            call.kwargs["chat_id"]
+            for call in bot.send_message.await_args_list
+        ]
+        assert recipients == [1, 2, 3]
+        assert all(
+            "MGN VPN перезапущен" in call.kwargs["text"]
+            and "Бот:</b> запущен" in call.kwargs["text"]
+            and "Mini App:</b> запущен" in call.kwargs["text"]
+            for call in bot.send_message.await_args_list
+        )
 
     asyncio.run(run())
 
