@@ -683,7 +683,7 @@ def build_router(
     async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> bool:
         """Answer Telegram callbacks without crashing on an expired query id."""
         try:
-            await safe_callback_answer(callback, *args, **kwargs)
+            await callback.answer(*args, **kwargs)
             return True
         except TelegramBadRequest as exc:
             error_text = str(exc).lower()
