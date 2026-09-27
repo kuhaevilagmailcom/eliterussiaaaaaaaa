@@ -46,10 +46,13 @@ def test_canonical_config_and_back(monkeypatch):
     assert config.vpn_sub_base_url == 'https://mgnvpn.ru/sub'
     assert config.admin_ids == ()
     buttons = connection_keyboard('https://mgnvpn.ru/sub/'+'a'*32).inline_keyboard
-    assert len(buttons) == 3
+    assert len(buttons) == 5
     assert buttons[0][0].url == 'https://mgnvpn.ru/client/happ/'+'a'*32
-    assert buttons[2][0].text == 'Назад'
-    assert buttons[2][0].icon_custom_emoji_id is None
+    assert buttons[1][0].copy_text.text == 'https://mgnvpn.ru/sub/'+'a'*32
+    assert buttons[2][0].callback_data == 'plans'
+    assert buttons[3][0].callback_data == 'menu:devices'
+    assert buttons[4][0].text == 'Назад'
+    assert buttons[4][0].icon_custom_emoji_id is None
 
 
 def test_main_reply_keyboard_has_only_vpn_and_home():
