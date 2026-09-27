@@ -57,6 +57,39 @@ PACK_UI = "TgAndroidIcons"
 PACK_PROGRESS = "progressBarEmoji"
 PACK_NEWS = "NewsEmoji"
 
+REPLY_NAVIGATION_TEXTS = frozenset(
+    {
+        "Главное",
+        "Главное меню",
+        "🏠 Главное",
+        "🏠 Главное меню",
+        "Подключить VPN",
+        "Подключиться",
+        "🔗 Подключить VPN",
+        "🔗 Подключиться",
+        "Купить VPN",
+        "Продлить VPN",
+        "💳 Купить VPN",
+        "Профиль",
+        "👤 Профиль",
+        "Рефералы",
+        "Друзья",
+        "Пригласить друга",
+        "👥 Друзья",
+        "👥 Пригласить друга",
+        "Поддержка",
+        "Помощь",
+        "🆘 Поддержка",
+        "🆘 Помощь",
+        "Устройства",
+        "📱 Устройства",
+        "Информация",
+        "ℹ️ Информация",
+        "Админ-панель",
+        "🛡 Админ-панель",
+    }
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -1011,6 +1044,22 @@ def build_router(
         recover_on_edit_failure: bool = False,
         force_new: bool = False,
     ) -> Message:
+        # A ReplyKeyboard tap posts a regular user message. Move the tracked
+        # bot screen to the bottom and remove that navigation message so the
+        # chat continues to look like one compact interface.
+        if str(getattr(message, "text", "") or "").strip() in REPLY_NAVIGATION_TEXTS:
+            force_new = True
+            try:
+                await message.bot.delete_message(
+                    chat_id=message.chat.id,
+                    message_id=message.message_id,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Could not remove reply navigation message for %s: %s",
+                    actor.id,
+                    type(exc).__name__,
+                )
         # Serialize all UI mutations per user. This prevents double taps or
         # repeated /start commands from creating multiple bot menu messages.
         async with get_ui_lock(int(actor.id)):

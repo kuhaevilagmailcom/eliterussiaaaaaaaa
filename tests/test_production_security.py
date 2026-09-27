@@ -224,6 +224,38 @@ def test_admin_grant_notifies_recipient_with_devices_and_connect_button(tmp_path
     asyncio.run(run())
 
 
+def test_reply_keyboard_navigation_replaces_screen_and_removes_button_message(tmp_path, monkeypatch):
+    monkeypatch.setenv('BOT_TOKEN', TOKEN)
+
+    async def run():
+        config = replace(Config.from_env(), db_path=str(tmp_path/'reply-navigation.db'))
+        db = Database(config.db_path)
+        await db.init()
+        await db.ensure_user(42, 'user', 'User')
+        await db.set_last_menu_message(42, 77)
+        bot = SimpleNamespace(
+            delete_message=AsyncMock(),
+            send_photo=AsyncMock(return_value=SimpleNamespace(message_id=88)),
+        )
+        actor = SimpleNamespace(id=42, username='user', first_name='User')
+        message = SimpleNamespace(
+            from_user=actor,
+            bot=bot,
+            chat=SimpleNamespace(id=42),
+            message_id=55,
+            text='Профиль',
+        )
+        router = build_router(config, db, EmojiBank(()), SimpleNamespace(service_ready=False))
+        handler = next(item for item in router.message.handlers if item.callback.__name__ == 'profile')
+        await handler.callback(message)
+        deleted_ids = [call.kwargs['message_id'] for call in bot.delete_message.await_args_list]
+        assert deleted_ids == [55, 77]
+        assert bot.send_photo.await_count == 1
+        assert (await db.get_user(42))['last_menu_message_id'] == 88
+
+    asyncio.run(run())
+
+
 def test_secret_logging_redacts_urls_and_values():
     formatter = SecretSafeFormatter(SimpleNamespace(bot_token='private-value', h1_api_token='secret-provider'))
     record = logging.LogRecord('test', logging.WARNING, '', 1, 'private-value secret-provider https://mgnvpn.ru/sub/private-token /client/happ/another-token', (), None)
