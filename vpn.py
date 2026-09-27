@@ -282,17 +282,38 @@ class H1CloudVpnProvider(VpnProvider):
             raise RuntimeError("H1_API_TOKEN is required for VPN_MODE=h1cloud")
 
         parsed_api = urlsplit(api_url)
-        if parsed_api.scheme != "https" and not allow_insecure:
-            raise RuntimeError("H1_API_URL must use HTTPS")
-        if not verify_ssl and not allow_insecure:
+        api_host = (parsed_api.hostname or "").lower().rstrip(".")
+        legacy_h1_http = (
+            parsed_api.scheme == "http"
+            and (api_host == "h1cloud.net" or api_host.endswith(".h1cloud.net"))
+        )
+        if parsed_api.scheme not in {"http", "https"}:
+            raise RuntimeError("H1_API_URL must use HTTP or HTTPS")
+        if parsed_api.scheme == "http" and not (allow_insecure or legacy_h1_http):
+            raise RuntimeError("Insecure H1_API_URL is allowed only for legacy *.h1cloud.net nodes")
+        if parsed_api.scheme == "https" and not verify_ssl and not allow_insecure:
             raise RuntimeError("H1 TLS verification cannot be disabled")
+
+        # Existing H1Cloud nodes used by MGN expose their panel API over plain
+        # HTTP on a dedicated port. Keep those legacy *.h1cloud.net endpoints
+        # working without forcing an extra hosting environment flag, while
+        # still rejecting arbitrary third-party HTTP endpoints.
+        effective_verify_ssl = bool(verify_ssl and parsed_api.scheme == "https")
+        if legacy_h1_http:
+            logger.warning(
+                "Legacy H1Cloud HTTP API endpoint is in use; migrate this node to HTTPS when available"
+            )
+
         self.api_url = api_url.rstrip("/")
         self.api_token = api_token
         self.subscription_template = subscription_template.strip()
         self.server_name = server_name
-        self.verify_ssl = verify_ssl
+        self.allow_insecure = bool(allow_insecure)
+        self.verify_ssl = effective_verify_ssl
         self.ssl_context: ssl.SSLContext | bool = (
-            ssl.create_default_context(cafile=ca_file or None) if verify_ssl else False
+            ssl.create_default_context(cafile=ca_file or None)
+            if effective_verify_ssl
+            else False
         )
         configured_hosts = {
             str(host).strip().lower().rstrip(".")
@@ -764,8 +785,18 @@ class H1CloudVpnProvider(VpnProvider):
 
     async def _validate_subscription_url(self, value: str) -> str:
         parsed = urlsplit(value)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        legacy_h1_http = (
+            parsed.scheme == "http"
+            and (host == "h1cloud.net" or host.endswith(".h1cloud.net"))
+        )
+        scheme_allowed = (
+            parsed.scheme == "https"
+            or self.allow_insecure
+            or legacy_h1_http
+        )
         if (
-            parsed.scheme != "https"
+            not scheme_allowed
             or not parsed.hostname
             or parsed.username
             or parsed.password
