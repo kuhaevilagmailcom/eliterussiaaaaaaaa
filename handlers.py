@@ -40,6 +40,7 @@ from catalog import (
     EXTRA_DEVICE_PRICE_RUB,
     MAX_DEVICES,
     PLANS,
+    POPULAR_PLAN_CODE,
     extra_device_price_stars,
     plan_price_rub,
     plan_price_stars,
@@ -440,7 +441,12 @@ def plans_keyboard(config: Config) -> Any:
     kb = InlineKeyboardBuilder()
     for code, plan in PLANS.items():
         savings = plan_savings_rub(code)
-        suffix = f" · выгода {savings} ₽" if savings else ""
+        labels: list[str] = []
+        if code == POPULAR_PLAN_CODE:
+            labels.append("🔥 популярный")
+        if savings:
+            labels.append(f"выгода {savings} ₽")
+        suffix = f" · {' · '.join(labels)}" if labels else ""
         kb.row(
             blue_inline_button(
                 f"💳 {plan['name']} · {plan_price_rub(config, code)} ₽{suffix}",
@@ -454,9 +460,16 @@ def plans_keyboard(config: Config) -> Any:
 def gift_plans_keyboard(config: Config) -> Any:
     kb = InlineKeyboardBuilder()
     for code, plan in PLANS.items():
+        savings = plan_savings_rub(code)
+        labels: list[str] = []
+        if code == POPULAR_PLAN_CODE:
+            labels.append("🔥 популярный")
+        if savings:
+            labels.append(f"выгода {savings} ₽")
+        suffix = f" · {' · '.join(labels)}" if labels else ""
         kb.row(
             blue_inline_button(
-                f"🎁 {plan['name']} · {plan_price_rub(config, code)} ₽",
+                f"🎁 {plan['name']} · {plan_price_rub(config, code)} ₽{suffix}",
                 callback_data=f"gift:{code}",
             )
         )
@@ -1924,7 +1937,8 @@ def build_router(
             message,
             message.from_user,
             "💳 <b>Выберите тариф</b>\n\n"
-            "В подписку входит 1 устройство. Оплата — СБП или Telegram Stars.",
+            "В подписку входит 1 устройство. Оплата — СБП или Telegram Stars.\n"
+            "<i>Если подписка уже активна, новый срок прибавится к оставшимся дням — ничего не сгорит.</i>",
             reply_markup=plans_keyboard(config),
         )
 
@@ -1950,7 +1964,8 @@ def build_router(
             callback.message,
             callback.from_user,
             "💳 <b>Выберите тариф</b>\n\n"
-            "В подписку входит 1 устройство. Оплата — СБП или Telegram Stars.",
+            "В подписку входит 1 устройство. Оплата — СБП или Telegram Stars.\n"
+            "<i>Если подписка уже активна, новый срок прибавится к оставшимся дням — ничего не сгорит.</i>",
             reply_markup=plans_keyboard(config),
         )
 
@@ -1969,16 +1984,19 @@ def build_router(
         await send_screen(
             callback.message,
             callback.from_user,
-            f"{e} <b>{plan['name']}</b>\n\n"
-            f"📱 Включено устройств — <b>1</b>\n"
-            f"🏦 <b>{plan_price_rub(config, code)} ₽</b> · СБП\n"
-            f"⭐ <b>{plan_price_stars(config, code)} Stars</b>\n"
+            f"{e} <b>{plan['name']}</b>"
+            + (" · 🔥 <b>Популярный</b>" if code == POPULAR_PLAN_CODE else "")
+            + "\n\n"
+            + f"📱 Включено устройств — <b>1</b>\n"
+            + f"🏦 <b>{plan_price_rub(config, code)} ₽</b> · СБП\n"
+            + f"⭐ <b>{plan_price_stars(config, code)} Stars</b>\n"
             + (
-                f"🔥 Выгода — <b>{plan_savings_rub(code)} ₽</b>\n"
+                f"💰 Выгода — <b>{plan_savings_rub(code)} ₽</b>\n"
                 if plan_savings_rub(code)
                 else ""
             )
             + "\n"
+            + "<i>Если у вас уже есть подписка, оплаченные дни добавятся к текущему сроку и не сгорят.</i>\n\n"
             + f"Дополнительное устройство — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>. "
             f"Максимум — <b>{MAX_DEVICES}</b>.",
             reply_markup=payment_methods_keyboard(config, code),
@@ -2039,9 +2057,13 @@ def build_router(
             message.from_user,
             "🎁 <b>Подарочная подписка</b>\n\n"
             f"Получатель — <b>{label}</b>\n"
-            f"Тариф — <b>{plan['name']}</b>\n"
-            f"🏦 {plan_price_rub(config, code)} ₽\n"
-            f"⭐ {plan_price_stars(config, code)} Stars\n\n"
+            f"Тариф — <b>{plan['name']}</b>"
+            + (" · 🔥 <b>Популярный</b>" if code == POPULAR_PLAN_CODE else "")
+            + "\n"
+            + f"🏦 {plan_price_rub(config, code)} ₽\n"
+            + f"⭐ {plan_price_stars(config, code)} Stars\n"
+            + (f"💰 Выгода — <b>{plan_savings_rub(code)} ₽</b>\n" if plan_savings_rub(code) else "")
+            + "\n"
             "Выберите способ оплаты.",
             reply_markup=payment_methods_keyboard(
                 config,
