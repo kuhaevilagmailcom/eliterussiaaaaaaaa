@@ -139,6 +139,44 @@ def test_referrer_assignment_rejects_self_and_is_race_safe(tmp_path):
     run(scenario())
 
 
+def test_paid_tariff_switch_stacks_days_instead_of_replacing_them(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "stacked-tariffs.sqlite3"))
+        await db.init()
+        await db.ensure_user(200, "stack", "Stack")
+
+        await db.create_sbp_payment(
+            payment_id="week",
+            order_id="order-week",
+            telegram_id=200,
+            target_telegram_id=200,
+            plan_code="7",
+            amount_rub=49,
+            original_amount_rub=49,
+        )
+        assert await db.settle_sbp_payment("week")
+        after_week = from_iso((await db.get_user(200))["subscription_until"])
+
+        await db.create_sbp_payment(
+            payment_id="month",
+            order_id="order-month",
+            telegram_id=200,
+            target_telegram_id=200,
+            plan_code="30",
+            amount_rub=99,
+            original_amount_rub=99,
+        )
+        assert await db.settle_sbp_payment("month")
+        user = await db.get_user(200)
+        after_month = from_iso(user["subscription_until"])
+
+        assert after_week is not None and after_month is not None
+        assert after_month >= after_week + timedelta(days=30)
+        assert user["plan_name"] == "1 месяц"
+
+    run(scenario())
+
+
 def test_star_conversion_uses_single_50_to_80_rate():
     assert {
         amount: rub_to_stars(amount)
