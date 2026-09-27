@@ -14,10 +14,17 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements-dev.txt
       - run: python -m compileall -q .
       - run: python -m pytest -q
+      - run: ruff check --select E9,F63,F7,F82 .
+      - run: pip-audit -r requirements.txt
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
       - run: node --check miniapp/web/app.js
+      - run: node --check miniapp/web/site/app.js
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: gitleaks/gitleaks-action@v2

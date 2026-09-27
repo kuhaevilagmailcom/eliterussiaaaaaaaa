@@ -1,0 +1,72 @@
+const { test, expect } = require('@playwright/test');
+const fs = require('fs');
+const path = require('path');
+
+const root = path.resolve(__dirname, '../..');
+const read = relative => fs.readFileSync(path.join(root, relative));
+
+async function routeFiles(page, miniApp = false) {
+  await page.route('https://telegram.org/js/telegram-web-app.js', route => route.fulfill({
+    contentType: 'application/javascript',
+    body: `window.Telegram={WebApp:{initData:'test-init-data',ready(){},expand(){},
+      setHeaderColor(){},setBackgroundColor(){},enableClosingConfirmation(){},
+      BackButton:{show(){},hide(){},onClick(){}},HapticFeedback:{impactOccurred(){},notificationOccurred(){}},
+      openLink(){},openTelegramLink(){},openInvoice(){}}};`
+  }));
+  await page.route('http://mgn.test/**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/public/catalog') return route.fulfill({ json: {
+      plans: ['7','30','90','180','365'].map((code, index) => ({code, price_rub: [59,100,349,599,1200][index]})),
+      max_devices: 5
+    }});
+    if (url.pathname === '/api/miniapp/me') return route.fulfill({ json: {
+      user: {first_name:'Тест', username:'test', telegram_id:42},
+      subscription: {active:true, plan_name:'1 месяц', until:'2027-01-01T00:00:00+00:00', days_left:30, max_devices:1},
+      vpn: {ready:true, ok:true, server:'MGN VPN', subscription_url:'https://mgn.test/sub/token', traffic_used_gb:0, traffic_limit_gb:0, devices:[]},
+      plans: [{code:'30',name:'1 месяц',days:30,devices:1,rub:100,stars:63,savings:0}],
+      payments: {sbp_enabled:true}, capabilities:{device_list:true,device_removal:false,device_reset:true},
+      clients:[], shop:{extra_device_price_rub:100,extra_device_price_stars:63,max_devices:5},
+      bot_url:'https://t.me/mgnvpn_bot'
+    }});
+    const files = miniApp ? {
+      '/app': ['miniapp/web/index.html','text/html'],
+      '/static/app.js': ['miniapp/web/app.js','application/javascript'],
+      '/static/styles.css': ['miniapp/web/styles.css','text/css'],
+      '/static/assets/lucide.min.js': ['miniapp/web/assets/lucide.min.js','application/javascript']
+    } : {
+      '/': ['miniapp/web/site/index.html','text/html'],
+      '/static/site/app.js': ['miniapp/web/site/app.js','application/javascript'],
+      '/static/site/config.js': ['miniapp/web/site/config.js','application/javascript'],
+      '/static/site/styles.css': ['miniapp/web/site/styles.css','text/css']
+    };
+    const match = files[url.pathname];
+    if (match) return route.fulfill({body:read(match[0]),contentType:match[1]});
+    return route.fulfill({status:204,body:''});
+  });
+}
+
+for (const viewport of [
+  {width:320,height:700},{width:375,height:812},{width:390,height:844},
+  {width:430,height:932},{width:768,height:1024},{width:1440,height:900}
+]) test(`public site ${viewport.width}px`, async ({page}) => {
+  const errors=[]; page.on('pageerror', error => errors.push(error.message));
+  await page.setViewportSize(viewport); await routeFiles(page); await page.goto('http://mgn.test/');
+  await expect(page.locator('[data-plan-price="30"]')).toHaveText('100 ₽');
+  await expect(page.locator('[data-bot-link]').first()).toHaveAttribute('href', /t\.me\/mgnvpn_bot/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  expect(errors).toEqual([]);
+});
+
+test('Mini App loads and navigates core screens', async ({page}) => {
+  const errors=[]; page.on('pageerror', error => errors.push(error.message));
+  await page.setViewportSize({width:390,height:844}); await routeFiles(page, true);
+  await page.goto('http://mgn.test/app');
+  await expect(page.locator('.app-shell')).toBeVisible();
+  for (const name of ['plans','profile','bonuses','support']) {
+    await page.locator('[data-nav="home"]:visible').first().click();
+    await page.locator(`[data-nav="${name}"]:visible`).first().click();
+    await expect(page.locator(`[data-page="${name}"]`)).toHaveClass(/active/);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  expect(errors).toEqual([]);
+});

@@ -2,11 +2,22 @@
   var config=window.MGN_SITE_CONFIG||{};
   var botUsername=String(config.botUsername||'mgnvpn_bot').replace(/^@/,'');
   var supportUsername=String(config.supportUsername||botUsername).replace(/^@/,'');
-  var maxDevices=Number(config.maxDevices||5);
-
-  document.querySelectorAll('[data-device-limit]').forEach(function(element){
-    element.textContent=String(maxDevices);
-  });
+  function applyCatalog(catalog){
+    var plans=Array.isArray(catalog&&catalog.plans)?catalog.plans:[];
+    var byCode={};
+    plans.forEach(function(plan){byCode[String(plan.code)]=plan;});
+    document.querySelectorAll('[data-plan-price]').forEach(function(element){
+      var plan=byCode[String(element.dataset.planPrice||'')];
+      element.textContent=plan?Number(plan.price_rub).toLocaleString('ru-RU')+' ₽':'Открыть в Telegram';
+    });
+    document.querySelectorAll('[data-device-limit]').forEach(function(element){
+      element.textContent=String(Number(catalog&&catalog.max_devices||5));
+    });
+  }
+  fetch('/api/public/catalog',{headers:{Accept:'application/json'}})
+    .then(function(response){if(!response.ok)throw new Error('catalog');return response.json();})
+    .then(applyCatalog)
+    .catch(function(){applyCatalog(null);});
 
   document.querySelectorAll('[data-bot-link]').forEach(function(link){
     link.href='https://t.me/'+botUsername+'?startapp';

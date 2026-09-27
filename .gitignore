@@ -14,3 +14,6 @@ subscription_cache/
 public_base_url.txt
 *.sqlite3-wal
 *.sqlite3-shm
+node_modules/
+test-results/
+playwright-report/

@@ -7,7 +7,7 @@
   <meta name="color-scheme" content="dark">
   <title>MGN VPN</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script src="/static/assets/lucide.min.js?v=1"></script>
   <link rel="stylesheet" href="/static/styles.css?v=19">
 </head>
 <body>
@@ -254,13 +254,12 @@
         </label>
         <button type="button" class="sheet-primary" id="supportSubmit">Создать обращение</button>
         <button type="button" class="sheet-secondary" id="supportClose" hidden>Закрыть обращение</button>
+        <button type="button" class="sheet-secondary" id="supportTelegramMedia">Отправить фото/видео в Telegram</button>
         <p class="promo-hint" id="supportResult"></p>
         <article class="notice neutral support-note">
           <span><i data-lucide="shield-check"></i></span>
           <div><b>Безопасность</b><p>Не отправляйте пароли, API-токены, коды входа и другие секреты.</p></div>
         </article>
-        <div class="page-section-head compact-head"><div><small>ПОДКЛЮЧЕНИЕ</small><h3>Happ</h3></div></div>
-        <div class="menu-list" id="clientList"></div>
       </section>
     </main>
 
@@ -294,8 +293,8 @@
     <span class="eyebrow">ДОП. УСТРОЙСТВО</span>
     <h2>+1 слот навсегда</h2>
     <p>Слот сохранится и будет добавляться к лимиту следующих подписок.</p>
-    <article class="sheet-summary"><span class="icon-box"><i data-lucide="wallet-cards"></i></span><div><small>Стоимость</small><b id="deviceSheetPrice">100 ₽</b></div><em id="deviceSheetBalance">Оплата через СБП</em></article>
-    <button type="button" class="sheet-primary" id="confirmDevicePurchase">Оплатить 100 ₽</button>
+    <article class="sheet-summary"><span class="icon-box"><i data-lucide="wallet-cards"></i></span><div><small>Стоимость</small><b id="deviceSheetPrice">—</b></div><em id="deviceSheetBalance">Оплата через СБП</em></article>
+    <button type="button" class="sheet-primary" id="confirmDevicePurchase">Купить слот</button>
   </section>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

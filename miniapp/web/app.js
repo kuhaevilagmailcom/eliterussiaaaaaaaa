@@ -422,7 +422,8 @@
     state.selectedPlan=plan;
     state.promoCode='';
     $('#sheetTitle').textContent=plan.name+' · '+Number(plan.rub).toLocaleString('ru-RU')+' ₽';
-    $('#sheetText').textContent='1 устройство включено. Дополнительный слот — 100 ₽.';
+    const extraPrice=Number(state.data?.shop?.extra_device_price_rub||0);
+    $('#sheetText').textContent='1 устройство включено. Дополнительный слот — '+extraPrice.toLocaleString('ru-RU')+' ₽.';
     $('#paymentPromoCode').value='';
     $('#paymentPromoResult').textContent='';
     $('#starsPrice').textContent=Number(plan.stars).toLocaleString('ru-RU')+' Stars';
@@ -467,6 +468,7 @@
     state.busy=true; $('#payStars').disabled=true;
     try{
       const result=await request('/api/miniapp/payment/stars',{method:'POST',body:JSON.stringify({plan_code:state.selectedPlan.code,promo_code:state.promoCode})});
+      if(result.granted){notify();toast('Подписка активирована');closeSheets();await load(true);go('home');return}
       if(tg?.openInvoice){
         tg.openInvoice(result.invoice_url,async status=>{
           if(status==='paid'){notify();toast('Подписка оплачена');closeSheets();setTimeout(()=>load(true),800)}
@@ -482,6 +484,7 @@
     state.busy=true; $('#paySbp').disabled=true;
     try{
       const result=await request('/api/miniapp/payment/sbp',{method:'POST',body:JSON.stringify({plan_code:state.selectedPlan.code,promo_code:state.promoCode})});
+      if(result.granted){notify();toast('Подписка активирована');closeSheets();await load(true);go('home');return}
       rememberPayment(result.payment_id);
       $('#checkPayment').hidden=false;
       if(tg?.openLink)tg.openLink(result.pay_url); else window.open(result.pay_url,'_blank');
@@ -721,6 +724,10 @@
   $('#supportSubmit').onclick=submitSupport;
   $('#supportNew').onclick=resetSupportComposer;
   $('#supportClose').onclick=closeSupport;
+  $('#supportTelegramMedia').onclick=()=>{
+    const url=state.data?.bot_url||'https://t.me/mgnvpn_bot';
+    try{tg?.openTelegramLink?tg.openTelegramLink(url):window.open(url,'_blank')}catch(_){window.open(url,'_blank')}
+  };
   $('#supportTickets').addEventListener('click',event=>{
     const button=event.target.closest('[data-support-id]');
     if(button)openSupportThread(Number(button.dataset.supportId));

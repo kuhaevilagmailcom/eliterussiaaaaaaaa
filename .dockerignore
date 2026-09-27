@@ -8,3 +8,10 @@ __pycache__
 .env
 *.sqlite3
 *.db
+design/
+miniapp.zip
+subscription_cache/
+backups/
+node_modules/
+test-results/
+playwright-report/
