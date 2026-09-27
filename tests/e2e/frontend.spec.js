@@ -37,15 +37,22 @@ async function routeFiles(page, miniApp = false) {
       '/static/assets/lucide.min.js': ['miniapp/web/assets/lucide.min.js','application/javascript']
     } : {
       '/': ['miniapp/web/site/index.html','text/html'],
+      '/agreement': ['miniapp/web/site/agreement.html','text/html'],
+      '/privacy': ['miniapp/web/site/privacy.html','text/html'],
       '/static/site/app.js': ['miniapp/web/site/app.js','application/javascript'],
       '/static/site/config.js': ['miniapp/web/site/config.js','application/javascript'],
-      '/static/site/styles.css': ['miniapp/web/site/styles.css','text/css']
+      '/static/site/styles.css': ['miniapp/web/site/styles.css','text/css'],
+      '/static/assets/mgn-vpn-logo.webp': ['miniapp/web/assets/mgn-vpn-logo.webp','image/webp']
     };
     const match = files[url.pathname];
     if (match) {
       var body=read(match[0]);
-      if(url.pathname==='/'&&!miniApp){
-        body=Buffer.from(body.toString().replace('{{AGREEMENT_UPDATED}}','27 сентября 2026 года').replace('{{AGREEMENT_HTML}}','<section class="agreement-part"><h3>1. Общие положения</h3><p>Условия использования MGN VPN.</p></section>'));
+      if(!miniApp){
+        body=Buffer.from(body.toString()
+          .replace('{{AGREEMENT_UPDATED}}','27 сентября 2026 года')
+          .replace('{{AGREEMENT_HTML}}','<section class="agreement-part"><h3>1. Общие положения</h3><p>Условия использования MGN VPN.</p></section>')
+          .replace('{{PRIVACY_UPDATED}}','27 сентября 2026 года')
+          .replace('{{PRIVACY_HTML}}','<section class="agreement-part"><h3>1. Общие положения</h3><p>Политика конфиденциальности MGN VPN.</p></section>'));
       }
       return route.fulfill({body,contentType:match[1]});
     }
@@ -60,9 +67,22 @@ for (const viewport of [
   const errors=[]; page.on('pageerror', error => errors.push(error.message));
   await page.setViewportSize(viewport); await routeFiles(page); await page.goto('http://mgn.test/');
   await expect(page.locator('[data-plan-price="30"]')).toHaveText('100 ₽');
+  await expect(page.locator('.logo img')).toBeVisible();
+  await expect(page.locator('main .agreement-part')).toHaveCount(0);
+  await expect(page.locator('footer a[href="/agreement"]')).toBeVisible();
   await expect(page.locator('[data-bot-link]').first()).toHaveAttribute('href', /t\.me\/mgnvpn_bot/);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   expect(errors).toEqual([]);
+});
+
+test('legal pages are separate from the landing page', async ({page}) => {
+  await page.setViewportSize({width:390,height:844}); await routeFiles(page);
+  await page.goto('http://mgn.test/agreement');
+  await expect(page.locator('h1')).toContainText('Пользовательское');
+  await expect(page.locator('.agreement-part')).toHaveCount(1);
+  await page.goto('http://mgn.test/privacy');
+  await expect(page.locator('h1')).toContainText('Политика');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
 });
 
 test('Mini App loads and navigates core screens', async ({page}) => {

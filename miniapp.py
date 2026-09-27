@@ -30,7 +30,13 @@ from catalog import (
 )
 from db import Database, from_iso, utcnow
 from payments import RollyPayError, create_payment, get_payment
-from legal import AGREEMENT_SECTIONS, AGREEMENT_UPDATED, agreement_html
+from legal import (
+    AGREEMENT_SECTIONS,
+    AGREEMENT_UPDATED,
+    PRIVACY_UPDATED,
+    agreement_html,
+    privacy_html,
+)
 from vpn import VpnProvider, VpnState, prettify_subscription_payload
 from vpn_clients import client_registry, get_client
 
@@ -452,11 +458,29 @@ class MiniAppServer:
         if not index.exists():
             raise web.HTTPNotFound(text="MGN VPN site files are missing")
         html = await asyncio.to_thread(index.read_text, encoding="utf-8")
-        html = html.replace("{{AGREEMENT_HTML}}", agreement_html())
-        html = html.replace("{{AGREEMENT_UPDATED}}", AGREEMENT_UPDATED)
         for code in PLANS:
             html = html.replace(f'<strong data-plan-price="{code}"></strong>',
                                 f'<strong data-plan-price="{code}">{plan_price_rub(self.config, code)} ₽</strong>')
+        return web.Response(text=html, content_type="text/html",
+                            headers={"Cache-Control": "public, max-age=60"})
+
+    async def agreement(self, request: web.Request) -> web.StreamResponse:
+        page = self.web_dir / "site" / "agreement.html"
+        if not page.exists():
+            raise web.HTTPNotFound(text="MGN VPN agreement is missing")
+        html = await asyncio.to_thread(page.read_text, encoding="utf-8")
+        html = html.replace("{{AGREEMENT_HTML}}", agreement_html())
+        html = html.replace("{{AGREEMENT_UPDATED}}", AGREEMENT_UPDATED)
+        return web.Response(text=html, content_type="text/html",
+                            headers={"Cache-Control": "public, max-age=60"})
+
+    async def privacy(self, request: web.Request) -> web.StreamResponse:
+        page = self.web_dir / "site" / "privacy.html"
+        if not page.exists():
+            raise web.HTTPNotFound(text="MGN VPN privacy policy is missing")
+        html = await asyncio.to_thread(page.read_text, encoding="utf-8")
+        html = html.replace("{{PRIVACY_HTML}}", privacy_html())
+        html = html.replace("{{PRIVACY_UPDATED}}", PRIVACY_UPDATED)
         return web.Response(text=html, content_type="text/html",
                             headers={"Cache-Control": "public, max-age=60"})
 
@@ -1287,6 +1311,10 @@ class MiniAppServer:
             middlewares=[security_headers],
         )
         app.router.add_get("/", self.landing)
+        app.router.add_get("/agreement", self.agreement)
+        app.router.add_get("/agreement/", self.agreement)
+        app.router.add_get("/privacy", self.privacy)
+        app.router.add_get("/privacy/", self.privacy)
         app.router.add_get("/app", self.index)
         app.router.add_get("/app/", self.index)
         # Keep old Mini App paths alive for already cached Telegram links.

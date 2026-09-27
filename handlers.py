@@ -10,7 +10,7 @@ from io import BytesIO
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import uuid4
 
 from aiogram import F, Router
@@ -1417,6 +1417,35 @@ def build_router(
     def user_agreement_text() -> str:
         return agreement_telegram()
 
+    def service_info_text() -> str:
+        return (
+            "🌐 <b>О MGN VPN</b>\n\n"
+            "💳 <b>Прозрачная оплата</b>\n"
+            "<blockquote>❤️ Никаких автосписаний и скрытых подписок. "
+            "Оплата происходит только после вашего подтверждения.</blockquote>\n\n"
+            "⚡ <b>Быстрое подключение</b>\n"
+            "<blockquote>📶 Подключение настраивается по персональной ссылке. "
+            "Доступные VPN-локации автоматически попадают в приложение.</blockquote>\n\n"
+            "🛡 <b>Приватность</b>\n"
+            "<blockquote>🔐 MGN VPN не анализирует содержимое вашего интернет-трафика. "
+            "Для работы сервиса используются только необходимые технические данные: "
+            "Telegram ID, состояние подписки, платёжные метаданные и данные подключений.</blockquote>\n\n"
+            "📚 <b>Правила сервиса</b>\n"
+            "<blockquote>ℹ️ Используя MGN VPN, вы принимаете правила сервиса. "
+            "Персональная ссылка предназначена только для вашего аккаунта, "
+            "а количество устройств ограничено выбранным лимитом.</blockquote>\n\n"
+            "🔒 <b>Защищённое соединение</b>\n"
+            "<blockquote>⚙️ VPN использует современные протоколы защищённого соединения "
+            "для передачи данных между вашим устройством и VPN-сервером.</blockquote>\n\n"
+            "🔑 <b>Ваша ссылка — ваш доступ</b>\n"
+            "<blockquote>⚠️ Не передавайте персональную ссылку другим людям. "
+            "Если она попала к постороннему, обратитесь в поддержку.</blockquote>"
+        )
+
+    def privacy_policy_url() -> str:
+        parsed = urlsplit(config.miniapp_url)
+        return urlunsplit((parsed.scheme, parsed.netloc, "/privacy", "", ""))
+
     def support_keyboard() -> Any:
         kb = InlineKeyboardBuilder()
         kb.row(
@@ -1566,8 +1595,15 @@ def build_router(
                 icon_index=8,
             )
         )
+        kb.row(
+            blue_inline_button(
+                "Политика конфиденциальности",
+                url=privacy_policy_url(),
+                icon_index=11,
+            )
+        )
         add_nav_buttons(kb, back_data="home")
-        text = user_agreement_text()
+        text = service_info_text()
         await send_screen(
             callback.message,
             callback.from_user,
@@ -2971,21 +3007,22 @@ def build_router(
 
     @router.message(F.text.in_({"ℹ️ О сервисе", "О сервисе", "ℹ️ Информация", "Информация"}))
     async def information_screen(message: Message) -> None:
-        user = await ensure_actor(message.from_user)
+        await ensure_actor(message.from_user)
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("Поддержка", callback_data="menu:support", icon_index=6))
+        kb.row(blue_inline_button("Канал", url=config.channel_url, icon_index=8))
+        kb.row(
+            blue_inline_button(
+                "Политика конфиденциальности",
+                url=privacy_policy_url(),
+                icon_index=11,
+            )
+        )
         add_nav_buttons(kb, back_data="home")
-
-        e = emoji.icon(5, pack=PACK_NEWS)
-        lines = [
-            f"{e} " + user_agreement_text(),
-        ]
-        if not is_active(user):
-            lines += ["", "Чтобы подключиться, выберите тариф или пригласите друзей."]
         await send_screen(
             message,
             message.from_user,
-            "\n".join(lines),
+            service_info_text(),
             reply_markup=kb.as_markup(),
         )
 

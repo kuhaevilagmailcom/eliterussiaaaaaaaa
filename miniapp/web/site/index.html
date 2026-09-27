@@ -9,14 +9,14 @@
   <meta property="og:description" content="VPN без лишних настроек. Откройте бота, выберите тариф и подключитесь.">
   <meta property="og:type" content="website">
   <title>MGN VPN — VPN через Telegram</title>
-  <link rel="stylesheet" href="/static/site/styles.css?v=3">
+  <link rel="stylesheet" href="/static/site/styles.css?v=4">
 </head>
 <body>
   <header class="header">
-    <a class="logo" href="#top" aria-label="MGN VPN — на главную">MGN VPN</a>
+    <a class="logo" href="#top" aria-label="MGN VPN — на главную"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"></a>
     <nav aria-label="Основная навигация">
       <a href="#plans">Тарифы</a>
-      <a href="#agreement">Соглашение</a>
+      <a href="/agreement">Соглашение</a>
     </nav>
     <a class="button button-small" data-bot-link href="#">Открыть бота</a>
   </header>
@@ -52,14 +52,6 @@
       <p class="payment-note">Оплата через Telegram Stars или СБП. При продлении оплаченные дни суммируются.</p>
     </section>
 
-    <section class="agreement" id="agreement">
-      <div class="agreement-heading">
-        <h2>Пользовательское<br>соглашение</h2>
-        <p>Редакция от {{AGREEMENT_UPDATED}}.</p>
-      </div>
-      <div class="agreement-body">{{AGREEMENT_HTML}}</div>
-    </section>
-
     <section class="closing">
       <h2>Откройте бота.<br>Остальное просто.</h2>
       <div class="actions">
@@ -70,11 +62,11 @@
   </main>
 
   <footer>
-    <strong>MGN VPN</strong><span>© 2026</span>
-    <a href="#agreement">Соглашение</a><a data-support-link href="#">Поддержка</a>
+    <a class="footer-logo" href="#top" aria-label="MGN VPN — на главную"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"></a><span>© 2026</span>
+    <a href="/agreement">Соглашение</a><a href="/privacy">Политика</a><a data-support-link href="#">Поддержка</a>
   </footer>
 
-  <script src="/static/site/config.js?v=3"></script>
-  <script src="/static/site/app.js?v=3"></script>
+  <script src="/static/site/config.js?v=4"></script>
+  <script src="/static/site/app.js?v=4"></script>
 </body>
 </html>

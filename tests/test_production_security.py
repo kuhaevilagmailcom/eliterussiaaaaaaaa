@@ -123,6 +123,12 @@ def test_http_security_routes_and_subscription(tmp_path, monkeypatch):
             assert root.status == app.status == 200
             root_html=await root.text()
             assert 'hero-copy' in root_html
+            assert 'agreement-part' not in root_html
+            agreement = await client.get('/agreement')
+            privacy = await client.get('/privacy')
+            assert agreement.status == privacy.status == 200
+            assert 'Пользовательское соглашение' in await agreement.text()
+            assert 'Политика конфиденциальности' in await privacy.text()
             assert all(f'{price} ₽' in root_html for price in (49,99,249,499,999))
             assert 'bottomNav' in await app.text()
             catalog_response = await client.get('/api/public/catalog')
