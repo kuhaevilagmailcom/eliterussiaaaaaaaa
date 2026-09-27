@@ -301,7 +301,6 @@ def blue_inline_button(
         "callback_data": callback_data,
         "url": url,
         "web_app": web_app,
-        "style": "danger",
     }
     if premium_icon:
         custom_id = _button_icon_id(text, icon_index)
@@ -319,7 +318,6 @@ def copy_inline_button(
     kwargs: dict[str, Any] = {
         "text": _clean_button_text(text),
         "copy_text": CopyTextButton(text=value),
-        "style": "danger",
     }
     custom_id = _button_icon_id(text, icon_index)
     if custom_id:
