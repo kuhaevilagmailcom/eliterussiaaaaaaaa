@@ -50,6 +50,7 @@ class Config:
     display_tz: ZoneInfo
 
     miniapp_url: str
+    channel_url: str
     main_menu_banner_file_id: str
     miniapp_host: str
     miniapp_port: int
@@ -139,6 +140,10 @@ class Config:
             db_path=db_path,
             display_tz=ZoneInfo(os.getenv("DISPLAY_TZ", "Asia/Yekaterinburg")),
             miniapp_url=miniapp_url,
+            channel_url=os.getenv(
+                "CHANNEL_URL",
+                "https://t.me/mgnvpnn",
+            ).strip() or "https://t.me/mgnvpnn",
             main_menu_banner_file_id=os.getenv(
                 "MAIN_MENU_BANNER_FILE_ID",
                 "",
