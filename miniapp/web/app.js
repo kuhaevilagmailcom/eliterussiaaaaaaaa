@@ -214,7 +214,7 @@
 
     const root=$('#plans');
     root.innerHTML=(d.plans||[]).map(plan=>{
-      const featured=plan.code==='30';
+      const featured=Boolean(plan.popular);
       return '<article class="plan-card '+(featured?'featured':'')+'">'+
         (featured?'<span class="plan-label">ПОПУЛЯРНЫЙ</span>':'')+
         '<div class="plan-info"><h3>'+esc(plan.name)+'</h3><p>1 устройство включено</p>'+
@@ -421,9 +421,14 @@
     closeSheets();
     state.selectedPlan=plan;
     state.promoCode='';
-    $('#sheetTitle').textContent=plan.name+' · '+Number(plan.rub).toLocaleString('ru-RU')+' ₽';
+    $('#sheetTitle').textContent=plan.name+' · '+Number(plan.rub).toLocaleString('ru-RU')+' ₽'+(plan.popular?' · Популярный':'');
     const extraPrice=Number(state.data?.shop?.extra_device_price_rub||0);
-    $('#sheetText').textContent='1 устройство включено. Дополнительный слот — '+extraPrice.toLocaleString('ru-RU')+' ₽.';
+    const savings=Number(plan.savings||0);
+    $('#sheetText').textContent=
+      '1 устройство включено. '+
+      (savings>0?('Выгода '+savings.toLocaleString('ru-RU')+' ₽. '):'')+
+      'Если подписка уже активна, новые дни добавятся к текущему сроку. '+
+      'Дополнительный слот — '+extraPrice.toLocaleString('ru-RU')+' ₽.';
     $('#paymentPromoCode').value='';
     $('#paymentPromoResult').textContent='';
     $('#starsPrice').textContent=Number(plan.stars).toLocaleString('ru-RU')+' Stars';
