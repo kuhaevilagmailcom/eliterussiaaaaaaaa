@@ -397,6 +397,67 @@ def test_reply_keyboard_navigation_replaces_screen_and_removes_button_message(tm
     asyncio.run(run())
 
 
+def test_start_anonchat_mgn_records_source_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", TOKEN)
+
+    async def run():
+        config = replace(
+            Config.from_env(),
+            db_path=str(tmp_path / "start-source.db"),
+            main_menu_banner_file_id="",
+        )
+        db = Database(config.db_path)
+        await db.init()
+        bot = SimpleNamespace(
+            send_chat_action=AsyncMock(),
+            delete_message=AsyncMock(),
+            send_message=AsyncMock(
+                return_value=SimpleNamespace(message_id=88, delete=AsyncMock())
+            ),
+            send_photo=AsyncMock(
+                return_value=SimpleNamespace(message_id=89)
+            ),
+        )
+        actor = SimpleNamespace(
+            id=42,
+            username="anon",
+            first_name="Anon",
+        )
+        message = SimpleNamespace(
+            from_user=actor,
+            bot=bot,
+            chat=SimpleNamespace(id=42),
+            message_id=1,
+            answer=AsyncMock(
+                return_value=SimpleNamespace(delete=AsyncMock())
+            ),
+        )
+        router = build_router(
+            config,
+            db,
+            EmojiBank(()),
+            SimpleNamespace(service_ready=False),
+        )
+        handler = next(
+            item.callback
+            for item in router.message.handlers
+            if item.callback.__name__ == "start"
+        )
+
+        await handler(
+            message,
+            SimpleNamespace(args="anonchat_mgn"),
+        )
+        user = await db.get_user(42)
+        assert user["attribution_source"] == "anonchat_mgn"
+
+        await db.set_attribution_source_once(42, "another")
+        user = await db.get_user(42)
+        assert user["attribution_source"] == "anonchat_mgn"
+
+    asyncio.run(run())
+
+
 def test_admin_device_update_ignores_expired_callback_query(tmp_path, monkeypatch):
     monkeypatch.setenv("BOT_TOKEN", TOKEN)
 
