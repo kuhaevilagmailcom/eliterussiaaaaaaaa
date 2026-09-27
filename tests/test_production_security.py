@@ -111,12 +111,17 @@ def test_http_security_routes_and_subscription(tmp_path, monkeypatch):
             assert root.status == app.status == 200
             root_html=await root.text()
             assert 'hero-copy' in root_html
-            assert all(f'{price} ₽' in root_html for price in (49,99,269,529,999))
+            assert all(f'{price} ₽' in root_html for price in (49,99,249,499,999))
             assert 'bottomNav' in await app.text()
             catalog_response = await client.get('/api/public/catalog')
             assert catalog_response.status == 200
             catalog = await catalog_response.json()
-            assert {item['code']: item['price_rub'] for item in catalog['plans']}['30'] == 99
+            prices = {item['code']: item['price_rub'] for item in catalog['plans']}
+            assert prices == {'7': 49, '30': 99, '90': 249, '180': 499, '365': 999}
+            popular = [item['code'] for item in catalog['plans'] if item.get('popular')]
+            assert popular == ['90']
+            savings = {item['code']: item['savings_rub'] for item in catalog['plans']}
+            assert savings['90'] == 48 and savings['180'] == 95 and savings['365'] == 189
             assert catalog['max_devices'] == 5
             assert (await client.get('/api/miniapp/me')).status == 401
             for data in ('[]', 'null', '{', '{"code":12}', '{"code":"'+'x'*65+'"}'):
