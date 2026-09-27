@@ -359,7 +359,7 @@ class MiniAppServer:
             return
         user_id = int(user["telegram_id"])
         now = time.monotonic()
-        if now - self._subscription_refresh_last.get(user_id, 0.0) < 300.0:
+        if now - self._subscription_refresh_last.get(user_id, 0.0) < 60.0:
             return
         current = self._subscription_refresh_tasks.get(user_id)
         if current and not current.done():
@@ -552,7 +552,7 @@ class MiniAppServer:
         if (
             persistent_cached
             and token not in self._subscription_cache_invalidated
-            and time.time() - float(persistent_cached["created_at"]) <= 300.0
+            and time.time() - float(persistent_cached["created_at"]) <= 60.0
         ):
             # Serve first, refresh federation in the background. Starting a
             # provision task before a cold fetch races the same H1 client and
@@ -601,7 +601,7 @@ class MiniAppServer:
                 "X-Content-Type-Options": "nosniff",
                 "Content-Disposition": 'inline; filename="MGN-VPN.txt"',
                 "Profile-Title": f"base64:{title}",
-                "Profile-Update-Interval": "12",
+                "Profile-Update-Interval": "1",
             }
             for key in (
                 "subscription-userinfo",
