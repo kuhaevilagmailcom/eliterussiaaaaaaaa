@@ -65,7 +65,9 @@ class Database:
                     referrer_id INTEGER,
                     last_menu_message_id INTEGER,
                     bonus_devices INTEGER NOT NULL DEFAULT 0,
-                    vpn_client_id TEXT UNIQUE
+                    vpn_client_id TEXT UNIQUE,
+                    attribution_source TEXT,
+                    attribution_at TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_users_subscription_until
@@ -242,9 +244,17 @@ class Database:
                 await db.execute("UPDATE users SET bonus_devices=MIN(4, MAX(0, max_devices-1))")
             if "vpn_client_id" not in columns:
                 await db.execute("ALTER TABLE users ADD COLUMN vpn_client_id TEXT")
+            if "attribution_source" not in columns:
+                await db.execute("ALTER TABLE users ADD COLUMN attribution_source TEXT")
+            if "attribution_at" not in columns:
+                await db.execute("ALTER TABLE users ADD COLUMN attribution_at TEXT")
             await db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_vpn_client_id "
                 "ON users(vpn_client_id) WHERE vpn_client_id IS NOT NULL"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_attribution_source "
+                "ON users(attribution_source)"
             )
 
             sbp_columns = {
@@ -406,6 +416,77 @@ class Database:
         result = await self.get_user(telegram_id)
         result["_is_new"] = existed is None
         return result
+
+    async def set_attribution_source_once(
+        self,
+        telegram_id: int,
+        source: str,
+    ) -> bool:
+        source = str(source or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9_-]{1,64}", source):
+            raise ValueError("invalid attribution source")
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE users
+                SET attribution_source=?, attribution_at=?
+                WHERE telegram_id=?
+                  AND (attribution_source IS NULL OR attribution_source='')
+                """,
+                (source, to_iso(utcnow()), int(telegram_id)),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
+    async def attribution_stats(self, source: str) -> dict[str, Any]:
+        source = str(source or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9_-]{1,64}", source):
+            raise ValueError("invalid attribution source")
+        async with aiosqlite.connect(self.path) as db:
+            arrived = int(
+                (
+                    await (
+                        await db.execute(
+                            "SELECT COUNT(*) FROM users WHERE attribution_source=?",
+                            (source,),
+                        )
+                    ).fetchone()
+                )[0]
+            )
+            buyers = int(
+                (
+                    await (
+                        await db.execute(
+                            """
+                            SELECT COUNT(*)
+                            FROM users u
+                            WHERE u.attribution_source=?
+                              AND (
+                                EXISTS (
+                                    SELECT 1
+                                    FROM sbp_payments s
+                                    WHERE s.telegram_id=u.telegram_id
+                                      AND s.status='paid'
+                                )
+                                OR EXISTS (
+                                    SELECT 1
+                                    FROM star_payments sp
+                                    WHERE sp.buyer_telegram_id=u.telegram_id
+                                )
+                              )
+                            """,
+                            (source,),
+                        )
+                    ).fetchone()
+                )[0]
+            )
+        conversion = (buyers / arrived * 100.0) if arrived else 0.0
+        return {
+            "source": source,
+            "arrived": arrived,
+            "buyers": buyers,
+            "conversion": conversion,
+        }
 
     async def get_user(self, telegram_id: int) -> dict[str, Any]:
         async with aiosqlite.connect(self.path) as db:
