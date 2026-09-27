@@ -62,6 +62,59 @@ def test_h1_capabilities_are_explicit():
     assert capabilities.supports_device_reset
 
 
+def test_h1_subscription_merges_new_federation_country_even_if_aggregate_is_stale():
+    async def run():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider.subscription_template = ""
+        provider.server_name = "MGN VPN"
+
+        main = {
+            "name": "mgn_private",
+            "uuid": "uuid-1",
+            "sub_url": "https://nl1.h1cloud.net/sub/test",
+            "links": {
+                "nl": "vless://uuid-1@nl.example:443#NL",
+            },
+        }
+        germany = {
+            "name": "mgn_private",
+            "uuid": "uuid-1",
+            "links": {
+                "de": "vless://uuid-1@de.example:443#DE",
+            },
+        }
+
+        async def get_client(_name, *, prefix=""):
+            return germany if prefix else main
+
+        provider._get_client = AsyncMock(side_effect=get_client)
+        provider._fetch_public_subscription = AsyncMock(
+            return_value=base64.b64encode(
+                b"vless://uuid-1@nl.example:443#NL\n"
+                b"vless://uuid-1@us.example:443#US\n"
+                b"vless://uuid-1@fi.example:443#FI\n"
+            )
+        )
+        provider._federated_nodes = AsyncMock(
+            return_value=[{"id": "de-node", "proxy_kind": "proxy"}]
+        )
+
+        payload, _headers = await provider.fetch_subscription(
+            {
+                "telegram_id": 42,
+                "vpn_client_id": "private",
+                "max_devices": 1,
+                "traffic_limit_gb": 0,
+                "subscription_until": "2030-01-01T00:00:00+00:00",
+            }
+        )
+        links = provider._subscription_vless_links(payload)
+        assert any("@de.example:" in link for link in links)
+        assert len(links) == 4
+
+    asyncio.run(run())
+
+
 def test_h1_get_state_finds_device_on_remote_federation_node():
     async def run():
         provider = object.__new__(H1CloudVpnProvider)
