@@ -484,6 +484,8 @@ class MiniAppServer:
                         "days": int(plan["days"]),
                         "price_rub": plan_price_rub(self.config, code),
                         "price_stars": plan_price_stars(self.config, code),
+                        "savings_rub": plan_savings_rub(code),
+                        "popular": bool(plan.get("popular")),
                         "devices": int(plan.get("devices") or 1),
                     }
                     for code, plan in PLANS.items()
@@ -713,6 +715,7 @@ class MiniAppServer:
                         "rub": plan_price_rub(self.config, code),
                         "stars": plan_price_stars(self.config, code),
                         "savings": plan_savings_rub(code),
+                        "popular": bool(plan.get("popular")),
                     }
                     for code, plan in PLANS.items()
                 ],
