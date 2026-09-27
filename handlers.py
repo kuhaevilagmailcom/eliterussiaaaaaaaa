@@ -1126,13 +1126,15 @@ def build_router(
                 f"Осталось: <b>{remaining_text(user)}</b>",
                 f"Устройства: <b>до {int(user.get('max_devices') or 1)}</b>",
                 "",
-                "Управляйте подпиской кнопками ниже.",
+                "<blockquote>🔧 Нажмите <b>«Моя подписка»</b>, чтобы подключить устройство, "
+                "продлить доступ или скопировать персональную ссылку.</blockquote>",
             ]
         else:
             lines += [
                 "🔒 <b>Подписка не активна</b>",
                 "",
-                "Выберите действие ниже.",
+                "<blockquote>🔧 Нажмите <b>«Купить подписку»</b>, чтобы выбрать тариф "
+                "и настроить VPN-подключение.</blockquote>",
             ]
 
         await send_screen(
@@ -1508,19 +1510,52 @@ def build_router(
         await callback.answer()
         if not callback.message:
             return
+
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("Поддержка", callback_data="menu:support", icon_index=6))
-        kb.row(blue_inline_button("Пользовательское соглашение", callback_data="menu:terms", icon_index=11))
+        kb.row(
+            blue_inline_button(
+                "Поддержка",
+                callback_data="menu:support",
+                icon_index=6,
+            )
+        )
+        kb.row(
+            blue_inline_button(
+                "Канал",
+                url=config.channel_url,
+                icon_index=8,
+            )
+        )
         add_nav_buttons(kb, back_data="home")
+
+        text = (
+            "🌐 <b>О MGN VPN</b>\n\n"
+            "💳 <b>Прозрачная оплата</b>\n"
+            "<blockquote>❤️ Никаких автосписаний и скрытых подписок. "
+            "Оплата происходит только после вашего подтверждения.</blockquote>\n\n"
+            "⚡ <b>Быстрое подключение</b>\n"
+            "<blockquote>📶 Подключение настраивается по персональной ссылке. "
+            "Доступные VPN-локации автоматически попадают в приложение.</blockquote>\n\n"
+            "🛡 <b>Приватность</b>\n"
+            "<blockquote>🔐 MGN VPN не анализирует содержимое вашего интернет-трафика. "
+            "Для работы сервиса используются только необходимые технические данные: "
+            "Telegram ID, состояние подписки, платежные метаданные и данные подключений.</blockquote>\n\n"
+            "📚 <b>Правила сервиса</b>\n"
+            "<blockquote>ℹ️ Используя MGN VPN, вы принимаете правила сервиса. "
+            "Персональная ссылка предназначена только для вашего аккаунта, "
+            "а количество устройств ограничено выбранным лимитом.</blockquote>\n\n"
+            "🔒 <b>Защищённое соединение</b>\n"
+            "<blockquote>⚙️ VPN использует современные протоколы защищённого соединения "
+            "для передачи данных между вашим устройством и VPN-сервером.</blockquote>\n\n"
+            "🔑 <b>Ваша ссылка — ваш доступ</b>\n"
+            "<blockquote>⚠️ Не передавайте персональную ссылку другим людям. "
+            "Если она попала к постороннему, обратитесь в поддержку.</blockquote>"
+        )
+
         await send_screen(
             callback.message,
             callback.from_user,
-            "🌐 <b>О сервисе</b>\n\n"
-            "MGN VPN — простой VPN с подключением через персональную ссылку.\n\n"
-            "• без автосписаний\n"
-            "• до 5 устройств\n"
-            "• управление прямо в Telegram\n"
-            "• поддержка через бота",
+            text,
             reply_markup=kb.as_markup(),
         )
 
