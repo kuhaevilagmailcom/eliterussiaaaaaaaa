@@ -10,6 +10,12 @@
       var plan=byCode[String(element.dataset.planPrice||'')];
       element.textContent=plan?Number(plan.price_rub).toLocaleString('ru-RU')+' ₽':'Открыть в Telegram';
     });
+    document.querySelectorAll('[data-plan-savings]').forEach(function(element){
+      var plan=byCode[String(element.dataset.planSavings||'')];
+      var savings=Number(plan&&plan.savings_rub||0);
+      element.textContent=savings>0?'Выгода '+savings.toLocaleString('ru-RU')+' ₽':'';
+      element.hidden=savings<=0;
+    });
     document.querySelectorAll('[data-device-limit]').forEach(function(element){
       element.textContent=String(Number(catalog&&catalog.max_devices||5));
     });
