@@ -1014,3 +1014,58 @@ button.pressing,
 
 .app-error{max-width:430px;margin:20vh auto;padding:24px;text-align:center}
 .app-error a,.app-error button{display:block;margin:16px auto;padding:14px;color:var(--text);background:var(--surface);border:1px solid var(--accent);border-radius:12px}
+
+
+/* ===== Sheet layout fix: desktop centered, mobile bottom sheet =====
+   Do not use transform for horizontal centering: Windows/Telegram can enable
+   prefers-reduced-motion, where our accessibility rule resets transform and
+   previously left the sheet starting at 50% of the viewport. */
+.sheet{
+  left:0!important;
+  right:0!important;
+  top:auto!important;
+  bottom:0!important;
+  margin-inline:auto!important;
+  width:min(100%,430px)!important;
+  max-width:100%!important;
+  max-height:min(88dvh,760px)!important;
+  overflow-x:hidden!important;
+  overflow-y:auto!important;
+  transform:none!important;
+  translate:none!important;
+  overscroll-behavior:contain;
+}
+.sheet:not([hidden]){
+  animation:sheet-in 260ms var(--ease-out) both!important;
+}
+@keyframes sheet-in{
+  from{opacity:0;transform:translateY(18px)}
+  to{opacity:1;transform:translateY(0)}
+}
+
+/* Telegram Desktop / desktop browsers can keep a phone-sized viewport.
+   Pointer capability is therefore more reliable than viewport width here. */
+@media (hover:hover) and (pointer:fine){
+  .sheet{
+    left:50%!important;
+    right:auto!important;
+    top:50%!important;
+    bottom:auto!important;
+    margin:0!important;
+    width:min(420px,calc(100vw - 32px))!important;
+    max-height:min(82dvh,700px)!important;
+    border-radius:24px!important;
+    padding:18px 20px 20px!important;
+    translate:-50% -50%!important;
+    box-shadow:0 24px 80px rgba(0,0,0,.58)!important;
+  }
+  .sheet-handle{display:none!important}
+}
+
+/* Reduced motion must not break sheet positioning. */
+@media (prefers-reduced-motion:reduce){
+  .sheet:not([hidden]){
+    animation:none!important;
+    transform:none!important;
+  }
+}
