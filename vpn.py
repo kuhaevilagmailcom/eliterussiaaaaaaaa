@@ -1017,8 +1017,146 @@ class H1CloudVpnProvider(VpnProvider):
 
         return await self.get_state(user)
 
+    @staticmethod
+    def _devices_from_client(client: dict[str, Any] | None) -> list[dict[str, Any]]:
+        """Normalize the device shapes returned by different H1Cloud nodes."""
+        if not isinstance(client, dict):
+            return []
+
+        raw: Any = None
+        for key in ("devices", "hwids", "device_list", "deviceList"):
+            value = client.get(key)
+            if value:
+                raw = value
+                break
+
+        if raw is None:
+            for key in ("stats", "limits", "usage"):
+                nested = client.get(key)
+                if not isinstance(nested, dict):
+                    continue
+                for nested_key in ("devices", "hwids", "device_list", "deviceList"):
+                    value = nested.get(nested_key)
+                    if value:
+                        raw = value
+                        break
+                if raw is not None:
+                    break
+
+        items: list[Any] = []
+        if isinstance(raw, list):
+            items = raw
+        elif isinstance(raw, dict):
+            items = [
+                (dict(value, id=value.get("id") or key) if isinstance(value, dict) else {"id": key, "name": value})
+                for key, value in raw.items()
+            ]
+
+        devices: list[dict[str, Any]] = []
+        for index, item in enumerate(items):
+            if isinstance(item, str):
+                item = {"name": item}
+            if not isinstance(item, dict):
+                continue
+            devices.append(
+                {
+                    "id": str(
+                        item.get("id")
+                        or item.get("device_id")
+                        or item.get("deviceId")
+                        or item.get("hwid")
+                        or item.get("fingerprint")
+                        or index
+                    ),
+                    "name": str(
+                        item.get("name")
+                        or item.get("device_name")
+                        or item.get("deviceName")
+                        or item.get("model")
+                        or item.get("deviceModel")
+                        or "Устройство"
+                    ),
+                    "platform": str(
+                        item.get("platform")
+                        or item.get("os")
+                        or item.get("deviceOs")
+                        or ""
+                    ),
+                    "fingerprint": str(
+                        item.get("fingerprint")
+                        or item.get("hwid")
+                        or item.get("device_id")
+                        or item.get("deviceId")
+                        or ""
+                    ),
+                    "last_seen": (
+                        item.get("last_seen")
+                        or item.get("lastSeen")
+                        or item.get("updated_at")
+                    ),
+                }
+            )
+
+        if devices:
+            return devices
+
+        # Some H1Cloud builds expose only a remembered-device count on the
+        # client object. Preserve that count so the UI does not incorrectly
+        # show 0/N after a device is already registered.
+        count = 0
+        for key in (
+            "device_count",
+            "devices_count",
+            "current_devices",
+            "current_count",
+            "deviceCount",
+        ):
+            try:
+                count = max(count, int(client.get(key) or 0))
+            except (TypeError, ValueError):
+                continue
+        return [
+            {
+                "id": f"count-{index + 1}",
+                "name": "Подключённое устройство",
+                "platform": "",
+                "fingerprint": "",
+                "last_seen": None,
+            }
+            for index in range(max(0, count))
+        ]
+
+    @staticmethod
+    def _merge_devices(
+        groups: list[list[dict[str, Any]]],
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for group in groups:
+            for item in group:
+                fingerprint = str(item.get("fingerprint") or "").strip().lower()
+                device_id = str(item.get("id") or "").strip().lower()
+                name = str(item.get("name") or "").strip().lower()
+                platform = str(item.get("platform") or "").strip().lower()
+                if fingerprint:
+                    key = f"fp:{fingerprint}"
+                elif device_id and not device_id.startswith("count-"):
+                    key = f"id:{device_id}"
+                else:
+                    key = f"name:{name}|platform:{platform}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(item)
+                if len(merged) >= max(1, int(limit)):
+                    return merged
+        return merged
+
     async def get_state(self, user: dict[str, Any]) -> VpnState:
-        client = await self._get_client(self._name(user))
+        name = self._name(user)
+        client = await self._get_client(name)
         if client is None:
             raise RuntimeError("H1Cloud client does not exist yet")
 
@@ -1026,34 +1164,43 @@ class H1CloudVpnProvider(VpnProvider):
         if not subscription_url:
             raise RuntimeError("H1Cloud client has no subscription URL")
 
-        devices: list[dict[str, Any]] = []
-        raw_devices = client.get("devices") or []
-        if isinstance(raw_devices, list):
-            for index, item in enumerate(raw_devices):
-                if not isinstance(item, dict):
-                    continue
-                devices.append(
-                    {
-                        "id": str(item.get("id") or item.get("hwid") or index),
-                        "name": str(
-                            item.get("name")
-                            or item.get("device_name")
-                            or item.get("model")
-                            or "Устройство"
-                        ),
-                        "platform": str(
-                            item.get("platform")
-                            or item.get("os")
-                            or ""
-                        ),
-                        "fingerprint": str(
-                            item.get("fingerprint")
-                            or item.get("hwid")
-                            or ""
-                        ),
-                        "last_seen": item.get("last_seen") or item.get("lastSeen"),
-                    }
+        max_devices = max(1, int(user.get("max_devices") or 1))
+        device_groups: list[list[dict[str, Any]]] = [
+            self._devices_from_client(client)
+        ]
+
+        # A connected device may be remembered by the country node it actually
+        # uses rather than by the main NL panel. When the main panel reports
+        # fewer devices than the account allows, inspect federation nodes in
+        # parallel and merge the same user's device records.
+        if len(device_groups[0]) < max_devices:
+            try:
+                nodes = await asyncio.wait_for(self._federated_nodes(), timeout=2.0)
+            except Exception:
+                nodes = []
+
+            async def load_remote_devices(node: dict[str, Any]) -> list[dict[str, Any]]:
+                prefix = self._node_prefix(node)
+                if not prefix:
+                    return []
+                try:
+                    remote = await asyncio.wait_for(
+                        self._get_client(name, prefix=prefix),
+                        timeout=1.5,
+                    )
+                except Exception:
+                    return []
+                return self._devices_from_client(remote)
+
+            if nodes:
+                device_groups.extend(
+                    await asyncio.gather(
+                        *(load_remote_devices(node) for node in nodes),
+                        return_exceptions=False,
+                    )
                 )
+
+        devices = self._merge_devices(device_groups, limit=max_devices)
 
         used_gb = float(client.get("traffic_used_gb") or 0)
         limit_gb = float(
