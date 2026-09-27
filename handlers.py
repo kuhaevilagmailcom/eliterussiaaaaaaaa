@@ -740,7 +740,7 @@ def build_router(
                     chat_id=message.chat.id,
                     photo=banner,
                     caption=text,
-                    reply_markup=home_markup,
+                    reply_markup=reply_markup,
                 )
             except TelegramBadRequest as exc:
                 logger.warning("Initial main-menu photo failed: %s", exc)
@@ -771,14 +771,14 @@ def build_router(
                         chat_id=message.chat.id,
                         photo=banner,
                         caption=text,
-                        reply_markup=home_markup,
+                        reply_markup=reply_markup,
                     )
                 except TelegramBadRequest:
                     sent = await message.bot.send_photo(
                         chat_id=message.chat.id,
                         photo=banner,
                         caption=strip_custom_emoji(text),
-                        reply_markup=home_markup,
+                        reply_markup=reply_markup,
                     )
 
             await db.set_last_menu_message(actor.id, sent.message_id)
