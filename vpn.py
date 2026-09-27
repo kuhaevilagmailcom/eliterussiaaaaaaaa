@@ -787,8 +787,18 @@ class H1CloudVpnProvider(VpnProvider):
 
     async def _validate_subscription_url(self, value: str) -> str:
         parsed = urlsplit(value)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        legacy_h1_http = (
+            parsed.scheme == "http"
+            and (host == "h1cloud.net" or host.endswith(".h1cloud.net"))
+        )
+        scheme_allowed = (
+            parsed.scheme == "https"
+            or legacy_h1_http
+            or bool(getattr(self, "allow_insecure", False))
+        )
         if (
-            parsed.scheme != "https"
+            not scheme_allowed
             or not parsed.hostname
             or parsed.username
             or parsed.password
@@ -798,7 +808,7 @@ class H1CloudVpnProvider(VpnProvider):
         try:
             addresses = await asyncio.get_running_loop().getaddrinfo(
                 parsed.hostname,
-                parsed.port or 443,
+                parsed.port or (443 if parsed.scheme == "https" else 80),
                 type=socket.SOCK_STREAM,
             )
         except OSError as exc:
@@ -815,7 +825,7 @@ class H1CloudVpnProvider(VpnProvider):
             async with self.public_session.get(
                 current,
                 allow_redirects=False,
-                ssl=self.ssl_context,
+                ssl=self.ssl_context if urlsplit(current).scheme == "https" else False,
             ) as response:
                 if response.status in {301, 302, 303, 307, 308}:
                     location = response.headers.get("Location", "")
