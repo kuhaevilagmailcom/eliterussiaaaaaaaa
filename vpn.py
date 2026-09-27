@@ -290,7 +290,9 @@ class H1CloudVpnProvider(VpnProvider):
         if parsed_api.scheme not in {"http", "https"}:
             raise RuntimeError("H1_API_URL must use HTTP or HTTPS")
         if parsed_api.scheme == "http" and not (allow_insecure or legacy_h1_http):
-            raise RuntimeError("Insecure H1_API_URL is allowed only for legacy *.h1cloud.net nodes")
+            raise RuntimeError(
+                "H1_API_URL must use HTTPS unless it is a legacy *.h1cloud.net node"
+            )
         if parsed_api.scheme == "https" and not verify_ssl and not allow_insecure:
             raise RuntimeError("H1 TLS verification cannot be disabled")
 
@@ -785,18 +787,8 @@ class H1CloudVpnProvider(VpnProvider):
 
     async def _validate_subscription_url(self, value: str) -> str:
         parsed = urlsplit(value)
-        host = (parsed.hostname or "").lower().rstrip(".")
-        legacy_h1_http = (
-            parsed.scheme == "http"
-            and (host == "h1cloud.net" or host.endswith(".h1cloud.net"))
-        )
-        scheme_allowed = (
-            parsed.scheme == "https"
-            or self.allow_insecure
-            or legacy_h1_http
-        )
         if (
-            not scheme_allowed
+            parsed.scheme != "https"
             or not parsed.hostname
             or parsed.username
             or parsed.password
