@@ -425,6 +425,14 @@ def main_menu_inline_keyboard(
             icon_index=5,
         )
     )
+    if admin_role:
+        kb.row(
+            blue_inline_button(
+                "Админ-панель",
+                callback_data="admin:home",
+                icon_index=10,
+            )
+        )
     return kb.as_markup()
 
 
