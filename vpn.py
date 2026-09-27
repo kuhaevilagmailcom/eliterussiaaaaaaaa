@@ -1335,65 +1335,48 @@ class H1CloudVpnProvider(VpnProvider):
                 add_many(aggregate_links)
                 if aggregate_links:
                     logger.info(
-                        "H1Cloud aggregate subscription built for %s with %s VLESS link(s)",
+                        "H1Cloud aggregate subscription loaded for %s with %s VLESS link(s)",
                         name,
                         len(links),
                     )
-                    payload = ("\n".join(links) + "\n").encode("utf-8")
-                    return base64.b64encode(payload), {}
             except Exception as exc:
                 aggregate_error = type(exc).__name__
         else:
             aggregate_error = "sub_url_missing"
 
-        # If the main panel already supplied at least one direct VLESS link,
-        # return it instead of failing the entire subscription because a remote
-        # federation endpoint is unavailable. Background reconcile will add
-        # countries on a later refresh.
-        if links:
-            if aggregate_error:
+        # Repair old clients created with channels=[] only when neither the
+        # main client nor H1's aggregate subscription returned a usable link.
+        if not links:
+            try:
+                patched = await asyncio.wait_for(
+                    self._request(
+                        "PATCH",
+                        f"/clients/{quote(name, safe='')}",
+                        json={"channels": standard_channels},
+                    ),
+                    timeout=2.5,
+                )
+                repaired = self._extract_client(patched)
+                if repaired is None:
+                    repaired = await asyncio.wait_for(
+                        self._get_client(name),
+                        timeout=1.5,
+                    )
+                if repaired is not None:
+                    main = repaired
+                    main_uuid = str(main.get("uuid") or main_uuid).strip()
+                    add_many(self._client_vless_links(main))
+            except Exception as exc:
                 logger.warning(
-                    "H1Cloud aggregate unavailable for %s (%s); serving main link(s)",
+                    "H1Cloud main-link repair failed for %s (%s)",
                     name,
-                    aggregate_error,
+                    type(exc).__name__,
                 )
-            payload = ("\n".join(links) + "\n").encode("utf-8")
-            return base64.b64encode(payload), {}
 
-        # Repair old clients created with channels=[] only after the fast
-        # aggregate path failed. This keeps normal /sub requests quick.
-        try:
-            patched = await asyncio.wait_for(
-                self._request(
-                    "PATCH",
-                    f"/clients/{quote(name, safe='')}",
-                    json={"channels": standard_channels},
-                ),
-                timeout=2.5,
-            )
-            repaired = self._extract_client(patched)
-            if repaired is None:
-                repaired = await asyncio.wait_for(
-                    self._get_client(name),
-                    timeout=1.5,
-                )
-            if repaired is not None:
-                main = repaired
-                main_uuid = str(main.get("uuid") or main_uuid).strip()
-                add_many(self._client_vless_links(main))
-        except Exception as exc:
-            logger.warning(
-                "H1Cloud main-link repair failed for %s (%s)",
-                name,
-                type(exc).__name__,
-            )
-
-        if links:
-            payload = ("\n".join(links) + "\n").encode("utf-8")
-            return base64.b64encode(payload), {}
-
-        # Last-resort fallback: inspect linked nodes directly. Failures of one
-        # country never invalidate links returned by another.
+        # Always inspect linked nodes directly and merge their links. H1's
+        # aggregate sub_url can lag behind federation changes, which used to
+        # make a newly added country (for example Germany) invisible in Happ.
+        # Failures of one country never invalidate links returned by another.
         try:
             nodes = await asyncio.wait_for(self._federated_nodes(), timeout=1.8)
         except Exception as exc:
@@ -1456,7 +1439,7 @@ class H1CloudVpnProvider(VpnProvider):
             raise RuntimeError("H1Cloud returned no VLESS links")
 
         logger.info(
-            "H1Cloud fallback subscription built for %s with %s VLESS link(s)",
+            "H1Cloud merged subscription built for %s with %s VLESS link(s)",
             name,
             len(links),
         )
