@@ -28,6 +28,7 @@ LOCATION_LABELS = {
     "MGN-LT": "🇱🇹 Литва",
     "MGN-US": "🇺🇸 США",
     "MGN-PL": "🇵🇱 Польша",
+    "MGN-PK": "🇵🇰 Пакистан",
 }
 
 
@@ -45,10 +46,27 @@ def _location_label(value: str) -> str:
         ("LT3.H1CLOUD.NET", "🇱🇹 Литва"),
         ("US3.H1CLOUD.NET", "🇺🇸 США"),
         ("PL-D1.H1CLOUD.NET", "🇵🇱 Польша"),
+        ("PAKISTAN", "🇵🇰 Пакистан"),
+        ("KARACHI", "🇵🇰 Пакистан"),
+        ("ISLAMABAD", "🇵🇰 Пакистан"),
+        ("LAHORE", "🇵🇰 Пакистан"),
     )
     for marker, label in host_markers:
         if marker in decoded:
             return label
+
+    # H1 Pakistan hosts are not consistent between panel versions. Keep the
+    # client-facing name stable even when the raw node has a generated name.
+    try:
+        host = (urlsplit(value).hostname or "").upper()
+    except ValueError:
+        host = ""
+    if host.endswith(".H1CLOUD.NET") and (
+        host.startswith("PK")
+        or host.startswith("PAK")
+        or ".PK" in host
+    ):
+        return "🇵🇰 Пакистан"
     return ""
 
 
