@@ -1567,11 +1567,7 @@ def build_router(
         add_nav_buttons(kb, back_data="home")
         return kb.as_markup()
 
-    def support_admin_keyboard(
-        ticket_id: int,
-        telegram_id: int | None = None,
-        active: bool | None = None,
-    ) -> Any:
+    def support_admin_keyboard(ticket_id: int) -> Any:
         kb = InlineKeyboardBuilder()
         kb.row(
             blue_inline_button(
@@ -1581,14 +1577,6 @@ def build_router(
             )
         )
         kb.row(blue_inline_button("Открыть обращение", callback_data=f"support:view:{int(ticket_id)}"))
-        if telegram_id:
-            status_icon = "🟢" if active else "❌"
-            kb.row(
-                blue_inline_button(
-                    f"{status_icon} Подписка пользователя",
-                    callback_data=f"admin:user:{int(telegram_id)}",
-                )
-            )
         kb.row(blue_inline_button("Закрыть", callback_data=f"support:close:{int(ticket_id)}"))
         return kb.as_markup()
 
@@ -1601,26 +1589,14 @@ def build_router(
         kb.row(blue_inline_button("Назад", callback_data="support:list:0", premium_icon=False))
         return kb.as_markup()
 
-    def support_admin_ticket_keyboard(
-        ticket: dict[str, Any],
-        active: bool | None = None,
-    ) -> Any:
+    def support_admin_ticket_keyboard(ticket: dict[str, Any]) -> Any:
         ticket_id = int(ticket["id"])
-        telegram_id = int(ticket.get("telegram_id") or 0)
         kb = InlineKeyboardBuilder()
         if ticket.get("status") == "closed":
             kb.row(blue_inline_button("Переоткрыть", callback_data=f"support:reopen:{ticket_id}"))
         else:
             kb.row(blue_inline_button("Ответить", callback_data=f"support:reply:{ticket_id}"))
             kb.row(blue_inline_button("Закрыть", callback_data=f"support:close:{ticket_id}"))
-        if telegram_id:
-            status_icon = "🟢" if active else "❌"
-            kb.row(
-                blue_inline_button(
-                    f"{status_icon} Подписка пользователя",
-                    callback_data=f"admin:user:{telegram_id}",
-                )
-            )
         kb.row(blue_inline_button("Удалить", callback_data=f"support:deleteconfirm:{ticket_id}"))
         kb.row(blue_inline_button("Назад", callback_data="admin:support", premium_icon=False))
         return kb.as_markup()
@@ -1649,7 +1625,7 @@ def build_router(
             lines += [
                 f"Пользователь: <b>{html.escape(username)}</b>",
                 f"Telegram ID: <code>{ticket['telegram_id']}</code>",
-                f"Подписка: <b>{'🟢 активна' if support_active else '❌ нет активной'}</b>",
+                f"Подписка: <b>{'🟢 активна' if support_active else '🔴 нет активной'}</b>",
                 "",
             ]
         for item in messages[-8:]:
@@ -1659,7 +1635,7 @@ def build_router(
         await send_screen(
             message, actor, "\n".join(lines),
             reply_markup=(
-                support_admin_ticket_keyboard(ticket, active=support_active)
+                support_admin_ticket_keyboard(ticket)
                 if admin
                 else support_user_ticket_keyboard(ticket)
             ),
@@ -1680,7 +1656,7 @@ def build_router(
         return (
             f"<b>Новое обращение #{int(ticket['id'])}</b>\n\n"
             f"Пользователь: <b>{username}</b>\n"
-            f"ID: <code>{int(ticket['telegram_id'])}</code>\n"
+            f"Telegram ID: <code>{int(ticket['telegram_id'])}</code>\n"
             f"Дата: <b>{created_text}</b>\n\n"
             f"<b>Сообщение:</b>\n{html.escape(str(ticket.get('message') or ''))}"
         )
@@ -1707,11 +1683,7 @@ def build_router(
                 await bot.send_message(
                     chat_id=admin_id,
                     text=support_ticket_admin_text(ticket),
-                    reply_markup=support_admin_keyboard(
-                        int(ticket["id"]),
-                        telegram_id=support_uid,
-                        active=support_active,
-                    ),
+                    reply_markup=support_admin_keyboard(int(ticket["id"])),
                 )
             except Exception as exc:
                 logger.warning(
@@ -3228,7 +3200,8 @@ def build_router(
                 blue_inline_button("⚙️ Система", callback_data="admin:system"),
             )
             kb.row(
-                blue_inline_button("📣 Реклама", callback_data="admin:ad:start"),
+                blue_inline_button("📣 Рассылка", callback_data="admin:broadcast:start"),
+                blue_inline_button("Публикация в канал", callback_data="admin:ad:start"),
             )
         if role == "owner":
             kb.row(
@@ -3496,7 +3469,7 @@ def build_router(
                 first_name = str(item.get("first_name") or "Без имени")[:24]
                 subscription_until = from_iso(item.get("subscription_until"))
                 active = bool(subscription_until and subscription_until > utcnow())
-                status_icon = "🟢" if active else "❌"
+                status_icon = "🟢" if active else "🔴"
                 status = (
                     f"активна до {subscription_until.astimezone(config.display_tz).strftime('%d.%m.%Y')}"
                     if active and subscription_until else "нет подписки"
@@ -3608,7 +3581,7 @@ def build_router(
             "",
             f"Пришёл — <b>{format_joined(user.get('created_at'))}</b>",
             f"Админ-доступ — <b>{admin_role_label(target_role)}</b>",
-            f"Подписка — <b>{'🟢 активна' if active else '❌ нет активной'}</b>",
+            f"Подписка — <b>{'🟢 активна' if active else '🔴 нет активной'}</b>",
             f"Тариф — <b>{html.escape(user.get('plan_name') or '—')}</b>",
             f"До — <b>{format_until(user, config) if active else '—'}</b>",
             f"Осталось — <b>{remaining_days} дней</b>",
@@ -3892,6 +3865,13 @@ def build_router(
             "<b>Ссылка кнопки</b>\n\nОтправьте http(s):// или tg:// ссылку. Отправьте <code>-</code>, если кнопка не нужна."
         )
 
+    async def finish_ad_target(message: Message, actor_id: int, draft: dict[str, Any]) -> None:
+        if draft.get("broadcast_only"):
+            draft["channel"] = "all_users"
+            await show_ad_preview(message, actor_id, draft)
+            return
+        await ask_ad_channel(message, actor_id, draft)
+
     async def ask_ad_channel(message: Message, actor_id: int, draft: dict[str, Any]) -> None:
         await db.set_support_session(actor_id, "ad_channel", payload=json.dumps(draft))
         kb = InlineKeyboardBuilder()
@@ -3954,6 +3934,26 @@ def build_router(
         await safe_callback_answer(callback, )
         if callback.message:
             await show_admin_stats(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:broadcast:start")
+    async def admin_broadcast_start(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нужна полная админка.", show_alert=True)
+            return
+        await db.set_support_session(
+            callback.from_user.id,
+            "ad_text",
+            payload=json.dumps({"broadcast_only": True}),
+        )
+        await safe_callback_answer(callback)
+        if callback.message:
+            kb = InlineKeyboardBuilder()
+            kb.row(blue_inline_button("Отмена", callback_data="admin:ad:cancel", premium_icon=False))
+            await callback.message.answer(
+                "<b>Новая рассылка · 1/4</b>\n\n"
+                "Отправьте текст рассылки. Фото и кнопка — необязательные.",
+                reply_markup=kb.as_markup(),
+            )
 
     @router.callback_query(F.data == "admin:ad:start")
     async def admin_ad_start(callback: CallbackQuery) -> None:
@@ -4618,26 +4618,31 @@ def build_router(
         )
 
     async def deliver_support_message(bot, chat_id: int, ticket_id: int, payload: dict[str, Any], *, admin_reply: bool) -> None:
-        prefix = f"<b>{'Ответ поддержки' if admin_reply else 'Новое сообщение'}\nОбращение #{ticket_id}</b>"
         body = html.escape(str(payload.get("text") or payload.get("caption") or ""))
-        caption = (prefix + (f"\n\n{body}" if body else ""))[:1024]
         if admin_reply:
+            prefix = f"<b>Ответ поддержки\nОбращение #{ticket_id}</b>"
             markup = support_user_ticket_keyboard({"id": ticket_id, "status": "open"})
         else:
             ticket = await db.get_support_ticket(ticket_id, is_admin=True)
             support_uid = int(ticket.get("telegram_id") or 0) if ticket else 0
             support_active = False
+            username = "без username"
+            if ticket and ticket.get("username"):
+                username = f"@{html.escape(str(ticket['username']))}"
             if support_uid:
                 try:
                     support_user = await db.get_user(support_uid)
                     support_active = is_active(support_user)
                 except KeyError:
                     pass
-            markup = support_admin_keyboard(
-                ticket_id,
-                telegram_id=support_uid or None,
-                active=support_active,
+            prefix = (
+                f"<b>Новое сообщение\nОбращение #{ticket_id}</b>\n\n"
+                f"Пользователь: <b>{username}</b>\n"
+                f"Telegram ID: <code>{support_uid}</code>\n"
+                f"Подписка: <b>{'🟢 активна' if support_active else '🔴 нет активной'}</b>"
             )
+            markup = support_admin_keyboard(ticket_id)
+        caption = (prefix + (f"\n\n{body}" if body else ""))[:1024]
         if payload["message_type"] == "photo":
             await bot.send_photo(chat_id=chat_id, photo=payload["file_id"], caption=caption, reply_markup=markup)
         elif payload["message_type"] == "video":
@@ -4742,8 +4747,9 @@ def build_router(
                 kb = InlineKeyboardBuilder()
                 kb.row(blue_inline_button("Без изображения", callback_data="admin:ad:skip-photo"))
                 kb.row(blue_inline_button("Отмена", callback_data="admin:ad:cancel", premium_icon=False))
+                title = "Новая рассылка · 2/4" if draft.get("broadcast_only") else "Новая реклама · 2/5"
                 await message.answer(
-                    "<b>Новая реклама · 2/5</b>\n\nОтправьте изображение или продолжите без него.",
+                    f"<b>{title}</b>\n\nОтправьте изображение или продолжите без него.",
                     reply_markup=kb.as_markup(),
                 )
                 return True
@@ -4770,11 +4776,12 @@ def build_router(
                     return True
                 draft["button_url"] = url
                 if not url:
-                    await ask_ad_channel(message, user_id, draft)
+                    await finish_ad_target(message, user_id, draft)
                     return True
                 await db.set_support_session(user_id, "ad_button", payload=json.dumps(draft))
+                title = "Новая рассылка · 4/4" if draft.get("broadcast_only") else "Новая реклама · 4/5"
                 await message.answer(
-                    "<b>Новая реклама · 4/5</b>\n\nОтправьте текст кнопки. Можно добавить один premium emoji."
+                    f"<b>{title}</b>\n\nОтправьте текст кнопки. Можно добавить один premium emoji."
                 )
                 return True
 
@@ -4788,7 +4795,7 @@ def build_router(
                 custom_id = first_custom_emoji_id(message)
                 if custom_id:
                     draft["button_emoji_id"] = custom_id
-                await ask_ad_channel(message, user_id, draft)
+                await finish_ad_target(message, user_id, draft)
                 return True
 
             if mode == "ad_channel":
