@@ -1413,10 +1413,10 @@ def build_router(
         user = await ensure_actor(message.from_user)
         start_arg = str(command.args or "").strip().lower()
 
-        if start_arg == "anonchat_mgn":
+        if start_arg in {"anonchat_mgn", "pozor_mgn"}:
             await db.set_attribution_source_once(
                 message.from_user.id,
-                "anonchat_mgn",
+                start_arg,
             )
             user = await db.get_user(message.from_user.id)
 
@@ -3177,6 +3177,7 @@ def build_router(
 
         stats = await db.admin_overview()
         anonchat = await db.attribution_stats("anonchat_mgn")
+        pozor = await db.attribution_stats("pozor_mgn")
         recent = await db.recent_users(5)
         pay_status = "работает" if config.rollypay_enabled else "не настроена"
         vpn_status = (
@@ -3209,6 +3210,11 @@ def build_router(
             f"├ Пришло: <b>{anonchat['arrived']}</b>",
             f"├ Купили VPN: <b>{anonchat['buyers']}</b>",
             f"└ Конверсия: <b>{anonchat['conversion']:.1f}%</b>",
+            "",
+            "📣 <b>Позор МГН</b>",
+            f"├ Пришло: <b>{pozor['arrived']}</b>",
+            f"├ Купили VPN: <b>{pozor['buyers']}</b>",
+            f"└ Конверсия: <b>{pozor['conversion']:.1f}%</b>",
             "",
             f"🌐 VPN: <b>{vpn_status}</b>",
             "",
@@ -3320,6 +3326,7 @@ def build_router(
             return
         stats = await db.admin_overview()
         anonchat = await db.attribution_stats("anonchat_mgn")
+        pozor = await db.attribution_stats("pozor_mgn")
         recent = await db.recent_users(10)
 
         kb = InlineKeyboardBuilder()
@@ -3352,6 +3359,11 @@ def build_router(
             f"├ Перешли и запустили бота — <b>{anonchat['arrived']}</b>",
             f"├ Совершили оплату — <b>{anonchat['buyers']}</b>",
             f"└ Конверсия в покупку — <b>{anonchat['conversion']:.1f}%</b>",
+            "",
+            "📣 <b>Источник: Позор МГН</b>",
+            f"├ Перешли и запустили бота — <b>{pozor['arrived']}</b>",
+            f"├ Совершили оплату — <b>{pozor['buyers']}</b>",
+            f"└ Конверсия в покупку — <b>{pozor['conversion']:.1f}%</b>",
             "",
             "🕒 <b>Последние регистрации</b>",
         ]

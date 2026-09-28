@@ -398,13 +398,14 @@ def test_reply_keyboard_navigation_replaces_screen_and_removes_button_message(tm
     asyncio.run(run())
 
 
-def test_start_anonchat_mgn_records_source_once(tmp_path, monkeypatch):
+@pytest.mark.parametrize("source", ["anonchat_mgn", "pozor_mgn"])
+def test_campaign_start_records_source_once(tmp_path, monkeypatch, source):
     monkeypatch.setenv("BOT_TOKEN", TOKEN)
 
     async def run():
         config = replace(
             Config.from_env(),
-            db_path=str(tmp_path / "start-source.db"),
+            db_path=str(tmp_path / f"start-{source}.db"),
             main_menu_banner_file_id="",
         )
         db = Database(config.db_path)
@@ -447,14 +448,14 @@ def test_start_anonchat_mgn_records_source_once(tmp_path, monkeypatch):
 
         await handler(
             message,
-            SimpleNamespace(args="anonchat_mgn"),
+            SimpleNamespace(args=source),
         )
         user = await db.get_user(42)
-        assert user["attribution_source"] == "anonchat_mgn"
+        assert user["attribution_source"] == source
 
         await db.set_attribution_source_once(42, "another")
         user = await db.get_user(42)
-        assert user["attribution_source"] == "anonchat_mgn"
+        assert user["attribution_source"] == source
 
     asyncio.run(run())
 
