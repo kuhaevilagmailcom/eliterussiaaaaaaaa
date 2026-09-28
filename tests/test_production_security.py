@@ -459,6 +459,63 @@ def test_start_anonchat_mgn_records_source_once(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+def test_new_user_must_join_channel_before_home_opens(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", TOKEN)
+
+    async def run():
+        config = replace(
+            Config.from_env(),
+            db_path=str(tmp_path / "channel-gate.db"),
+            channel_url="https://t.me/mgnvpnn",
+            main_menu_banner_file_id="",
+        )
+        db = Database(config.db_path)
+        await db.init()
+        bot = SimpleNamespace(
+            get_chat_member=AsyncMock(return_value=SimpleNamespace(status="left")),
+            send_chat_action=AsyncMock(),
+            delete_message=AsyncMock(),
+            send_message=AsyncMock(return_value=SimpleNamespace(message_id=88)),
+            send_photo=AsyncMock(return_value=SimpleNamespace(message_id=89)),
+        )
+        actor = SimpleNamespace(id=77, username="new", first_name="New")
+        message = SimpleNamespace(
+            from_user=actor,
+            bot=bot,
+            chat=SimpleNamespace(id=77),
+            message_id=1,
+            answer=AsyncMock(return_value=SimpleNamespace(delete=AsyncMock())),
+        )
+        router = build_router(config, db, EmojiBank(()), SimpleNamespace(service_ready=False))
+        start_handler = next(
+            item.callback for item in router.message.handlers
+            if item.callback.__name__ == "start"
+        )
+        await start_handler(message, SimpleNamespace(args=None))
+        assert (await db.get_user(77))["channel_verified_at"] is None
+        gate_markup = message.answer.await_args.kwargs["reply_markup"]
+        assert gate_markup.inline_keyboard[0][0].url == "https://t.me/mgnvpnn"
+        assert gate_markup.inline_keyboard[1][0].callback_data == "membership:check"
+        bot.send_photo.assert_not_awaited()
+
+        bot.get_chat_member.return_value = SimpleNamespace(status="member")
+        check_handler = next(
+            item.callback for item in router.callback_query.handlers
+            if item.callback.__name__ == "membership_check"
+        )
+        callback = SimpleNamespace(
+            from_user=actor,
+            bot=bot,
+            message=message,
+            answer=AsyncMock(),
+        )
+        await check_handler(callback)
+        assert (await db.get_user(77))["channel_verified_at"] is not None
+        bot.send_photo.assert_awaited_once()
+
+    asyncio.run(run())
+
+
 def test_admin_device_update_ignores_expired_callback_query(tmp_path, monkeypatch):
     monkeypatch.setenv("BOT_TOKEN", TOKEN)
 

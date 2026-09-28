@@ -33,6 +33,18 @@ def test_active_users_are_batched_for_vpn_sync(tmp_path):
     run(scenario())
 
 
+def test_new_user_channel_verification_is_persisted(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "mgn.sqlite3"))
+        await db.init()
+        user = await db.ensure_user(9, "new_user", "New")
+        assert user["channel_verified_at"] is None
+        verified = await db.mark_channel_verified(9)
+        assert verified["channel_verified_at"] is not None
+
+    run(scenario())
+
+
 def test_referral_rewards_are_atomic_and_capped(tmp_path):
     async def scenario():
         db = Database(str(tmp_path / "mgn.sqlite3"))

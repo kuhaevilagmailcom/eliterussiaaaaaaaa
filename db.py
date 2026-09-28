@@ -67,7 +67,8 @@ class Database:
                     bonus_devices INTEGER NOT NULL DEFAULT 0,
                     vpn_client_id TEXT UNIQUE,
                     attribution_source TEXT,
-                    attribution_at TEXT
+                    attribution_at TEXT,
+                    channel_verified_at TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_users_subscription_until
@@ -248,6 +249,15 @@ class Database:
                 await db.execute("ALTER TABLE users ADD COLUMN attribution_source TEXT")
             if "attribution_at" not in columns:
                 await db.execute("ALTER TABLE users ADD COLUMN attribution_at TEXT")
+            if "channel_verified_at" not in columns:
+                await db.execute("ALTER TABLE users ADD COLUMN channel_verified_at TEXT")
+                # Users who existed before the mandatory channel gate are
+                # grandfathered. Only accounts created after this migration
+                # must complete the check.
+                await db.execute(
+                    "UPDATE users SET channel_verified_at=created_at "
+                    "WHERE channel_verified_at IS NULL"
+                )
             await db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_vpn_client_id "
                 "ON users(vpn_client_id) WHERE vpn_client_id IS NOT NULL"
@@ -437,6 +447,15 @@ class Database:
             )
             await db.commit()
             return cursor.rowcount == 1
+
+    async def mark_channel_verified(self, telegram_id: int) -> dict[str, Any]:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE users SET channel_verified_at=? WHERE telegram_id=?",
+                (to_iso(utcnow()), int(telegram_id)),
+            )
+            await db.commit()
+        return await self.get_user(int(telegram_id))
 
     async def attribution_stats(self, source: str) -> dict[str, Any]:
         source = str(source or "").strip().lower()

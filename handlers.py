@@ -769,6 +769,60 @@ def build_router(
             actor.first_name,
         )
 
+    def required_channel_id() -> str | int | None:
+        value = str(config.channel_url or "").strip()
+        if re.fullmatch(r"-100\d{6,}", value):
+            return int(value)
+        match = re.fullmatch(r"@([A-Za-z0-9_]{5,32})", value)
+        if match:
+            return "@" + match.group(1)
+        match = re.fullmatch(r"https?://t\.me/([A-Za-z0-9_]{5,32})/?", value)
+        if match:
+            return "@" + match.group(1)
+        return None
+
+    def channel_gate_keyboard() -> Any:
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button("Подписаться на канал", url=config.channel_url, icon_index=8)
+        )
+        kb.row(
+            blue_inline_button("Проверить подписку", callback_data="membership:check", icon_index=2)
+        )
+        return kb.as_markup()
+
+    async def is_channel_member(bot, user_id: int) -> bool:
+        channel_id = required_channel_id()
+        if channel_id is None:
+            logger.error("CHANNEL_URL cannot be used for membership verification")
+            return False
+        try:
+            member = await bot.get_chat_member(chat_id=channel_id, user_id=int(user_id))
+        except Exception as exc:
+            logger.warning(
+                "Could not verify channel membership for %s: %s",
+                user_id,
+                type(exc).__name__,
+            )
+            return False
+        status = str(getattr(member, "status", "")).lower()
+        if status in {"creator", "administrator", "member"}:
+            return True
+        return status == "restricted" and bool(getattr(member, "is_member", False))
+
+    async def require_channel_membership(message: Message, actor, user: dict[str, Any]) -> bool:
+        if user.get("channel_verified_at") or is_owner(int(actor.id)):
+            return True
+        if await is_channel_member(message.bot, int(actor.id)):
+            await db.mark_channel_verified(int(actor.id))
+            return True
+        await message.answer(
+            "📣 <b>Подпишитесь на канал MGN VPN</b>\n\n"
+            "Подписка на канал обязательна для доступа к боту. После подписки нажмите «Проверить подписку».",
+            reply_markup=channel_gate_keyboard(),
+        )
+        return False
+
 
     async def get_admin_role(user_id: int) -> str | None:
         if user_id in config.admin_ids:
@@ -1373,6 +1427,8 @@ def build_router(
                     message.from_user.id,
                     int(raw),
                 )
+        if not await require_channel_membership(message, message.from_user, user):
+            return
         try:
             await message.bot.send_chat_action(
                 chat_id=message.chat.id,
@@ -1389,8 +1445,32 @@ def build_router(
             ensure_reply_keyboard=True,
         )
 
+    @router.callback_query(F.data == "membership:check")
+    async def membership_check(callback: CallbackQuery) -> None:
+        user = await ensure_actor(callback.from_user)
+        if not await is_channel_member(callback.bot, callback.from_user.id):
+            await safe_callback_answer(
+                callback,
+                "Подписка пока не найдена. Подпишитесь на канал и попробуйте снова.",
+                show_alert=True,
+            )
+            return
+        await db.mark_channel_verified(callback.from_user.id)
+        await safe_callback_answer(callback, "Подписка подтверждена")
+        if callback.message:
+            await show_home(
+                callback.message,
+                callback.from_user,
+                recover_on_edit_failure=True,
+                force_new=True,
+                ensure_reply_keyboard=True,
+            )
+
     @router.message(Command("sub"))
     async def subscription_command(message: Message) -> None:
+        user = await ensure_actor(message.from_user)
+        if not await require_channel_membership(message, message.from_user, user):
+            return
         try:
             cleanup = await message.answer("\u2063", reply_markup=ReplyKeyboardRemove())
             try:
