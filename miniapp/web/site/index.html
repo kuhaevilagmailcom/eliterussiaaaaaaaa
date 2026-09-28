@@ -9,7 +9,7 @@
   <meta property="og:description" content="VPN без лишних настроек. Откройте бота, выберите тариф и подключитесь.">
   <meta property="og:type" content="website">
   <title>MGN VPN — VPN через Telegram</title>
-  <link rel="stylesheet" href="/static/site/styles.css?v=5">
+  <link rel="stylesheet" href="/static/site/styles.css?v=6">
 </head>
 <body>
   <header class="header">
@@ -62,21 +62,23 @@
       </div>
       <div class="renew-card">
         <form id="id-payment-form" class="renew-form" novalidate>
-          <label>
+          <label class="renew-id-field">
             <span>Telegram ID</span>
             <input id="renew-user-id" name="user_id" type="text" inputmode="numeric" autocomplete="off" placeholder="Например, 123456789" maxlength="19" required>
+            <small>Это Telegram ID, который указан в главном меню бота MGN VPN.</small>
           </label>
-          <label>
-            <span>Тариф</span>
-            <select id="renew-plan" name="plan_code" required>
-              <option value="">Загрузка тарифов…</option>
-            </select>
-          </label>
+          <div class="renew-plan-field">
+            <span class="renew-label">Выберите тариф</span>
+            <div id="renew-plan-options" class="renew-plan-options" aria-live="polite">
+              <div class="renew-plan-loading">Загружаем тарифы…</div>
+            </div>
+            <input id="renew-plan" name="plan_code" type="hidden" required>
+          </div>
           <button class="button" id="renew-submit" type="submit">Перейти к оплате</button>
         </form>
         <div class="renew-info">
           <strong>Как это работает</strong>
-          <p>Введите ID аккаунта MGN VPN, выберите тариф и оплатите через СБП. После подтверждения платежа подписка продлится автоматически.</p>
+          <p>Введите именно <b>Telegram ID</b> из главного меню бота, выберите тариф и оплатите через СБП. После подтверждения платежа подписка продлится автоматически.</p>
           <div id="renew-status" class="renew-status" aria-live="polite"></div>
         </div>
       </div>
@@ -97,6 +99,6 @@
   </footer>
 
   <script src="/static/site/config.js?v=4"></script>
-  <script src="/static/site/app.js?v=5"></script>
+  <script src="/static/site/app.js?v=6"></script>
 </body>
 </html>
