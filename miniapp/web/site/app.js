@@ -35,22 +35,41 @@
       node.textContent=Number.isFinite(Number(price))?Number(price).toLocaleString('ru-RU')+' ₽':'в Telegram';
     });
 
-    var select=document.getElementById('renew-plan');
-    if(select){
-      var current=select.value;
-      select.innerHTML='';
-      (catalog&&catalog.plans||[]).forEach(function(plan){
-        var option=document.createElement('option');
-        option.value=String(plan.code);
-        option.textContent=String(plan.name)+' — '+Number(plan.price_rub).toLocaleString('ru-RU')+' ₽';
-        select.appendChild(option);
+    var planInput=document.getElementById('renew-plan');
+    var planOptions=document.getElementById('renew-plan-options');
+    if(planInput&&planOptions){
+      var current=planInput.value;
+      planOptions.innerHTML='';
+      var items=(catalog&&catalog.plans||[]);
+      items.forEach(function(plan,index){
+        var button=document.createElement('button');
+        button.type='button';
+        button.className='renew-plan-option';
+        button.dataset.planCode=String(plan.code);
+        button.innerHTML=
+          '<span class="renew-plan-name">'+String(plan.name)+'</span>'+
+          '<strong>'+Number(plan.price_rub).toLocaleString('ru-RU')+' ₽</strong>'+
+          (plan.popular?'<em>Популярный</em>':'');
+        button.addEventListener('click',function(){
+          planInput.value=String(plan.code);
+          planOptions.querySelectorAll('.renew-plan-option').forEach(function(node){
+            node.classList.toggle('is-active',node===button);
+            node.setAttribute('aria-pressed',node===button?'true':'false');
+          });
+          paymentMessage('','');
+        });
+        button.setAttribute('aria-pressed','false');
+        planOptions.appendChild(button);
+        if((current&&current===String(plan.code))||(!current&&index===0)){
+          button.click();
+        }
       });
-      if(current&&plans[current])select.value=current;
-      if(!select.options.length){
-        var empty=document.createElement('option');
-        empty.value='';
+      if(!items.length){
+        planInput.value='';
+        var empty=document.createElement('div');
+        empty.className='renew-plan-loading';
         empty.textContent='Тарифы временно недоступны';
-        select.appendChild(empty);
+        planOptions.appendChild(empty);
       }
     }
   }
@@ -89,10 +108,10 @@
     paymentForm.addEventListener('submit',function(event){
       event.preventDefault();
       var input=document.getElementById('renew-user-id');
-      var select=document.getElementById('renew-plan');
+      var planInput=document.getElementById('renew-plan');
       var button=document.getElementById('renew-submit');
       var userId=String(input&&input.value||'').trim();
-      var planCode=String(select&&select.value||'').trim();
+      var planCode=String(planInput&&planInput.value||'').trim();
       if(!/^\d{5,19}$/.test(userId)){
         paymentMessage('Введите корректный Telegram ID.','error');
         return;
