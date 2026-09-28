@@ -19,6 +19,20 @@ def test_legacy_naive_timestamps_are_normalized_to_utc():
     assert from_iso("broken") is None
 
 
+def test_active_users_are_batched_for_vpn_sync(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "mgn.sqlite3"))
+        await db.init()
+        await db.ensure_user(1, "active", "Active")
+        await db.ensure_user(2, "inactive", "Inactive")
+        await db.extend_subscription(1, 30, "1 месяц", 1)
+        users = await db.list_active_users_for_vpn_sync(limit=10)
+        assert [user["telegram_id"] for user in users] == [1]
+        assert users[0]["sub_token"]
+
+    run(scenario())
+
+
 def test_referral_rewards_are_atomic_and_capped(tmp_path):
     async def scenario():
         db = Database(str(tmp_path / "mgn.sqlite3"))

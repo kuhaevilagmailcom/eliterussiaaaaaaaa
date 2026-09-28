@@ -146,7 +146,19 @@ class MiniAppServer:
         # Version the on-disk cache so a deployment that fixes subscription
         # composition never keeps serving an older NL-only payload.
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        return self._subscription_cache_dir / f"v5-{digest}.json"
+        return self._subscription_cache_dir / f"v6-{digest}.json"
+
+    async def invalidate_subscription_cache(self, token: str) -> None:
+        """Drop every cached form of a user's subscription after H1 sync."""
+        token = str(token or "").strip()
+        if not token:
+            return
+        self._subscription_cache.pop(token, None)
+        self._subscription_cache_invalidated.add(token)
+        await asyncio.to_thread(
+            self._subscription_cache_path(token).unlink,
+            missing_ok=True,
+        )
 
     def _read_persistent_subscription_cache(self, token: str) -> dict | None:
         path = self._subscription_cache_path(token)
@@ -335,8 +347,7 @@ class MiniAppServer:
                 await asyncio.wait_for(self.provider.provision(user), 45.0)
             # Force one rebuild, but keep the last payload available so a
             # temporarily unavailable country (for example US) is not dropped.
-            self._subscription_cache.pop(token, None)
-            self._subscription_cache_invalidated.add(token)
+            await self.invalidate_subscription_cache(token)
             logger.info(
                 "H1Cloud background federation refresh completed for %s",
                 user_id,
@@ -1269,8 +1280,7 @@ class MiniAppServer:
         try:
             state = await asyncio.wait_for(self.provider.reset_devices(row), 30.0)
             token = str(row["sub_token"])
-            self._subscription_cache.pop(token, None)
-            await asyncio.to_thread(self._subscription_cache_path(token).unlink, missing_ok=True)
+            await self.invalidate_subscription_cache(token)
         except Exception as exc:
             logger.warning("Mini App device reset failed for %s: %s", uid, exc)
             raise _json_error(503, "Не удалось сбросить устройства")

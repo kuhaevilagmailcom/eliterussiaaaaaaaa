@@ -47,13 +47,14 @@ def test_canonical_config_and_back(monkeypatch):
     assert config.vpn_sub_base_url == 'https://mgnvpn.ru/sub'
     assert config.admin_ids == ()
     buttons = connection_keyboard('https://mgnvpn.ru/sub/'+'a'*32).inline_keyboard
-    assert len(buttons) == 5
+    assert len(buttons) == 6
+    assert buttons[1][0].url == 'https://mgnvpn.ru/client/incy/'+'a'*32
     assert buttons[0][0].url == 'https://mgnvpn.ru/client/happ/'+'a'*32
-    assert buttons[1][0].copy_text.text == 'https://mgnvpn.ru/sub/'+'a'*32
-    assert buttons[2][0].callback_data == 'plans'
-    assert buttons[3][0].callback_data == 'menu:devices'
-    assert buttons[4][0].text == 'Назад'
-    assert buttons[4][0].icon_custom_emoji_id is None
+    assert buttons[2][0].copy_text.text == 'https://mgnvpn.ru/sub/'+'a'*32
+    assert buttons[3][0].callback_data == 'plans'
+    assert buttons[4][0].callback_data == 'menu:devices'
+    assert buttons[5][0].text == 'Назад'
+    assert buttons[5][0].icon_custom_emoji_id is None
 
 
 def test_main_inline_menu_has_direct_miniapp_entry():

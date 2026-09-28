@@ -7,6 +7,9 @@ def test_only_verified_clients_expose_import_links():
     assert clients["Happ"].import_url(url) == (
         "happ://add/https://vpn.example/sub/personal-token"
     )
+    assert clients["INCY"].import_url(url) == (
+        "incy://import/https://vpn.example/sub/personal-token"
+    )
     assert clients["Hiddify"].import_url(url).startswith("hiddify://install-sub?url=https%3A")
     assert clients["v2rayNG"].import_url(url).startswith("v2rayng://install-sub?url=https%3A")
     assert client_redirect_url(url, clients["Hiddify"]) == (
@@ -19,4 +22,7 @@ def test_registry_exposes_https_redirect_for_happ():
     registry = {item["name"]: item for item in client_registry(url)}
     assert registry["Happ"]["redirect_url"] == (
         "https://mgnvpn.ru/client/happ/personal-token"
+    )
+    assert registry["INCY"]["redirect_url"] == (
+        "https://mgnvpn.ru/client/incy/personal-token"
     )

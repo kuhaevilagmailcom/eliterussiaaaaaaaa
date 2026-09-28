@@ -62,6 +62,45 @@ def test_h1_capabilities_are_explicit():
     assert capabilities.supports_device_reset
 
 
+def test_h1_federation_uses_documented_lagg_and_lproxy_routes():
+    async def run():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider._request = AsyncMock(
+            return_value={"nodes": [{"node_id": "de"}, "us"]}
+        )
+        nodes = await provider._federated_nodes()
+        provider._request.assert_awaited_once_with("GET", "/fed/lagg")
+        assert [provider._node_prefix(node) for node in nodes] == [
+            "/fed/lproxy/de",
+            "/fed/lproxy/us",
+        ]
+
+    asyncio.run(run())
+
+
+def test_h1_manual_upsert_uses_local_inbounds_without_channels():
+    async def run():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider._inbound_ids = AsyncMock(return_value=[11, 12])
+        provider._get_client = AsyncMock(return_value=None)
+        provider._request = AsyncMock(
+            return_value={"client": {"name": "mgn_test", "uuid": "uuid-1"}}
+        )
+        await provider._upsert_location(
+            name="mgn_test",
+            client_uuid="uuid-1",
+            expires_at=4102444800,
+            traffic_limit=0,
+            device_limit=2,
+        )
+        payload = provider._request.await_args.kwargs["json"]
+        assert payload["manual"] is True
+        assert payload["channels"] == []
+        assert payload["inbound_ids"] == [11, 12]
+
+    asyncio.run(run())
+
+
 def test_h1_subscription_merges_new_federation_country_even_if_aggregate_is_stale():
     async def run():
         provider = object.__new__(H1CloudVpnProvider)

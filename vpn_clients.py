@@ -37,6 +37,14 @@ CLIENTS: tuple[VpnClient, ...] = (
         subscription_url_safe=":/",
     ),
     VpnClient(
+        name="INCY",
+        platform="Android · iOS · Windows · macOS · Linux",
+        icon="🛡",
+        download_url="https://incy.cc/",
+        deep_link_template="incy://import/{subscription_url}",
+        subscription_url_safe=":/",
+    ),
+    VpnClient(
         name="Hiddify",
         platform="Android · iOS · Windows · macOS · Linux",
         icon="🔷",

@@ -1576,7 +1576,10 @@ class Database:
     async def set_support_session(
         self, telegram_id: int, mode: str, ticket_id: int | None = None, payload: str | None = None
     ) -> None:
-        if mode not in {"new", "user_reply", "admin_reply", "admin_search", "admin_days", "gift"}:
+        if mode not in {
+            "new", "user_reply", "admin_reply", "admin_search", "admin_days", "gift",
+            "ad_text", "ad_photo", "ad_url", "ad_button", "ad_channel", "ad_confirm",
+        }:
             raise ValueError("invalid support session")
         now = utcnow()
         async with aiosqlite.connect(self.path) as db:
@@ -1862,6 +1865,31 @@ class Database:
             "star_paid": int(star_paid),
             "star_revenue": int(star_revenue),
         }
+
+    async def list_active_users_for_vpn_sync(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Return active subscriptions in stable batches for provider repair."""
+        limit = max(1, min(int(limit), 500))
+        offset = max(0, int(offset))
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT * FROM users
+                    WHERE subscription_until IS NOT NULL
+                      AND subscription_until > ?
+                    ORDER BY telegram_id
+                    LIMIT ? OFFSET ?
+                    """,
+                    (to_iso(utcnow()), limit, offset),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     async def recent_users(self, limit: int = 10) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 20))

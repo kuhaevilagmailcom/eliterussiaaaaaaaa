@@ -182,7 +182,7 @@
     const hasLink=!!d.vpn.subscription_url;
     $('#copySubscriptionHome').disabled=!hasLink;
     $('#copySubscriptionInline').disabled=!hasLink;
-    $('#openHappHome').disabled=!hasLink;
+    $('#openClientHome').disabled=!hasLink;
     $('#linkTitle').textContent=hasLink?'Ваш VPN готов':'Ссылка подключения';
     $('#linkActionNote').textContent=hasLink
       ? 'Персональная ссылка только для вашего аккаунта'
@@ -301,19 +301,19 @@
   function renderClients(){
     const root=$('#clientList');
     if(!root)return;
-    const client=(state.data.clients||[]).find(item=>String(item.name||'').toLowerCase()==='happ');
-    if(!client){
-      root.innerHTML='<div class="empty">Happ станет доступен после активации подписки.</div>';
+    const clients=(state.data.clients||[]).filter(item=>['happ','incy'].includes(String(item.name||'').toLowerCase()));
+    if(!clients.length){
+      root.innerHTML='<div class="empty">Клиенты станут доступны после активации подписки.</div>';
       return;
     }
-    const target=client.redirect_url||client.import_url||client.download_url||'';
-    root.innerHTML=
-      '<button type="button" data-client="'+esc(target)+'">'+
-      '<span class="icon-box"><i data-lucide="shield-check"></i></span>'+
-      '<span><b>Happ</b><small>'+esc(client.platform||'VPN-клиент')+'</small></span>'+
-      '<span>'+(client.supports_subscription_import?'Добавить':'Установить')+'</span></button>';
-    const button=$('[data-client]',root);
-    if(button)button.onclick=()=>openClientUrl(button.dataset.client||'');
+    root.innerHTML=clients.map(client=>{
+      const target=client.redirect_url||client.import_url||client.download_url||'';
+      return '<button type="button" data-client="'+esc(target)+'">'+
+        '<span class="icon-box"><i data-lucide="shield-check"></i></span>'+
+        '<span><b>'+esc(client.name||'VPN-клиент')+'</b><small>'+esc(client.platform||'VPN-клиент')+'</small></span>'+
+        '<span>'+(client.supports_subscription_import?'Добавить':'Установить')+'</span></button>';
+    }).join('');
+    $$('[data-client]',root).forEach(button=>button.onclick=()=>openClientUrl(button.dataset.client||''));
   }
 
   function renderAgreement(){
@@ -410,6 +410,7 @@
   function closeSheets(){
     $('#paymentSheet').hidden=true;
     $('#deviceSheet').hidden=true;
+    $('#clientSheet').hidden=true;
     $('#sheetBackdrop').hidden=true;
     document.body.style.overflow='';
     sheetReturnFocus?.focus();
@@ -465,6 +466,19 @@
     $('#confirmDevicePurchase').disabled=limit>=max||!d.payments.sbp_enabled;
     $('#confirmDevicePurchase').textContent=limit>=max?'Лимит устройств достигнут':'Купить слот';
     $('#deviceSheet').hidden=false;
+    showBackdrop();
+    icons();
+    haptic('medium');
+  }
+
+  function openClientSheet(){
+    if(!state.data?.vpn?.subscription_url){
+      toast(state.data?.subscription?.active?'Клиенты пока недоступны':'Сначала активируй подписку');
+      return;
+    }
+    closeSheets();
+    renderClients();
+    $('#clientSheet').hidden=false;
     showBackdrop();
     icons();
     haptic('medium');
@@ -610,16 +624,6 @@
     if(!url){toast(state.data?.subscription?.active?'Ссылка пока недоступна':'Сначала активируй подписку');return}
     copyText(url,'Ссылка VPN скопирована');
   }
-  function openHapp(){
-    const client=(state.data?.clients||[]).find(item=>String(item.name||'').toLowerCase()==='happ');
-    const url=client?.redirect_url||'';
-    if(!url){
-      toast(state.data?.subscription?.active?'Happ пока недоступен':'Сначала активируй подписку');
-      return;
-    }
-    openClientUrl(url);
-  }
-
   async function loadSupport(){
     const list=$('#supportTickets');
     if(!list)return;
@@ -719,7 +723,7 @@
   $$('[data-nav]').forEach(btn=>btn.addEventListener('click',()=>go(btn.dataset.nav)));
   $('#copySubscriptionHome').onclick=event=>{pulseElement(event.currentTarget);copySubscription()};
   $('#copySubscriptionInline').onclick=event=>{pulseElement(event.currentTarget);copySubscription()};
-  $('#openHappHome').onclick=event=>{pulseElement(event.currentTarget);openHapp()};
+  $('#openClientHome').onclick=event=>{pulseElement(event.currentTarget);openClientSheet()};
   $('#copySubscriptionPlans').onclick=copySubscription;
   $('#buyDevicePage').onclick=openDeviceSheet;
   $('#resetDevicesPage').onclick=resetDevices;
@@ -729,6 +733,7 @@
 
   $('#sheetClose').onclick=closeSheets;
   $('#deviceSheetClose').onclick=closeSheets;
+  $('#clientSheetClose').onclick=closeSheets;
   $('#sheetBackdrop').onclick=closeSheets;
   $('#payStars').onclick=payStars;
   $('#paySbp').onclick=paySbp;
@@ -769,7 +774,7 @@
 
   try{
     tg?.BackButton?.onClick(()=>{
-      if(!$('#paymentSheet').hidden||!$('#deviceSheet').hidden){closeSheets();return}
+      if(!$('#paymentSheet').hidden||!$('#deviceSheet').hidden||!$('#clientSheet').hidden){closeSheets();return}
       if(!ROOT_PAGES.has(state.page))go(state.previousRoot||'home');
       else go('home');
     });

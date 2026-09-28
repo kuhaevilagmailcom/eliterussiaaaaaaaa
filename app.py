@@ -173,6 +173,60 @@ async def payment_reconciliation_loop(config: Config, db: Database, provider: Vp
                 logger.warning("Payment reconciliation failed for %s: %s", local["order_id"], type(exc).__name__)
 
 
+async def sync_active_vpn_users_once(
+    db: Database,
+    provider: VpnProvider,
+    miniapp: MiniAppServer,
+) -> tuple[int, int]:
+    """Repair every active H1 client across all currently linked locations."""
+    logger = logging.getLogger(__name__)
+    semaphore = asyncio.Semaphore(3)
+    synced = 0
+    failed = 0
+
+    async def sync_user(user: dict) -> bool:
+        async with semaphore:
+            try:
+                await asyncio.wait_for(provider.provision(user), timeout=50.0)
+                await miniapp.invalidate_subscription_cache(str(user.get("sub_token") or ""))
+                return True
+            except Exception as exc:
+                logger.warning(
+                    "H1Cloud active-user sync failed for %s: %s",
+                    user.get("telegram_id"),
+                    str(exc).strip() or type(exc).__name__,
+                )
+                return False
+
+    offset = 0
+    while True:
+        users = await db.list_active_users_for_vpn_sync(limit=100, offset=offset)
+        if not users:
+            break
+        results = await asyncio.gather(*(sync_user(user) for user in users))
+        synced += sum(1 for result in results if result)
+        failed += sum(1 for result in results if not result)
+        offset += len(users)
+
+    logger.info("H1Cloud active-user sync complete: %s synced, %s failed", synced, failed)
+    return synced, failed
+
+
+async def vpn_federation_reconciliation_loop(
+    db: Database,
+    provider: VpnProvider,
+    miniapp: MiniAppServer,
+) -> None:
+    while True:
+        try:
+            await sync_active_vpn_users_once(db, provider, miniapp)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "H1Cloud active-user reconciliation pass failed"
+            )
+        await asyncio.sleep(15 * 60)
+
+
 def make_provider(config: Config) -> VpnProvider:
     if config.vpn_mode == "h1cloud":
         return H1CloudVpnProvider(
@@ -295,6 +349,11 @@ async def main() -> None:
     provider = make_provider(config)
     miniapp = MiniAppServer(bot, config, db, provider)
     payment_task = asyncio.create_task(payment_reconciliation_loop(config, db, provider))
+    federation_task = (
+        asyncio.create_task(vpn_federation_reconciliation_loop(db, provider, miniapp))
+        if config.vpn_mode == "h1cloud"
+        else None
+    )
 
     try:
         await emoji.load(bot)
@@ -328,6 +387,8 @@ async def main() -> None:
     finally:
         backup_task.cancel()
         payment_task.cancel()
+        if federation_task:
+            federation_task.cancel()
         try:
             await backup_task
         except asyncio.CancelledError:
@@ -336,6 +397,11 @@ async def main() -> None:
             await payment_task
         except asyncio.CancelledError:
             pass
+        if federation_task:
+            try:
+                await federation_task
+            except asyncio.CancelledError:
+                pass
         await miniapp.close()
         await provider.close()
         await bot.session.close()

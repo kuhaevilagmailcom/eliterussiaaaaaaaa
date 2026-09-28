@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import html
+import json
 import logging
 import re
 from datetime import timedelta
@@ -335,14 +336,14 @@ def connection_keyboard(
     back_data: str = "home",
 ) -> Any:
     kb = InlineKeyboardBuilder()
-    primary_client = CLIENTS[0]
-    kb.row(
-        blue_inline_button(
-            "Добавить в Happ",
-            url=client_redirect_url(subscription_url, primary_client),
-            icon_index=2,
+    for client in CLIENTS[:2]:
+        kb.row(
+            blue_inline_button(
+                f"Добавить в {client.name}",
+                url=client_redirect_url(subscription_url, client),
+                icon_index=2,
+            )
         )
-    )
     kb.row(
         copy_inline_button(
             "Скопировать ссылку",
@@ -673,7 +674,7 @@ def connection_text(
         f"Тариф: <b>{plan}</b>\n"
         f"Осталось: <b>{remaining_text(user)}</b>\n"
         f"Устройства: <b>{connected}/{max_devices}</b>\n\n"
-        "Нажмите «Добавить в Happ» или скопируйте персональную ссылку.\n"
+        "Выберите VPN-клиент или скопируйте персональную ссылку.\n"
         "<i>Не передавайте ссылку другим людям.</i>"
     )
 
@@ -3077,6 +3078,9 @@ def build_router(
                 blue_inline_button("🎟 Промокоды", callback_data="admin:bonuses"),
                 blue_inline_button("⚙️ Система", callback_data="admin:system"),
             )
+            kb.row(
+                blue_inline_button("📣 Реклама", callback_data="admin:ad:start"),
+            )
         if role == "owner":
             kb.row(
                 blue_inline_button("🛡 Администраторы", callback_data="admin:admins"),
@@ -3608,6 +3612,98 @@ def build_router(
             reply_markup=kb.as_markup(),
         )
 
+    def ad_draft(session: dict[str, Any]) -> dict[str, Any]:
+        try:
+            value = json.loads(str(session.get("payload") or "{}"))
+        except (TypeError, ValueError):
+            value = {}
+        return value if isinstance(value, dict) else {}
+
+    def ad_markup(draft: dict[str, Any]) -> Any | None:
+        url = str(draft.get("button_url") or "").strip()
+        if not url:
+            return None
+        kwargs: dict[str, Any] = {
+            "text": str(draft.get("button_text") or "Открыть")[:64],
+            "url": url,
+        }
+        custom_id = str(draft.get("button_emoji_id") or "").strip()
+        if custom_id:
+            kwargs["icon_custom_emoji_id"] = custom_id
+        return InlineKeyboardBuilder().row(InlineKeyboardButton(**kwargs)).as_markup()
+
+    async def send_ad_post(bot, chat_id: int | str, draft: dict[str, Any]):
+        text = str(draft.get("text_html") or "").strip()
+        markup = ad_markup(draft)
+        photo = str(draft.get("photo_file_id") or "").strip()
+        if photo:
+            return await bot.send_photo(
+                chat_id=chat_id,
+                photo=photo,
+                caption=text,
+                reply_markup=markup,
+            )
+        return await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=markup,
+        )
+
+    def normalize_ad_url(raw: str) -> str | None:
+        value = str(raw or "").strip()
+        if value == "-":
+            return ""
+        parsed = urlsplit(value)
+        if parsed.scheme in {"https", "http", "tg"} and parsed.netloc:
+            return value
+        return None
+
+    def normalize_channel(raw: str) -> int | str | None:
+        value = str(raw or "").strip()
+        if re.fullmatch(r"-100\d{6,}", value):
+            return int(value)
+        match = re.fullmatch(r"@([A-Za-z0-9_]{5,32})", value)
+        if match:
+            return "@" + match.group(1)
+        match = re.fullmatch(r"https?://t\.me/([A-Za-z0-9_]{5,32})/?", value)
+        if match:
+            return "@" + match.group(1)
+        return None
+
+    def first_custom_emoji_id(message: Message) -> str:
+        for entity in message.entities or []:
+            if str(entity.type) in {"custom_emoji", "MessageEntityType.CUSTOM_EMOJI"}:
+                return str(entity.custom_emoji_id or "")
+        return ""
+
+    async def ask_ad_url(message: Message, actor_id: int, draft: dict[str, Any]) -> None:
+        await db.set_support_session(actor_id, "ad_url", payload=json.dumps(draft))
+        await message.answer(
+            "<b>Ссылка кнопки</b>\n\nОтправьте http(s):// или tg:// ссылку. Отправьте <code>-</code>, если кнопка не нужна."
+        )
+
+    async def ask_ad_channel(message: Message, actor_id: int, draft: dict[str, Any]) -> None:
+        await db.set_support_session(actor_id, "ad_channel", payload=json.dumps(draft))
+        kb = InlineKeyboardBuilder()
+        if normalize_channel(config.channel_url) is not None:
+            kb.row(blue_inline_button("Основной канал", callback_data="admin:ad:channel:main"))
+        kb.row(blue_inline_button("Отмена", callback_data="admin:ad:cancel", premium_icon=False))
+        await message.answer(
+            "<b>Канал для публикации</b>\n\nВыберите основной канал или отправьте @username / ID вида <code>-100…</code>. Бот должен быть администратором канала.",
+            reply_markup=kb.as_markup(),
+        )
+
+    async def show_ad_preview(message: Message, actor_id: int, draft: dict[str, Any]) -> None:
+        await db.set_support_session(actor_id, "ad_confirm", payload=json.dumps(draft))
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("Опубликовать", callback_data="admin:ad:send"))
+        kb.row(blue_inline_button("Отмена", callback_data="admin:ad:cancel", premium_icon=False))
+        await message.answer(
+            f"<b>Предпросмотр рекламы</b>\nКанал: <code>{html.escape(str(draft['channel']))}</code>"
+        )
+        await send_ad_post(message.bot, actor_id, draft)
+        await message.answer("Проверьте публикацию и подтвердите отправку.", reply_markup=kb.as_markup())
+
     @router.message(Command("admin"))
     async def admin_panel(message: Message) -> None:
         if not await has_admin_access(message.from_user.id):
@@ -3637,6 +3733,83 @@ def build_router(
         await safe_callback_answer(callback, )
         if callback.message:
             await show_admin_stats(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:ad:start")
+    async def admin_ad_start(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нужна полная админка.", show_alert=True)
+            return
+        await db.set_support_session(callback.from_user.id, "ad_text", payload="{}")
+        await safe_callback_answer(callback)
+        if callback.message:
+            kb = InlineKeyboardBuilder()
+            kb.row(blue_inline_button("Отмена", callback_data="admin:ad:cancel", premium_icon=False))
+            await callback.message.answer(
+                "<b>Новая реклама · 1/5</b>\n\nОтправьте текст публикации. Форматирование и premium emoji сохранятся.",
+                reply_markup=kb.as_markup(),
+            )
+
+    @router.callback_query(F.data == "admin:ad:skip-photo")
+    async def admin_ad_skip_photo(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        session = await db.get_support_session(callback.from_user.id)
+        if not session or session.get("mode") != "ad_photo":
+            await safe_callback_answer(callback, "Черновик устарел", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        await ask_ad_url(callback.message, callback.from_user.id, ad_draft(session))
+
+    @router.callback_query(F.data == "admin:ad:channel:main")
+    async def admin_ad_main_channel(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        session = await db.get_support_session(callback.from_user.id)
+        channel = normalize_channel(config.channel_url)
+        if not session or session.get("mode") != "ad_channel" or channel is None:
+            await safe_callback_answer(callback, "Канал не настроен", show_alert=True)
+            return
+        draft = ad_draft(session)
+        draft["channel"] = channel
+        await safe_callback_answer(callback)
+        await show_ad_preview(callback.message, callback.from_user.id, draft)
+
+    @router.callback_query(F.data == "admin:ad:send")
+    async def admin_ad_send(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        session = await db.get_support_session(callback.from_user.id)
+        if not session or session.get("mode") != "ad_confirm":
+            await safe_callback_answer(callback, "Черновик устарел", show_alert=True)
+            return
+        draft = ad_draft(session)
+        await safe_callback_answer(callback, "Публикую…")
+        try:
+            sent = await send_ad_post(callback.bot, draft["channel"], draft)
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            logger.warning("Advertising publish failed: %s", type(exc).__name__)
+            await callback.message.answer(
+                "Не удалось опубликовать. Проверьте канал, ссылку и права бота на публикацию."
+            )
+            return
+        await db.clear_support_session(callback.from_user.id)
+        await callback.message.answer(
+            f"✅ Реклама опубликована. ID сообщения: <code>{sent.message_id}</code>",
+            reply_markup=admin_main_keyboard(await get_admin_role(callback.from_user.id) or "full"),
+        )
+
+    @router.callback_query(F.data == "admin:ad:cancel")
+    async def admin_ad_cancel(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await db.clear_support_session(callback.from_user.id)
+        await safe_callback_answer(callback, "Черновик удалён")
+        if callback.message:
+            await show_admin(callback.message, callback.from_user)
 
     @router.callback_query(F.data.regexp(r"^admin:users(?::\d+)?$"))
     async def admin_users_callback(callback: CallbackQuery) -> None:
@@ -4261,6 +4434,85 @@ def build_router(
             if action == "grant":
                 await notify_subscription_granted(message.bot, updated, days)
             await show_admin_user(message, message.from_user, uid)
+            return True
+
+        if str(session["mode"]).startswith("ad_"):
+            if not await has_full_admin_access(user_id):
+                await db.clear_support_session(user_id)
+                return True
+            mode = str(session["mode"])
+            draft = ad_draft(session)
+
+            if mode == "ad_text":
+                text_html = str(message.html_text or "").strip() if message.text else ""
+                if not text_html or len(str(message.text or "")) > 4096:
+                    await message.answer("Отправьте текст длиной до 4096 символов.")
+                    return True
+                draft["text_html"] = text_html
+                draft["text_plain"] = str(message.text or "")
+                await db.set_support_session(user_id, "ad_photo", payload=json.dumps(draft))
+                kb = InlineKeyboardBuilder()
+                kb.row(blue_inline_button("Без изображения", callback_data="admin:ad:skip-photo"))
+                kb.row(blue_inline_button("Отмена", callback_data="admin:ad:cancel", premium_icon=False))
+                await message.answer(
+                    "<b>Новая реклама · 2/5</b>\n\nОтправьте изображение или продолжите без него.",
+                    reply_markup=kb.as_markup(),
+                )
+                return True
+
+            if mode == "ad_photo":
+                if not message.photo:
+                    await message.answer("Отправьте изображение или нажмите «Без изображения».")
+                    return True
+                if len(str(message.text or message.caption or "")) > 0:
+                    await message.answer("Текст изображения не нужен: будет использован текст публикации.")
+                if len(str(draft.get("text_plain") or "")) > 1024:
+                    await message.answer(
+                        "С изображением Telegram допускает до 1024 символов. Отмените черновик и отправьте более короткий текст."
+                    )
+                    return True
+                draft["photo_file_id"] = message.photo[-1].file_id
+                await ask_ad_url(message, user_id, draft)
+                return True
+
+            if mode == "ad_url":
+                url = normalize_ad_url(str(message.text or ""))
+                if url is None:
+                    await message.answer("Отправьте корректную http(s):// или tg:// ссылку либо <code>-</code>.")
+                    return True
+                draft["button_url"] = url
+                if not url:
+                    await ask_ad_channel(message, user_id, draft)
+                    return True
+                await db.set_support_session(user_id, "ad_button", payload=json.dumps(draft))
+                await message.answer(
+                    "<b>Новая реклама · 4/5</b>\n\nОтправьте текст кнопки. Можно добавить один premium emoji."
+                )
+                return True
+
+            if mode == "ad_button":
+                raw_text = str(message.text or "").strip()
+                clean_text = _clean_button_text(raw_text)
+                if not clean_text or len(clean_text) > 64:
+                    await message.answer("Текст кнопки должен содержать от 1 до 64 символов.")
+                    return True
+                draft["button_text"] = clean_text
+                custom_id = first_custom_emoji_id(message)
+                if custom_id:
+                    draft["button_emoji_id"] = custom_id
+                await ask_ad_channel(message, user_id, draft)
+                return True
+
+            if mode == "ad_channel":
+                channel = normalize_channel(str(message.text or ""))
+                if channel is None:
+                    await message.answer("Отправьте @username канала, ссылку t.me или ID вида <code>-100…</code>.")
+                    return True
+                draft["channel"] = channel
+                await show_ad_preview(message, user_id, draft)
+                return True
+
+            await message.answer("Используйте кнопки предпросмотра для публикации или отмены.")
             return True
 
         payload = support_payload(message)

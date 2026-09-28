@@ -72,7 +72,7 @@
           </div>
           <div class="link-actions">
             <button type="button" class="copy-button link-primary-action" id="copySubscriptionHome"><i data-lucide="copy"></i><span>Скопировать ссылку</span></button>
-            <button type="button" class="link-secondary-action" id="openHappHome"><i data-lucide="shield-check"></i><span>Добавить в Happ</span></button>
+            <button type="button" class="link-secondary-action" id="openClientHome"><i data-lucide="shield-check"></i><span>Добавить в клиент</span></button>
           </div>
           <small class="link-private"><i data-lucide="lock-keyhole"></i> Не передавайте эту ссылку другим людям</small>
         </article>
@@ -286,9 +286,18 @@
     <button type="button" class="sheet-primary" id="confirmDevicePurchase">Купить слот</button>
   </section>
 
+  <section class="sheet" id="clientSheet" role="dialog" aria-modal="true" aria-label="VPN-клиент" hidden>
+    <div class="sheet-handle"></div>
+    <button type="button" class="sheet-close" id="clientSheetClose" aria-label="Закрыть"><i data-lucide="x"></i></button>
+    <span class="eyebrow">ПОДКЛЮЧЕНИЕ</span>
+    <h2>Добавить в клиент</h2>
+    <p>Выберите приложение, в которое нужно добавить подписку.</p>
+    <div class="payment-list" id="clientList"></div>
+  </section>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"><span><i></i></span></div>
 
-  <script src="/static/app.js?v=20"></script>
+  <script src="/static/app.js?v=21"></script>
 </body>
 </html>

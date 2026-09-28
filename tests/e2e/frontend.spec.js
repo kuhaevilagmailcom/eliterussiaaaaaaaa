@@ -26,7 +26,10 @@ async function routeFiles(page, miniApp = false) {
       vpn: {ready:true, ok:true, server:'MGN VPN', subscription_url:'https://mgn.test/sub/token', traffic_used_gb:0, traffic_limit_gb:0, devices:[]},
       plans: [{code:'30',name:'1 месяц',days:30,devices:1,rub:100,stars:63,savings:0}],
       payments: {sbp_enabled:true}, capabilities:{device_list:true,device_removal:false,device_reset:true},
-      clients:[], shop:{extra_device_price_rub:100,extra_device_price_stars:63,max_devices:5},
+      clients:[
+        {name:'Happ',platform:'Android · iOS',redirect_url:'https://mgn.test/client/happ/token',supports_subscription_import:true},
+        {name:'INCY',platform:'Android · iOS',redirect_url:'https://mgn.test/client/incy/token',supports_subscription_import:true}
+      ], shop:{extra_device_price_rub:100,extra_device_price_stars:63,max_devices:5},
       agreement:{updated:'27 сентября 2026 года',sections:[{heading:'1. Общие положения',paragraphs:['Условия использования MGN VPN.']}]},
       bot_url:'https://t.me/mgnvpn_bot'
     }});
@@ -122,4 +125,15 @@ test('Mini App payment sheet stays inside desktop viewport with reduced motion',
   const center=box.x+box.width/2;
   expect(Math.abs(center-195)).toBeLessThanOrEqual(3);
   expect(errors).toEqual([]);
+});
+
+test('Mini App lets an active user choose Happ or INCY', async ({page}) => {
+  await page.setViewportSize({width:390,height:844});
+  await routeFiles(page, true);
+  await page.goto('http://mgn.test/app');
+  await page.locator('#openClientHome').click();
+  await expect(page.locator('#clientSheet')).toBeVisible();
+  await expect(page.locator('#clientList [data-client]')).toHaveCount(2);
+  await expect(page.locator('#clientList')).toContainText('Happ');
+  await expect(page.locator('#clientList')).toContainText('INCY');
 });
