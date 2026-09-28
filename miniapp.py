@@ -1222,7 +1222,7 @@ class MiniAppServer:
         return web.json_response({"ok": True, "vpn_ok": ok, "devices": state.devices})
 
     async def create_support_ticket(self, request: web.Request) -> web.Response:
-        uid, tg_user, _row = await self._auth(request)
+        uid, tg_user, row = await self._auth(request)
         self._rate_limit(
             f"support:{uid}",
             limit=3,
@@ -1255,10 +1255,12 @@ class MiniAppServer:
             if created
             else "—"
         )
+        subscription_text = "🟢 активна" if _active(row) else "🔴 нет активной"
         admin_text = (
             f"<b>Новое обращение #{int(ticket['id'])}</b>\n\n"
             f"Пользователь: <b>{username}</b>\n"
-            f"ID: <code>{uid}</code>\n"
+            f"Telegram ID: <code>{uid}</code>\n"
+            f"Подписка: <b>{subscription_text}</b>\n"
             f"Дата: <b>{created_text}</b>\n\n"
             f"<b>Сообщение:</b>\n{escape(message)}"
         )
