@@ -176,7 +176,7 @@ def test_admin_stats_separate_self_paid_from_admin_and_gift_access(tmp_path):
         await db.create_sbp_payment(
             payment_id="admin-user-buys", order_id="admin-user-order",
             telegram_id=202, target_telegram_id=202,
-            plan_code="7", amount_rub=49, original_amount_rub=49,
+            plan_code="30", amount_rub=99, original_amount_rub=99,
         )
         assert await db.settle_sbp_payment("admin-user-buys")
         stats = await db.admin_overview()
@@ -252,9 +252,9 @@ def test_paid_tariff_switch_stacks_days_instead_of_replacing_them(tmp_path):
             order_id="order-week",
             telegram_id=200,
             target_telegram_id=200,
-            plan_code="7",
-            amount_rub=49,
-            original_amount_rub=49,
+            plan_code="30",
+            amount_rub=99,
+            original_amount_rub=99,
         )
         assert await db.settle_sbp_payment("week")
         after_week = from_iso((await db.get_user(200))["subscription_until"])

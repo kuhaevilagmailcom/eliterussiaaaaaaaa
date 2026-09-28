@@ -16,7 +16,7 @@ async function routeFiles(page, miniApp = false) {
   await page.route('http://mgn.test/**', async route => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/public/catalog') return route.fulfill({ json: {
-      plans: ['7','30','90','180','365'].map((code, index) => ({code, price_rub: [59,100,349,599,1200][index]})),
+      plans: ['30','90','180','365'].map((code, index) => ({code, price_rub: [100,349,599,1200][index]})),
       max_devices: 5,
       extra_device_price_rub: 100
     }});

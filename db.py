@@ -907,7 +907,7 @@ class Database:
             raise ValueError("invalid promo value")
         plans = applicable_plans.strip().lower() or "all"
         if plans != "all":
-            allowed = {"7", "30", "90", "180", "365"}
+            allowed = set(PLANS)
             selected = [part.strip() for part in plans.split(",") if part.strip()]
             if not selected or any(part not in allowed for part in selected):
                 raise ValueError("invalid applicable plans")

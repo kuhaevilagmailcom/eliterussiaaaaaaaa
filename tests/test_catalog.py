@@ -9,7 +9,6 @@ from catalog import (
 
 def test_prices_and_savings_are_centralized():
     assert {code: plan_price_rub(None, code) for code in PLANS} == {
-        "7": 49,
         "30": 99,
         "90": 249,
         "180": 499,

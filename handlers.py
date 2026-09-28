@@ -4060,7 +4060,7 @@ def build_router(
             return
         uid = int(raw)
         kb = InlineKeyboardBuilder()
-        for days in (7, 30, 90, 180, 365):
+        for days in (30, 90, 180, 365):
             kb.button(text=f"{days} дней", callback_data=f"admin:grant:{uid}:{days}")
         kb.adjust(2)
         kb.row(blue_inline_button("Ввести вручную", callback_data=f"admin:manualdays:{uid}:grant"))
@@ -4079,7 +4079,7 @@ def build_router(
             return
         uid, action = int(parts[2]), parts[3]
         kb = InlineKeyboardBuilder()
-        for days in (1, 3, 7, 14, 30):
+        for days in (1, 3, 14, 30):
             kb.button(text=str(days), callback_data=f"admin:adjust:{uid}:{action}:{days}")
         kb.adjust(3)
         kb.row(blue_inline_button("Ввести вручную", callback_data=f"admin:manualdays:{uid}:{action}"))
@@ -4112,7 +4112,7 @@ def build_router(
             await safe_callback_answer(callback, "Некорректная команда", show_alert=True)
             return
         uid, days = int(parts[2]), int(parts[4])
-        if days not in {1, 3, 7, 14, 30}:
+        if days not in {1, 3, 14, 30}:
             await safe_callback_answer(callback, "Некорректный срок", show_alert=True)
             return
         await safe_callback_answer(callback, "Обновляю срок…")
@@ -4305,7 +4305,7 @@ def build_router(
 
         telegram_id = int(parts[2])
         days = int(parts[3])
-        if days not in {7, 30, 90, 180, 365}:
+        if days not in {30, 90, 180, 365}:
             await safe_callback_answer(callback, "Некорректный срок", show_alert=True)
             return
         try:
@@ -4369,7 +4369,7 @@ def build_router(
             await message.answer(
                 "Использование: /promocreate CODE TYPE VALUE MAX_USES DAYS_VALID PLANS\n"
                 "TYPE: discount или free_days; 0 в MAX_USES — без лимита; "
-                "PLANS: all или 7,30,90,180,365"
+                "PLANS: all или 30,90,180,365"
             )
             return
 

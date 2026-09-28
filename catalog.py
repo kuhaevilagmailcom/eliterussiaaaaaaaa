@@ -4,13 +4,6 @@ from typing import Any
 
 
 PLANS: dict[str, dict[str, Any]] = {
-    "7": {
-        "days": 7,
-        "months": 0,
-        "name": "7 дней",
-        "devices": 1,
-        "price_rub": 49,
-    },
     "30": {
         "days": 30,
         "months": 1,

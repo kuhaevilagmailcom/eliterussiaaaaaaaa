@@ -96,10 +96,10 @@ def test_atomic_payments_and_concurrency(tmp_path):
         with pytest.raises(ValueError):
             await db.settle_sbp_payment('invalid')
         assert (await db.get_sbp_payment('invalid'))['status'] == 'created'
-        await db.create_payment_intent(intent_id='intent', buyer_id=42, target_id=42, product_code='7', original_amount_rub=49, discount_amount_rub=0, final_amount_rub=49, currency='XTR', currency_amount=31)
-        assert await db.settle_star_payment('charge', 42, 42, '7', 31, 'intent')
-        assert not await db.settle_star_payment('charge', 42, 42, '7', 31, 'intent')
-        assert not await db.settle_star_payment('another-charge', 42, 42, '7', 31, 'intent')
+        await db.create_payment_intent(intent_id='intent', buyer_id=42, target_id=42, product_code='30', original_amount_rub=99, discount_amount_rub=0, final_amount_rub=99, currency='XTR', currency_amount=62)
+        assert await db.settle_star_payment('charge', 42, 42, '30', 62, 'intent')
+        assert not await db.settle_star_payment('charge', 42, 42, '30', 62, 'intent')
+        assert not await db.settle_star_payment('another-charge', 42, 42, '30', 62, 'intent')
         assert (await db.get_payment_intent('intent'))['status'] == 'paid'
         await asyncio.gather(*(db.extend_subscription(42, 1, 'Test', 1) for _ in range(5)))
         assert from_iso((await db.get_user(42))['subscription_until']) >= from_iso(until)+timedelta(days=12)
@@ -130,13 +130,13 @@ def test_http_security_routes_and_subscription(tmp_path, monkeypatch):
             assert agreement.status == privacy.status == 200
             assert 'Пользовательское соглашение' in await agreement.text()
             assert 'Политика конфиденциальности' in await privacy.text()
-            assert all(f'{price} ₽' in root_html for price in (49,99,249,499,999))
+            assert all(f'{price} ₽' in root_html for price in (99,249,499,999))
             assert 'bottomNav' in await app.text()
             catalog_response = await client.get('/api/public/catalog')
             assert catalog_response.status == 200
             catalog = await catalog_response.json()
             prices = {item['code']: item['price_rub'] for item in catalog['plans']}
-            assert prices == {'7': 49, '30': 99, '90': 249, '180': 499, '365': 999}
+            assert prices == {'30': 99, '90': 249, '180': 499, '365': 999}
             popular = [item['code'] for item in catalog['plans'] if item.get('popular')]
             assert popular == ['90']
             savings = {item['code']: item['savings_rub'] for item in catalog['plans']}
