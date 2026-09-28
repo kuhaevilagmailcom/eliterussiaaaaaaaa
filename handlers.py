@@ -1577,7 +1577,10 @@ def build_router(
             )
         )
         kb.row(blue_inline_button("Открыть обращение", callback_data=f"support:view:{int(ticket_id)}"))
-        kb.row(blue_inline_button("Закрыть", callback_data=f"support:close:{int(ticket_id)}"))
+        kb.row(
+            blue_inline_button("Закрыть", callback_data=f"support:close:{int(ticket_id)}"),
+            blue_inline_button("Удалить", callback_data=f"support:deleteconfirm:{int(ticket_id)}"),
+        )
         return kb.as_markup()
 
     def support_user_ticket_keyboard(ticket: dict[str, Any]) -> Any:
@@ -1747,6 +1750,9 @@ def build_router(
 
     @router.callback_query(F.data == "menu:support")
     async def menu_support(callback: CallbackQuery) -> None:
+        session = await db.get_support_session(callback.from_user.id)
+        if session and session.get("mode") in {"new", "user_reply"}:
+            await db.clear_support_session(callback.from_user.id)
         await safe_callback_answer(callback, )
         if callback.message:
             e = emoji.icon(6, pack=PACK_NEWS)
@@ -1769,7 +1775,8 @@ def build_router(
             callback.message,
             callback.from_user,
             "<b>Новое обращение</b>\n\n"
-            "Опишите проблему одним или несколькими сообщениями. Можно отправить текст, фото или видео. "
+            "Отправьте проблему одним сообщением — текстом, фото или видео. "
+            "После создания обращения его можно дополнить кнопкой «Написать сообщение». "
             "Текст — до 3000 символов. Не отправляйте пароли и другие секреты.",
             reply_markup=section_nav_keyboard(back_data="menu:support"),
         )
@@ -1863,6 +1870,19 @@ def build_router(
             await safe_callback_answer(callback, "Обращение не найдено", show_alert=True)
             return
         await db.clear_support_session(callback.from_user.id)
+        if admin and int(ticket.get("telegram_id") or 0) != int(callback.from_user.id):
+            try:
+                await callback.bot.send_message(
+                    int(ticket["telegram_id"]),
+                    f"Обращение <b>#{int(raw)}</b> закрыто поддержкой.",
+                    reply_markup=support_user_ticket_keyboard(ticket),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not notify user about support close %s: %s",
+                    raw,
+                    type(exc).__name__,
+                )
         await safe_callback_answer(callback, "Обращение закрыто")
         if callback.message:
             await show_support_ticket(callback.message, callback.from_user, int(raw), admin=admin)
@@ -1877,6 +1897,19 @@ def build_router(
             await safe_callback_answer(callback, "Некорректное обращение", show_alert=True)
             return
         ticket = await db.set_support_status(int(raw), "open", callback.from_user.id, is_admin=True)
+        if ticket:
+            try:
+                await callback.bot.send_message(
+                    int(ticket["telegram_id"]),
+                    f"Обращение <b>#{int(raw)}</b> снова открыто поддержкой.",
+                    reply_markup=support_user_ticket_keyboard(ticket),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not notify user about support reopen %s: %s",
+                    raw,
+                    type(exc).__name__,
+                )
         await safe_callback_answer(callback, "Обращение переоткрыто" if ticket else "Обращение не найдено")
         if ticket and callback.message:
             await show_support_ticket(callback.message, callback.from_user, int(raw), admin=True)
@@ -3337,7 +3370,11 @@ def build_router(
                         f"Открыть #{ticket_id}",
                         callback_data=f"support:view:{ticket_id}",
                         icon_index=6,
-                    )
+                    ),
+                    blue_inline_button(
+                        "Удалить",
+                        callback_data=f"support:deleteconfirm:{ticket_id}",
+                    ),
                 )
         kb.row(
             blue_inline_button("Все", callback_data="admin:support:all:0"),
@@ -4848,13 +4885,18 @@ def build_router(
                 first_name=message.from_user.first_name, **payload,
             )
             ticket_id = int(ticket["id"])
-            await db.set_support_session(user_id, "user_reply", ticket_id)
+            await db.clear_support_session(user_id)
             for admin_id in {*(int(v) for v in config.admin_ids), *(int(a["telegram_id"]) for a in await db.list_admin_roles())}:
                 try:
                     await deliver_support_message(message.bot, admin_id, ticket_id, payload, admin_reply=False)
                 except Exception as exc:
                     logger.warning("Support notification failed for admin %s: %s", admin_id, type(exc).__name__)
-            await message.answer(f"<b>Обращение #{ticket_id} создано.</b>\n\nСтатус: <b>Открыто</b>\nМожно отправить ещё сообщение, фото или видео.", reply_markup=support_user_ticket_keyboard(ticket))
+            await message.answer(
+                f"<b>Обращение #{ticket_id} создано.</b>\n\n"
+                "Статус: <b>Открыто</b>\n"
+                "Если нужно что-то добавить — откройте обращение и нажмите «Написать сообщение».",
+                reply_markup=support_user_ticket_keyboard(ticket),
+            )
             return True
 
         if session["mode"] == "user_reply":
@@ -4872,12 +4914,16 @@ def build_router(
                 await db.clear_support_session(user_id)
                 await message.answer("Обращение не найдено.")
                 return True
+            await db.clear_support_session(user_id)
             for admin_id in {*(int(v) for v in config.admin_ids), *(int(a["telegram_id"]) for a in await db.list_admin_roles())}:
                 try:
                     await deliver_support_message(message.bot, admin_id, ticket_id, payload, admin_reply=False)
                 except Exception as exc:
                     logger.warning("Support notification failed for admin %s: %s", admin_id, type(exc).__name__)
-            await message.answer(f"Сообщение добавлено в обращение #{ticket_id}.")
+            await message.answer(
+                f"Сообщение добавлено в обращение <b>#{ticket_id}</b>.",
+                reply_markup=support_user_ticket_keyboard(ticket),
+            )
             return True
         return False
 
