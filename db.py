@@ -1921,6 +1921,17 @@ class Database:
                 "UPDATE support_tickets SET deleted_at=?, deleted_by=? WHERE id=? AND deleted_at IS NULL",
                 (to_iso(utcnow()), admin_id, ticket_id),
             )
+            if cursor.rowcount == 1:
+                # Do not leave users/admins stuck in a composer for a ticket
+                # that no longer exists.
+                await db.execute(
+                    "DELETE FROM interaction_sessions WHERE ticket_id=?",
+                    (ticket_id,),
+                )
+                await db.execute(
+                    "DELETE FROM support_sessions WHERE ticket_id=?",
+                    (ticket_id,),
+                )
             await db.commit()
         return cursor.rowcount == 1
 
