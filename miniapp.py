@@ -536,6 +536,143 @@ class MiniAppServer:
             headers={"Cache-Control": "public, max-age=300"},
         )
 
+
+    async def public_payment_create(self, request: web.Request) -> web.Response:
+        self._rate_limit(
+            f"public-payment-create:{self._client_identity(request)}",
+            limit=8,
+            window_seconds=60,
+        )
+        if not self.config.rollypay_enabled:
+            raise _json_error(503, "СБП пока не настроена")
+
+        data = await self._json_body(request)
+        raw_user_id = str(data.get("user_id") or "").strip()
+        if not raw_user_id.isdigit():
+            raise _json_error(400, "Введите корректный Telegram ID")
+        user_id = int(raw_user_id)
+        if not 0 < user_id < 2**63:
+            raise _json_error(400, "Введите корректный Telegram ID")
+
+        try:
+            await self.db.get_user(user_id)
+        except KeyError:
+            raise _json_error(404, "Пользователь с таким ID не найден")
+
+        code = str(data.get("plan_code") or "")
+        plan = PLANS.get(code)
+        if not plan:
+            raise _json_error(400, "Тариф не найден")
+
+        amount = plan_price_rub(self.config, code)
+        if amount <= 0:
+            raise _json_error(400, "Некорректная стоимость тарифа")
+
+        order_id = f"vpn-web-{user_id}-{uuid4().hex[:12]}"
+        local_id = await self.db.create_sbp_order(
+            order_id=order_id,
+            telegram_id=user_id,
+            target_telegram_id=user_id,
+            plan_code=code,
+            amount_rub=amount,
+            original_amount_rub=amount,
+        )
+        try:
+            payment = await create_payment(
+                self.config,
+                order_id=order_id,
+                amount=Decimal(amount),
+                description=f"MGN VPN {plan['name']}",
+                user_id=user_id,
+            )
+            payment_id = str(payment["payment_id"])
+            pay_url = str(payment["pay_url"])
+            await self.db.attach_sbp_provider_payment(local_id, payment_id, pay_url)
+        except (RollyPayError, KeyError, ValueError) as exc:
+            await self.db.set_sbp_status(local_id, "create_failed")
+            logger.warning("Public SBP create failed: %s", type(exc).__name__)
+            raise _json_error(503, "Не удалось создать платёж")
+
+        return web.json_response(
+            {
+                "payment_id": payment_id,
+                "pay_url": pay_url,
+                "amount_rub": amount,
+                "plan_name": str(plan["name"]),
+            }
+        )
+
+    async def public_payment_check(self, request: web.Request) -> web.Response:
+        self._rate_limit(
+            f"public-payment-check:{self._client_identity(request)}",
+            limit=60,
+            window_seconds=60,
+        )
+        payment_id = str(request.match_info.get("payment_id") or "").strip()
+        if not payment_id or len(payment_id) > 200:
+            raise _json_error(400, "Некорректный платёж")
+
+        local = await self.db.get_sbp_payment(payment_id)
+        if not local:
+            raise _json_error(404, "Платёж не найден")
+
+        if str(local.get("status") or "").lower() == "paid":
+            return web.json_response({"status": "paid"})
+
+        try:
+            remote = await get_payment(self.config, payment_id)
+        except RollyPayError:
+            raise _json_error(503, "Не удалось проверить платёж")
+
+        status = str(remote.get("status") or "").lower()
+        try:
+            remote_amount = Decimal(str(remote.get("amount")))
+        except (InvalidOperation, ValueError):
+            remote_amount = Decimal("-1")
+
+        matches = (
+            str(remote.get("payment_id") or "") == payment_id
+            and str(remote.get("order_id") or "") == str(local["order_id"])
+            and str(
+                remote.get("currency") or remote.get("payment_currency") or ""
+            ).upper() == "RUB"
+            and remote_amount.is_finite()
+            and remote_amount == Decimal(int(local["amount_rub"]))
+        )
+        if not matches:
+            raise _json_error(409, "Данные платежа не совпали")
+
+        if status == "paid":
+            try:
+                fresh = await self.db.settle_sbp_payment(payment_id)
+            except ValueError:
+                raise _json_error(
+                    409,
+                    "Оплата получена и требует проверки поддержки",
+                )
+            target_id = int(
+                local.get("target_telegram_id") or local["telegram_id"]
+            )
+            if fresh:
+                updated = await self.db.get_user(target_id)
+                if getattr(self.provider, "service_ready", True):
+                    try:
+                        await asyncio.wait_for(
+                            self.provider.provision(updated),
+                            timeout=8.0,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Public payment provision deferred for %s: %s",
+                            target_id,
+                            type(exc).__name__,
+                        )
+                await self._sync_bot_subscription_menu(updated)
+            return web.json_response({"status": "paid"})
+
+        await self.db.set_sbp_status(payment_id, status or "processing")
+        return web.json_response({"status": status or "processing"})
+
     async def subscription(self, request: web.Request) -> web.Response:
         token = str(request.match_info.get("token") or "").strip()
         token_key = hashlib.sha256(token.encode("utf-8")).hexdigest()[:20]
@@ -1334,6 +1471,11 @@ class MiniAppServer:
         app.router.add_get("/client/{client}/{token}", self.client_redirect)
         app.router.add_get("/api/miniapp/health", self.health)
         app.router.add_get("/api/public/catalog", self.public_catalog)
+        app.router.add_post("/api/public/payment", self.public_payment_create)
+        app.router.add_get(
+            "/api/public/payment/{payment_id}",
+            self.public_payment_check,
+        )
         app.router.add_get("/api/miniapp/me", self.me)
         app.router.add_post("/api/miniapp/payment/stars", self.stars_invoice)
         app.router.add_post("/api/miniapp/payment/sbp", self.sbp_create)
