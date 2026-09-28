@@ -18,6 +18,18 @@ def test_plain_and_base64_subscriptions_get_pretty_names():
     assert b"#%F0%9F" in base64.b64decode(encoded)
 
 
+def test_poland_subscription_name_is_normalized_from_h1_inbound_label():
+    payload = (
+        "vless://uuid@pl-d1.h1cloud.net:443?security=reality"
+        "#mgn_8464597898%20%C2%B7%20MGN-PL"
+    ).encode()
+    rendered, count = prettify_subscription_payload(payload)
+    decoded = base64.b64decode(rendered).decode()
+    assert count == 1
+    assert decoded.endswith("#%F0%9F%87%B5%F0%9F%87%B1%20%D0%9F%D0%BE%D0%BB%D1%8C%D1%88%D0%B0")
+    assert "mgn_8464597898" not in decoded
+
+
 def test_h1_legacy_h1cloud_http_api_is_accepted_without_extra_env_flag():
     async def run():
         provider = H1CloudVpnProvider(
@@ -62,23 +74,7 @@ def test_h1_capabilities_are_explicit():
     assert capabilities.supports_device_reset
 
 
-def test_h1_federation_uses_documented_lagg_and_lproxy_routes():
-    async def run():
-        provider = object.__new__(H1CloudVpnProvider)
-        provider._request = AsyncMock(
-            return_value={"nodes": [{"node_id": "de"}, "us"]}
-        )
-        nodes = await provider._federated_nodes()
-        provider._request.assert_awaited_once_with("GET", "/fed/lagg")
-        assert [provider._node_prefix(node) for node in nodes] == [
-            "/fed/lproxy/de",
-            "/fed/lproxy/us",
-        ]
-
-    asyncio.run(run())
-
-
-def test_h1_manual_upsert_uses_local_inbounds_without_channels():
+def test_h1_manual_upsert_keeps_channels_that_produce_links():
     async def run():
         provider = object.__new__(H1CloudVpnProvider)
         provider._inbound_ids = AsyncMock(return_value=[11, 12])
@@ -95,7 +91,7 @@ def test_h1_manual_upsert_uses_local_inbounds_without_channels():
         )
         payload = provider._request.await_args.kwargs["json"]
         assert payload["manual"] is True
-        assert payload["channels"] == []
+        assert payload["channels"] == ["main", "reality", "bs", "wscdn"]
         assert payload["inbound_ids"] == [11, 12]
 
     asyncio.run(run())

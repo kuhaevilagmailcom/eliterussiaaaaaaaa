@@ -27,6 +27,7 @@ LOCATION_LABELS = {
     "MGN-FI": "🇫🇮 Финляндия",
     "MGN-LT": "🇱🇹 Литва",
     "MGN-US": "🇺🇸 США",
+    "MGN-PL": "🇵🇱 Польша",
 }
 
 
@@ -43,6 +44,7 @@ def _location_label(value: str) -> str:
         ("FI5.H1CLOUD.NET", "🇫🇮 Финляндия"),
         ("LT3.H1CLOUD.NET", "🇱🇹 Литва"),
         ("US3.H1CLOUD.NET", "🇺🇸 США"),
+        ("PL-D1.H1CLOUD.NET", "🇵🇱 Польша"),
     )
     for marker, label in host_markers:
         if marker in decoded:
@@ -578,41 +580,17 @@ class H1CloudVpnProvider(VpnProvider):
         return selected
 
     async def _federated_nodes(self) -> list[dict[str, Any]]:
-        """Return H1 federation nodes exposed by the documented LAGG API."""
+        """Return every H1 remote node with the correct proxy transport.
+
+        H1 has TWO federation stores:
+        - /fed/link -> billing-linked server IDs, accessed through /fed/lproxy/<sid>
+        - /fed/registry -> manual registry node IDs/tokens, accessed through /fed/proxy/<id>
+
+        They are separate stores. Using only one store explains why a unified
+        subscription could contain NL + US while FI/DE/LT were missing.
+        """
         nodes: list[dict[str, Any]] = []
-        seen: set[str] = set()
-
-        # The public H1 Panel API defines /fed/lagg + /fed/lproxy/{node_id}.
-        # Prefer it so all installations use one stable node inventory.
-        try:
-            data = await asyncio.wait_for(
-                self._request("GET", "/fed/lagg"),
-                timeout=3.0,
-            )
-            raw_nodes = data.get("nodes") if isinstance(data, dict) else None
-            if isinstance(raw_nodes, list):
-                for item in raw_nodes:
-                    node = dict(item) if isinstance(item, dict) else {"id": item}
-                    node_id = self._node_id(node)
-                    if node_id and node_id not in seen:
-                        seen.add(node_id)
-                        node["proxy_kind"] = "lproxy"
-                        nodes.append(node)
-        except Exception as exc:
-            logger.warning(
-                "H1Cloud /fed/lagg unavailable: %s",
-                str(exc).strip() or type(exc).__name__,
-            )
-
-        if nodes:
-            logger.info(
-                "H1Cloud federation discovery: %s remote node(s): %s",
-                len(nodes),
-                [f"lproxy:{self._node_id(node)}" for node in nodes],
-            )
-            return nodes
-
-        # Compatibility fallback for panels that have not yet exposed LAGG.
+        seen: set[tuple[str, str]] = set()
 
         async def load_linked() -> None:
             try:
@@ -634,8 +612,9 @@ class H1CloudVpnProvider(VpnProvider):
                 return
             for value in raw_links:
                 node_id = str(value or "").strip()
-                if node_id and node_id not in seen:
-                    seen.add(node_id)
+                key = ("lproxy", node_id)
+                if node_id and key not in seen:
+                    seen.add(key)
                     nodes.append(
                         {
                             "id": node_id,
@@ -665,13 +644,36 @@ class H1CloudVpnProvider(VpnProvider):
                 if not isinstance(item, dict):
                     continue
                 node_id = self._node_id(item)
-                if node_id and node_id not in seen:
-                    seen.add(node_id)
+                key = ("proxy", node_id)
+                if node_id and key not in seen:
+                    seen.add(key)
                     node = dict(item)
                     node["proxy_kind"] = "proxy"
                     nodes.append(node)
 
         await asyncio.gather(load_linked(), load_registry())
+
+        if not nodes:
+            # Compatibility fallback for older H1 builds.
+            try:
+                data = await asyncio.wait_for(
+                    self._request("GET", "/fed/lagg"),
+                    timeout=3.0,
+                )
+                raw_nodes = data.get("nodes") if isinstance(data, dict) else None
+                if isinstance(raw_nodes, list):
+                    for item in raw_nodes:
+                        if not isinstance(item, dict):
+                            continue
+                        node_id = self._node_id(item)
+                        key = ("lproxy", node_id)
+                        if node_id and key not in seen:
+                            seen.add(key)
+                            node = dict(item)
+                            node["proxy_kind"] = "lproxy"
+                            nodes.append(node)
+            except Exception:
+                pass
 
         logger.info(
             "H1Cloud federation discovery: %s remote node(s): %s",
@@ -886,9 +888,10 @@ class H1CloudVpnProvider(VpnProvider):
                 "traffic_limit_gb": traffic_limit,
                 "device_limit": device_limit,
                 "manual": True,
-                # With manual inbound selection H1 requires channels to stay
-                # empty; inbound IDs are local to this exact panel.
-                "channels": [],
+                # H1 treats [] as "no standard channels", which produces no
+                # VLESS links. Keep all standard channels selected; H1 itself
+                # omits transports that are not configured on this node.
+                "channels": ["main", "reality", "bs", "wscdn"],
                 "inbound_ids": inbound_ids,
             }
             data = await self._request(
@@ -908,8 +911,8 @@ class H1CloudVpnProvider(VpnProvider):
                 "expires_at": expires_at,
                 "traffic_limit_gb": traffic_limit,
                 "device_limit": device_limit,
-                "manual": True,
-                "channels": [],
+                # Repair users created by older builds with channels=[].
+                "channels": ["main", "reality", "bs", "wscdn"],
                 "inbound_ids": inbound_ids,
             }
             data = await self._request(
@@ -1282,6 +1285,8 @@ class H1CloudVpnProvider(VpnProvider):
     ) -> tuple[bytes, dict[str, str]]:
         """Build a fast, resilient MGN subscription for one active user."""
         name = self._name(user)
+        standard_channels = ["main", "reality", "bs", "wscdn"]
+
         try:
             main = await asyncio.wait_for(self._get_client(name), timeout=2.0)
         except asyncio.TimeoutError as exc:
@@ -1341,23 +1346,24 @@ class H1CloudVpnProvider(VpnProvider):
         else:
             aggregate_error = "sub_url_missing"
 
-        # Repair the main location using its exact local inbound IDs when an
-        # older client has no usable link.
+        # Repair old clients created with channels=[] only when neither the
+        # main client nor H1's aggregate subscription returned a usable link.
         if not links:
             try:
-                repaired = await asyncio.wait_for(
-                    self._upsert_location(
-                        name=name,
-                        client_uuid=main_uuid or str(uuid4()),
-                        expires_at=max(
-                            self._desired_expiry(user),
-                            int(datetime.now().timestamp()) + 86400,
-                        ),
-                        traffic_limit=max(0, int(user.get("traffic_limit_gb") or 0)),
-                        device_limit=max(1, int(user.get("max_devices") or 1)),
+                patched = await asyncio.wait_for(
+                    self._request(
+                        "PATCH",
+                        f"/clients/{quote(name, safe='')}",
+                        json={"channels": standard_channels},
                     ),
-                    timeout=5.5,
+                    timeout=2.5,
                 )
+                repaired = self._extract_client(patched)
+                if repaired is None:
+                    repaired = await asyncio.wait_for(
+                        self._get_client(name),
+                        timeout=1.5,
+                    )
                 if repaired is not None:
                     main = repaired
                     main_uuid = str(main.get("uuid") or main_uuid).strip()
@@ -1417,13 +1423,7 @@ class H1CloudVpnProvider(VpnProvider):
                     timeout=5.0,
                 )
                 return self._client_vless_links(repaired)
-            except Exception as exc:
-                logger.warning(
-                    "H1Cloud remote subscription load failed for %s at %s (%s)",
-                    name,
-                    prefix,
-                    type(exc).__name__,
-                )
+            except Exception:
                 return []
 
         if remote_nodes:

@@ -146,7 +146,7 @@ class MiniAppServer:
         # Version the on-disk cache so a deployment that fixes subscription
         # composition never keeps serving an older NL-only payload.
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        return self._subscription_cache_dir / f"v6-{digest}.json"
+        return self._subscription_cache_dir / f"v7-{digest}.json"
 
     async def invalidate_subscription_cache(self, token: str) -> None:
         """Drop every cached form of a user's subscription after H1 sync."""
