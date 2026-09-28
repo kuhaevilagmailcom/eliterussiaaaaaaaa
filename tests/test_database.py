@@ -4,7 +4,7 @@ from datetime import timedelta
 import aiosqlite
 import pytest
 
-from db import Database, from_iso, utcnow
+from db import Database, from_iso, to_iso, utcnow
 from catalog import rub_to_stars
 
 
@@ -140,6 +140,82 @@ def test_payment_events_are_idempotent(tmp_path):
         )
         assert await db.mark_payment_intent_paid("intent-1")
         assert not await db.mark_payment_intent_paid("intent-1")
+
+    run(scenario())
+
+
+def test_admin_stats_separate_self_paid_from_admin_and_gift_access(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "admin-stats.sqlite3"))
+        await db.init()
+        for user_id in (201, 202, 203, 204):
+            await db.ensure_user(user_id, f"u{user_id}", "User")
+
+        await db.create_sbp_payment(
+            payment_id="self-paid", order_id="self-order",
+            telegram_id=201, target_telegram_id=201,
+            plan_code="30", amount_rub=99, original_amount_rub=99,
+        )
+        assert await db.settle_sbp_payment("self-paid")
+        await db.grant_subscription_by_admin(
+            202, 30, "30 дн.", granted_by=999,
+        )
+        await db.create_sbp_payment(
+            payment_id="gift-paid", order_id="gift-order",
+            telegram_id=204, target_telegram_id=203,
+            plan_code="30", amount_rub=99, original_amount_rub=99,
+        )
+        assert await db.settle_sbp_payment("gift-paid")
+
+        stats = await db.admin_overview()
+        assert stats["paid_total"] == 1
+        assert stats["active_paid"] == 1
+        assert stats["admin_granted_total"] == 1
+        assert stats["active_admin_granted"] == 1
+
+        await db.create_sbp_payment(
+            payment_id="admin-user-buys", order_id="admin-user-order",
+            telegram_id=202, target_telegram_id=202,
+            plan_code="7", amount_rub=49, original_amount_rub=49,
+        )
+        assert await db.settle_sbp_payment("admin-user-buys")
+        stats = await db.admin_overview()
+        assert stats["paid_total"] == 2
+        assert stats["active_paid"] == 2
+        assert stats["admin_granted_total"] == 0
+        assert stats["active_admin_granted"] == 0
+
+    run(scenario())
+
+
+def test_expiry_reminders_are_unique_for_each_expiry_and_day(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "expiry-reminders.sqlite3"))
+        await db.init()
+        await db.ensure_user(301, "reminder", "Reminder")
+        now = utcnow()
+        expiry = now + timedelta(days=2, hours=2)
+
+        async with aiosqlite.connect(db.path) as connection:
+            await connection.execute(
+                "UPDATE users SET subscription_until=? WHERE telegram_id=?",
+                (to_iso(expiry), 301),
+            )
+            await connection.commit()
+
+        due = await db.list_due_expiry_notifications(now=now)
+        assert [(item["telegram_id"], item["days_before"]) for item in due] == [(301, 3)]
+        assert await db.claim_expiry_notification(301, to_iso(expiry), 3)
+        assert not await db.claim_expiry_notification(301, to_iso(expiry), 3)
+        assert await db.list_due_expiry_notifications(now=now) == []
+
+        two_day_pass = now + timedelta(hours=3)
+        due = await db.list_due_expiry_notifications(now=two_day_pass)
+        assert [(item["telegram_id"], item["days_before"]) for item in due] == [(301, 2)]
+
+        await db.release_expiry_notification(301, to_iso(expiry), 3)
+        due = await db.list_due_expiry_notifications(now=now)
+        assert [(item["telegram_id"], item["days_before"]) for item in due] == [(301, 3)]
 
     run(scenario())
 

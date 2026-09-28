@@ -112,6 +112,27 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_admin_roles_role
                 ON admin_roles(role);
 
+                CREATE TABLE IF NOT EXISTS admin_subscription_grants (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_id INTEGER NOT NULL,
+                    granted_by INTEGER NOT NULL,
+                    days INTEGER NOT NULL CHECK(days > 0),
+                    action TEXT NOT NULL DEFAULT 'grant'
+                        CHECK(action IN ('grant', 'add')),
+                    granted_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_admin_subscription_grants_user
+                ON admin_subscription_grants(telegram_id, granted_at);
+
+                CREATE TABLE IF NOT EXISTS subscription_expiry_notifications (
+                    telegram_id INTEGER NOT NULL,
+                    subscription_until TEXT NOT NULL,
+                    days_before INTEGER NOT NULL CHECK(days_before IN (1, 2, 3)),
+                    sent_at TEXT NOT NULL,
+                    PRIMARY KEY (telegram_id, subscription_until, days_before)
+                );
+
                 CREATE TABLE IF NOT EXISTS referrals (
                     referrer_id INTEGER NOT NULL,
                     referred_id INTEGER NOT NULL UNIQUE,
@@ -755,6 +776,46 @@ class Database:
             )
             await db.commit()
         return await self.get_user(telegram_id)
+
+    async def grant_subscription_by_admin(
+        self,
+        telegram_id: int,
+        days: int,
+        plan_name: str,
+        granted_by: int,
+        *,
+        action: str = "grant",
+    ) -> dict[str, Any]:
+        """Extend access and record its administrative origin atomically."""
+
+        days = int(days)
+        if days < 1 or action not in {"grant", "add"}:
+            raise ValueError("Invalid administrative subscription grant")
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (await db.execute(
+                "SELECT subscription_until FROM users WHERE telegram_id=?",
+                (int(telegram_id),),
+            )).fetchone()
+            if row is None:
+                await db.rollback()
+                raise KeyError(telegram_id)
+            current = from_iso(row["subscription_until"])
+            until = max(utcnow(), current or utcnow()) + timedelta(days=days)
+            now = to_iso(utcnow())
+            await db.execute(
+                "UPDATE users SET subscription_until=?, plan_name=?, traffic_limit_gb=0 "
+                "WHERE telegram_id=?",
+                (to_iso(until), plan_name, int(telegram_id)),
+            )
+            await db.execute(
+                "INSERT INTO admin_subscription_grants "
+                "(telegram_id, granted_by, days, action, granted_at) VALUES (?, ?, ?, ?, ?)",
+                (int(telegram_id), int(granted_by), days, action, now),
+            )
+            await db.commit()
+        return await self.get_user(int(telegram_id))
 
     async def change_device_slots(
         self,
@@ -1846,12 +1907,61 @@ class Database:
                 "SELECT COUNT(*) FROM users WHERE created_at >= ?",
                 (month_ago,),
             )).fetchone())[0]
+            self_paid_sql = """
+                EXISTS (
+                    SELECT 1 FROM sbp_payments s
+                    WHERE s.status='paid'
+                      AND s.telegram_id=u.telegram_id
+                      AND COALESCE(s.target_telegram_id, s.telegram_id)=u.telegram_id
+                      AND s.plan_code!='device'
+                )
+                OR EXISTS (
+                    SELECT 1 FROM star_payments sp
+                    WHERE sp.buyer_telegram_id=u.telegram_id
+                      AND sp.target_telegram_id=u.telegram_id
+                      AND sp.plan_code!='device'
+                )
+            """
+            paid_total = (await (await db.execute(
+                f"SELECT COUNT(*) FROM users u WHERE {self_paid_sql}"
+            )).fetchone())[0]
             active_paid = (await (await db.execute(
+                f"""
+                SELECT COUNT(*) FROM users u
+                WHERE u.subscription_until IS NOT NULL
+                  AND u.subscription_until > ?
+                  AND ({self_paid_sql})
+                """,
+                (now,),
+            )).fetchone())[0]
+            active_without_self_payment = max(0, int(active) - int(active_paid))
+            admin_granted_total = (await (await db.execute(
                 """
-                SELECT COUNT(*) FROM users
-                WHERE subscription_until IS NOT NULL
-                  AND subscription_until > ?
-                  AND plan_name NOT IN ('Пробный', 'Бесплатный доступ')
+                SELECT COUNT(DISTINCT g.telegram_id)
+                FROM admin_subscription_grants g
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM sbp_payments s
+                    WHERE s.status='paid' AND s.telegram_id=g.telegram_id
+                      AND COALESCE(s.target_telegram_id, s.telegram_id)=g.telegram_id
+                      AND s.plan_code!='device'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM star_payments sp
+                    WHERE sp.buyer_telegram_id=g.telegram_id
+                      AND sp.target_telegram_id=g.telegram_id
+                      AND sp.plan_code!='device'
+                )
+                """,
+            )).fetchone())[0]
+            active_admin_granted = (await (await db.execute(
+                f"""
+                SELECT COUNT(*) FROM users u
+                WHERE u.subscription_until IS NOT NULL
+                  AND u.subscription_until > ?
+                  AND EXISTS (
+                      SELECT 1 FROM admin_subscription_grants g
+                      WHERE g.telegram_id=u.telegram_id
+                  )
+                  AND NOT ({self_paid_sql})
                 """,
                 (now,),
             )).fetchone())[0]
@@ -1877,13 +1987,116 @@ class Database:
             "new_24h": int(new_24h),
             "new_7d": int(new_7d),
             "new_30d": int(new_30d),
+            "paid_total": int(paid_total),
             "active_paid": int(active_paid),
+            "active_without_self_payment": active_without_self_payment,
+            "admin_granted_total": int(admin_granted_total),
+            "active_admin_granted": int(active_admin_granted),
             "trials": int(trials),
             "sbp_paid": int(sbp_paid),
             "sbp_revenue": int(sbp_revenue),
             "star_paid": int(star_paid),
             "star_revenue": int(star_revenue),
         }
+
+    async def list_due_expiry_notifications(
+        self,
+        *,
+        limit: int = 200,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return unsent 3/2/1-day reminders for currently active subscriptions."""
+        current = (now or utcnow()).astimezone(timezone.utc)
+        horizon = current + timedelta(days=3)
+        limit = max(1, min(int(limit), 1000))
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT u.telegram_id, u.first_name, u.subscription_until,
+                           n.days_before AS sent_days_before
+                    FROM users u
+                    LEFT JOIN subscription_expiry_notifications n
+                      ON n.telegram_id=u.telegram_id
+                     AND n.subscription_until=u.subscription_until
+                    WHERE u.subscription_until IS NOT NULL
+                      AND u.subscription_until > ?
+                      AND u.subscription_until <= ?
+                    ORDER BY u.subscription_until, u.telegram_id
+                    LIMIT ?
+                    """,
+                    (to_iso(current), to_iso(horizon), limit * 3),
+                )
+            ).fetchall()
+
+        grouped: dict[tuple[int, str], dict[str, Any]] = {}
+        for row in rows:
+            key = (int(row["telegram_id"]), str(row["subscription_until"]))
+            item = grouped.setdefault(
+                key,
+                {
+                    "telegram_id": key[0],
+                    "first_name": str(row["first_name"] or ""),
+                    "subscription_until": key[1],
+                    "sent_days": set(),
+                },
+            )
+            if row["sent_days_before"] is not None:
+                item["sent_days"].add(int(row["sent_days_before"]))
+
+        due: list[dict[str, Any]] = []
+        for item in grouped.values():
+            expires = from_iso(item["subscription_until"])
+            if not expires:
+                continue
+            seconds = (expires - current).total_seconds()
+            if seconds <= 0:
+                continue
+            days_before = max(1, min(3, int((seconds + 86399) // 86400)))
+            if days_before in item.pop("sent_days"):
+                continue
+            item["days_before"] = days_before
+            due.append(item)
+            if len(due) >= limit:
+                break
+        return due
+
+    async def claim_expiry_notification(
+        self,
+        telegram_id: int,
+        subscription_until: str,
+        days_before: int,
+    ) -> bool:
+        """Atomically reserve a reminder so parallel loops cannot send duplicates."""
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                INSERT OR IGNORE INTO subscription_expiry_notifications
+                    (telegram_id, subscription_until, days_before, sent_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (telegram_id, subscription_until, days_before, to_iso(utcnow())),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
+    async def release_expiry_notification(
+        self,
+        telegram_id: int,
+        subscription_until: str,
+        days_before: int,
+    ) -> None:
+        """Release a failed delivery claim so a later pass can retry it."""
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                DELETE FROM subscription_expiry_notifications
+                WHERE telegram_id=? AND subscription_until=? AND days_before=?
+                """,
+                (telegram_id, subscription_until, days_before),
+            )
+            await db.commit()
 
     async def list_active_users_for_vpn_sync(
         self,

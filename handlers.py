@@ -3192,7 +3192,11 @@ def build_router(
             "📊 <b>Сводка</b>",
             f"├ Всего пользователей: <b>{stats['total']}</b>",
             f"├ Активных подписок: <b>{stats['active']}</b>",
+            f"├ Платных всего: <b>{stats['paid_total']}</b>",
             f"├ Платных активных: <b>{stats['active_paid']}</b>",
+            f"├ Активных без личной оплаты: <b>{stats['active_without_self_payment']}</b>",
+            f"├ Выдано админом: <b>{stats['admin_granted_total']}</b>",
+            f"├ Из них активны: <b>{stats['active_admin_granted']}</b>",
             f"├ Новых за 24 часа: <b>+{stats['new_24h']}</b>",
             f"├ Новых за 7 дней: <b>+{stats['new_7d']}</b>",
             f"└ Новых за 30 дней: <b>+{stats['new_30d']}</b>",
@@ -3328,7 +3332,11 @@ def build_router(
             "👥 <b>Пользователи</b>",
             f"├ Всего — <b>{stats['total']}</b>",
             f"├ Активные — <b>{stats['active']}</b>",
+            f"├ Платные всего — <b>{stats['paid_total']}</b>",
             f"├ Платные активные — <b>{stats['active_paid']}</b>",
+            f"├ Активные без личной оплаты — <b>{stats['active_without_self_payment']}</b>",
+            f"├ Выданы админом — <b>{stats['admin_granted_total']}</b>",
+            f"├ Выданные активные — <b>{stats['active_admin_granted']}</b>",
             f"├ За 24 часа — <b>+{stats['new_24h']}</b>",
             f"├ За 7 дней — <b>+{stats['new_7d']}</b>",
             f"├ За 30 дней — <b>+{stats['new_30d']}</b>",
@@ -4108,7 +4116,17 @@ def build_router(
             await safe_callback_answer(callback, "Некорректный срок", show_alert=True)
             return
         await safe_callback_answer(callback, "Обновляю срок…")
-        updated = await db.adjust_subscription_days(uid, days if parts[3] == "add" else -days)
+        if parts[3] == "add":
+            current_user = await db.get_user(uid)
+            updated = await db.grant_subscription_by_admin(
+                uid,
+                days,
+                current_user.get("plan_name") or "Админская выдача",
+                callback.from_user.id,
+                action="add",
+            )
+        else:
+            updated = await db.adjust_subscription_days(uid, -days)
         await sync_device_limit(updated)
         if callback.message:
             await show_admin_user(callback.message, callback.from_user, uid)
@@ -4297,11 +4315,11 @@ def build_router(
             return
 
         await safe_callback_answer(callback, f"Добавляю {days} дней…")
-        user = await db.extend_subscription(
+        user = await db.grant_subscription_by_admin(
             telegram_id=telegram_id,
             days=days,
             plan_name=f"{days} дн.",
-            max_devices=BASE_DEVICES,
+            granted_by=callback.from_user.id,
         )
         try:
             await asyncio.wait_for(provider.provision(user), 7.0)
@@ -4416,11 +4434,11 @@ def build_router(
             await message.answer("Пользователь ещё не запускал бота.")
             return
 
-        user = await db.extend_subscription(
+        user = await db.grant_subscription_by_admin(
             telegram_id=telegram_id,
             days=days,
             plan_name=f"{days} дн.",
-            max_devices=BASE_DEVICES,
+            granted_by=message.from_user.id,
         )
         try:
             await asyncio.wait_for(provider.provision(user), 7.0)
@@ -4508,7 +4526,22 @@ def build_router(
                     reply_markup=kb.as_markup(),
                 )
                 return True
-            updated = await db.adjust_subscription_days(uid, days if action in {"grant", "add"} else -days)
+            if action in {"grant", "add"}:
+                current_user = await db.get_user(uid)
+                plan_name = (
+                    f"{days} дн."
+                    if action == "grant"
+                    else current_user.get("plan_name") or "Админская выдача"
+                )
+                updated = await db.grant_subscription_by_admin(
+                    uid,
+                    days,
+                    plan_name,
+                    user_id,
+                    action=action,
+                )
+            else:
+                updated = await db.adjust_subscription_days(uid, -days)
             await sync_device_limit(updated)
             await db.clear_support_session(user_id)
             if action == "grant":

@@ -11,7 +11,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
+from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, WebAppInfo
 
 from config import Config
 from db import Database
@@ -133,6 +133,55 @@ async def database_backup_loop(db_path: str) -> None:
                 logger.info("SQLite safety backup created: %s", path)
         except Exception:
             logger.exception("Could not create scheduled SQLite safety backup")
+
+
+async def send_expiry_notifications_once(bot: Bot, db: Database, config: Config) -> int:
+    """Send each 3/2/1-day reminder once for the exact subscription expiry."""
+    logger = logging.getLogger(__name__)
+    sent = 0
+    for item in await db.list_due_expiry_notifications():
+        user_id = int(item["telegram_id"])
+        days = int(item["days_before"])
+        expires_at = datetime.fromisoformat(
+            str(item["subscription_until"]).replace("Z", "+00:00")
+        ).astimezone(config.display_tz)
+        if not await db.claim_expiry_notification(
+            user_id, str(item["subscription_until"]), days
+        ):
+            continue
+        day_word = "день" if days == 1 else "дня"
+        text = (
+            "⏳ <b>Подписка MGN VPN скоро закончится</b>\n\n"
+            f"До окончания осталось: <b>{days} {day_word}</b>\n"
+            f"Работает до: <b>{expires_at:%d.%m.%Y · %H:%M}</b>\n\n"
+            "Продлите подписку заранее, чтобы VPN не отключился."
+        )
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Продлить VPN", callback_data="plans")]]
+        )
+        try:
+            await bot.send_message(user_id, text, reply_markup=keyboard)
+            sent += 1
+        except Exception as exc:
+            await db.release_expiry_notification(
+                user_id, str(item["subscription_until"]), days
+            )
+            logger.warning(
+                "Could not send expiry reminder to %s: %s", user_id, type(exc).__name__
+            )
+    return sent
+
+
+async def expiry_notification_loop(bot: Bot, db: Database, config: Config) -> None:
+    logger = logging.getLogger(__name__)
+    while True:
+        try:
+            sent = await send_expiry_notifications_once(bot, db, config)
+            if sent:
+                logger.info("Subscription expiry reminders sent: %s", sent)
+        except Exception:
+            logger.exception("Subscription expiry reminder pass failed")
+        await asyncio.sleep(60 * 60)
 
 
 async def payment_reconciliation_loop(config: Config, db: Database, provider: VpnProvider) -> None:
@@ -349,6 +398,7 @@ async def main() -> None:
     provider = make_provider(config)
     miniapp = MiniAppServer(bot, config, db, provider)
     payment_task = asyncio.create_task(payment_reconciliation_loop(config, db, provider))
+    expiry_task = asyncio.create_task(expiry_notification_loop(bot, db, config))
     federation_task = (
         asyncio.create_task(vpn_federation_reconciliation_loop(db, provider, miniapp))
         if config.vpn_mode == "h1cloud"
@@ -387,6 +437,7 @@ async def main() -> None:
     finally:
         backup_task.cancel()
         payment_task.cancel()
+        expiry_task.cancel()
         if federation_task:
             federation_task.cancel()
         try:
@@ -395,6 +446,10 @@ async def main() -> None:
             pass
         try:
             await payment_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await expiry_task
         except asyncio.CancelledError:
             pass
         if federation_task:
