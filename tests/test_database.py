@@ -285,10 +285,12 @@ def test_attribution_source_is_first_touch_and_counts_paid_buyers(tmp_path):
         await db.init()
         await db.ensure_user(101, "from_chat", "From Chat")
         await db.ensure_user(102, "no_payment", "No Payment")
+        await db.ensure_user(103, "from_utm", "From UTM")
 
         assert await db.set_attribution_source_once(101, "anonchat_mgn")
         assert not await db.set_attribution_source_once(101, "other_campaign")
         assert await db.set_attribution_source_once(102, "anonchat_mgn")
+        assert await db.set_attribution_source_once(103, "utm_telegram_ads")
 
         user = await db.get_user(101)
         assert user["attribution_source"] == "anonchat_mgn"
@@ -314,6 +316,13 @@ def test_attribution_source_is_first_touch_and_counts_paid_buyers(tmp_path):
         assert after["arrived"] == 2
         assert after["buyers"] == 1
         assert after["conversion"] == 50.0
+        utm = await db.list_attribution_stats()
+        assert utm == [{
+            "source": "utm_telegram_ads",
+            "arrived": 1,
+            "buyers": 0,
+            "conversion": 0.0,
+        }]
 
     asyncio.run(scenario())
 

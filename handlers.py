@@ -1413,10 +1413,16 @@ def build_router(
         user = await ensure_actor(message.from_user)
         start_arg = str(command.args or "").strip().lower()
 
-        if start_arg in {"anonchat_mgn", "pozor_mgn"}:
+        campaign_source = (
+            start_arg
+            if start_arg in {"anonchat_mgn", "pozor_mgn"}
+            or re.fullmatch(r"utm_[a-z0-9_-]{1,60}", start_arg)
+            else ""
+        )
+        if campaign_source:
             await db.set_attribution_source_once(
                 message.from_user.id,
-                start_arg,
+                campaign_source,
             )
             user = await db.get_user(message.from_user.id)
 
@@ -1480,6 +1486,18 @@ def build_router(
         except Exception:
             pass
         await show_subscription(message, message.from_user)
+
+    @router.message(Command("menu"))
+    async def menu_command(message: Message) -> None:
+        user = await ensure_actor(message.from_user)
+        if not await require_channel_membership(message, message.from_user, user):
+            return
+        await show_home(
+            message,
+            message.from_user,
+            recover_on_edit_failure=True,
+            force_new=True,
+        )
 
     @router.message(F.text.in_({"🏠 Главное", "Главное", "🏠 Главное меню", "Главное меню"}))
     async def home(message: Message) -> None:
@@ -2050,6 +2068,7 @@ def build_router(
     async def profile(message: Message) -> None:
         await show_profile(message, message.from_user)
 
+    @router.message(Command("plans"))
     @router.message(F.text.in_({"Подписка", "💳 Подписка", "💳 Купить VPN", "Купить VPN", "Продлить VPN"}))
     async def plans_message(message: Message) -> None:
         await ensure_actor(message.from_user)
@@ -3327,6 +3346,7 @@ def build_router(
         stats = await db.admin_overview()
         anonchat = await db.attribution_stats("anonchat_mgn")
         pozor = await db.attribution_stats("pozor_mgn")
+        utm_sources = await db.list_attribution_stats()
         recent = await db.recent_users(10)
 
         kb = InlineKeyboardBuilder()
@@ -3365,8 +3385,19 @@ def build_router(
             f"├ Совершили оплату — <b>{pozor['buyers']}</b>",
             f"└ Конверсия в покупку — <b>{pozor['conversion']:.1f}%</b>",
             "",
-            "🕒 <b>Последние регистрации</b>",
         ]
+
+        if utm_sources:
+            lines += ["🏷 <b>UTM-метки</b>"]
+            for source in utm_sources:
+                label = html.escape(str(source["source"]).removeprefix("utm_"))
+                lines.append(
+                    f"• <code>{label}</code>: <b>{source['arrived']}</b> пришли · "
+                    f"<b>{source['buyers']}</b> купили · {source['conversion']:.1f}%"
+                )
+            lines.append("")
+
+        lines.append("🕒 <b>Последние регистрации</b>")
 
         for item in recent:
             uid = int(item["telegram_id"])

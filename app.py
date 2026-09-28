@@ -11,7 +11,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, WebAppInfo
+from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonCommands
 
 from config import Config
 from db import Database
@@ -413,14 +413,14 @@ async def main() -> None:
             await bot.set_my_commands(
                 [
                     BotCommand(command="start", description="Главное меню"),
+                    BotCommand(command="menu", description="Вернуться в главное меню"),
                     BotCommand(command="sub", description="Моя подписка"),
+                    BotCommand(command="plans", description="Тарифы и покупка VPN"),
+                    BotCommand(command="profile", description="Мой профиль"),
                 ]
             )
             await bot.set_chat_menu_button(
-                menu_button=MenuButtonWebApp(
-                    text="MGN VPN",
-                    web_app=WebAppInfo(url=config.miniapp_url),
-                )
+                menu_button=MenuButtonCommands()
             )
         except Exception as exc:
             logging.getLogger(__name__).warning(

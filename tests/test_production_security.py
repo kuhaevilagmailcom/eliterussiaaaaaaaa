@@ -398,7 +398,7 @@ def test_reply_keyboard_navigation_replaces_screen_and_removes_button_message(tm
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("source", ["anonchat_mgn", "pozor_mgn"])
+@pytest.mark.parametrize("source", ["anonchat_mgn", "pozor_mgn", "utm_telegram_ads"])
 def test_campaign_start_records_source_once(tmp_path, monkeypatch, source):
     monkeypatch.setenv("BOT_TOKEN", TOKEN)
 

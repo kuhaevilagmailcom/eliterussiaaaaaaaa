@@ -528,6 +528,53 @@ class Database:
             "conversion": conversion,
         }
 
+    async def list_attribution_stats(
+        self,
+        *,
+        prefix: str = "utm_",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return campaign totals for dynamic Telegram start parameters."""
+        prefix = str(prefix or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9_-]{1,63}", prefix):
+            raise ValueError("invalid attribution prefix")
+        limit = max(1, min(int(limit), 100))
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT u.attribution_source AS source,
+                           COUNT(*) AS arrived,
+                           SUM(CASE WHEN
+                               EXISTS (
+                                   SELECT 1 FROM sbp_payments s
+                                   WHERE s.telegram_id=u.telegram_id AND s.status='paid'
+                               ) OR EXISTS (
+                                   SELECT 1 FROM star_payments sp
+                                   WHERE sp.buyer_telegram_id=u.telegram_id
+                               ) THEN 1 ELSE 0 END) AS buyers
+                    FROM users u
+                    WHERE u.attribution_source LIKE ?
+                    GROUP BY u.attribution_source
+                    ORDER BY arrived DESC, source
+                    LIMIT ?
+                    """,
+                    (f"{prefix}%", limit),
+                )
+            ).fetchall()
+        result = []
+        for row in rows:
+            arrived = int(row["arrived"] or 0)
+            buyers = int(row["buyers"] or 0)
+            result.append({
+                "source": str(row["source"]),
+                "arrived": arrived,
+                "buyers": buyers,
+                "conversion": buyers / arrived * 100.0 if arrived else 0.0,
+            })
+        return result
+
     async def get_user(self, telegram_id: int) -> dict[str, Any]:
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
