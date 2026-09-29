@@ -500,14 +500,37 @@ class MiniAppServer:
         announce = base64.b64encode(announce_text.encode("utf-8")).decode("ascii")
 
         userinfo = normalized.get("subscription-userinfo", "")
-        if not userinfo:
-            until = from_iso(user.get("subscription_until"))
-            expire = int(until.timestamp()) if until else 0
-            try:
-                limit_gb = max(0.0, float(user.get("traffic_limit_gb") or 0))
-            except (TypeError, ValueError):
-                limit_gb = 0.0
-            total_bytes = int(limit_gb * (1024 ** 3))
+        until = from_iso(user.get("subscription_until"))
+        expire = int(until.timestamp()) if until else 0
+        try:
+            limit_gb = max(0.0, float(user.get("traffic_limit_gb") or 0))
+        except (TypeError, ValueError):
+            limit_gb = 0.0
+        total_bytes = int(limit_gb * (1024 ** 3))
+
+        # Traffic counters may come from H1, but expiry/limit are authoritative
+        # in our DB. Never let cached/upstream Happ metadata keep an old expiry.
+        if userinfo:
+            if re.search(r"(?:^|;)\s*expire=\d+", userinfo, re.I):
+                userinfo = re.sub(
+                    r"((?:^|;)\s*expire=)\d+",
+                    lambda match: f"{match.group(1)}{max(0, expire)}",
+                    userinfo,
+                    flags=re.I,
+                )
+            else:
+                userinfo = userinfo.rstrip(" ;") + f"; expire={max(0, expire)}"
+
+            if re.search(r"(?:^|;)\s*total=\d+", userinfo, re.I):
+                userinfo = re.sub(
+                    r"((?:^|;)\s*total=)\d+",
+                    lambda match: f"{match.group(1)}{total_bytes}",
+                    userinfo,
+                    flags=re.I,
+                )
+            else:
+                userinfo = userinfo.rstrip(" ;") + f"; total={total_bytes}"
+        else:
             userinfo = (
                 f"upload=0; download=0; total={total_bytes}; expire={max(0, expire)}"
             )
@@ -808,9 +831,13 @@ class MiniAppServer:
         now = time.monotonic()
         if cached and now - float(cached["created"]) <= 30.0:
             self._schedule_subscription_federation_refresh(user, token)
+            headers = await self._subscription_profile_headers(
+                user,
+                dict(cached.get("headers") or {}),
+            )
             return web.Response(
                 body=cached["body"],
-                headers=dict(cached["headers"]),
+                headers=headers,
             )
 
         persistent_cached = await asyncio.to_thread(self._read_persistent_subscription_cache, token)
@@ -823,9 +850,13 @@ class MiniAppServer:
             # provision task before a cold fetch races the same H1 client and
             # was a common source of first-import 503 responses.
             self._schedule_subscription_federation_refresh(user, token)
+            headers = await self._subscription_profile_headers(
+                user,
+                dict(persistent_cached.get("headers") or {}),
+            )
             return web.Response(
                 body=persistent_cached["body"],
-                headers=dict(persistent_cached["headers"]),
+                headers=headers,
             )
 
         async def load_payload() -> tuple[bytes, dict[str, str], int]:
@@ -847,8 +878,28 @@ class MiniAppServer:
             # только потому, что одна H1-нода сейчас недоступна/медленная.
             richer_cached = None
             richer_count = count
-            for candidate in (cached, persistent_cached):
-                if not candidate:
+            candidates: list[tuple[dict, float]] = []
+            if cached:
+                candidates.append(
+                    (cached, max(0.0, now - float(cached.get("created") or 0.0)))
+                )
+            if persistent_cached:
+                candidates.append(
+                    (
+                        persistent_cached,
+                        max(
+                            0.0,
+                            time.time()
+                            - float(persistent_cached.get("created_at") or 0.0),
+                        ),
+                    )
+                )
+
+            # A richer snapshot is only a short outage cushion. After 10 min a
+            # smaller fresh subscription wins, allowing intentionally removed
+            # servers to disappear instead of living in cache forever.
+            for candidate, candidate_age in candidates:
+                if candidate_age > 600.0:
                     continue
                 candidate_body = candidate.get("body")
                 if not isinstance(candidate_body, (bytes, bytearray)) or not candidate_body:
@@ -866,16 +917,21 @@ class MiniAppServer:
             if richer_cached is not None:
                 logger.warning(
                     "MGN subscription refresh for %s returned only %s node(s); "
-                    "preserving richer cached payload with %s node(s)",
+                    "preserving richer cached payload with %s node(s) for a bounded grace period",
                     user["telegram_id"],
                     count,
                     richer_count,
                 )
-                cached_headers = dict(richer_cached.get("headers") or {})
+                # Body can be the richer cached snapshot, but Happ metadata must
+                # always be rebuilt from the current DB/upstream response.
+                headers = await self._subscription_profile_headers(
+                    user,
+                    upstream_headers,
+                )
                 self._schedule_subscription_federation_refresh(user, token)
                 return web.Response(
                     body=bytes(richer_cached["body"]),
-                    headers=cached_headers,
+                    headers=headers,
                 )
 
             headers = await self._subscription_profile_headers(
@@ -921,9 +977,13 @@ class MiniAppServer:
                     user["telegram_id"],
                     exc,
                 )
+                headers = await self._subscription_profile_headers(
+                    user,
+                    dict(cached.get("headers") or {}),
+                )
                 return web.Response(
                     body=cached["body"],
-                    headers=dict(cached["headers"]),
+                    headers=headers,
                 )
             if (
                 persistent_cached
@@ -934,9 +994,13 @@ class MiniAppServer:
                     user["telegram_id"],
                     exc,
                 )
+                headers = await self._subscription_profile_headers(
+                    user,
+                    dict(persistent_cached.get("headers") or {}),
+                )
                 return web.Response(
                     body=persistent_cached["body"],
-                    headers=dict(persistent_cached["headers"]),
+                    headers=headers,
                 )
             logger.warning(
                 "MGN subscription unavailable for user %s (%s)",
