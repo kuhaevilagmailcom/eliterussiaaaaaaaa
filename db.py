@@ -69,7 +69,8 @@ class Database:
                     vpn_client_id TEXT UNIQUE,
                     attribution_source TEXT,
                     attribution_at TEXT,
-                    channel_verified_at TEXT
+                    channel_verified_at TEXT,
+                    preferred_country TEXT NOT NULL DEFAULT 'auto'
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_users_subscription_until
@@ -212,6 +213,8 @@ class Database:
                     new_username TEXT,
                     rerolled_by INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
+                    undone_at TEXT,
+                    undone_by INTEGER,
                     FOREIGN KEY(giveaway_id) REFERENCES giveaways(id)
                 );
 
@@ -269,7 +272,8 @@ class Database:
                     created_at TEXT NOT NULL,
                     answered_at TEXT,
                     answered_by INTEGER,
-                    answer_text TEXT
+                    answer_text TEXT,
+                    server_code TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_support_tickets_status_created
@@ -310,6 +314,13 @@ class Database:
                     payload TEXT,
                     updated_at TEXT NOT NULL,
                     expires_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS service_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    updated_by INTEGER
                 );
 
                 CREATE TABLE IF NOT EXISTS payment_intents (
@@ -371,6 +382,10 @@ class Database:
                 await db.execute(
                     "UPDATE users SET bot_started_at=created_at "
                     "WHERE bot_started_at IS NULL"
+                )
+            if "preferred_country" not in columns:
+                await db.execute(
+                    "ALTER TABLE users ADD COLUMN preferred_country TEXT NOT NULL DEFAULT 'auto'"
                 )
             await db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_vpn_client_id "
@@ -437,6 +452,17 @@ class Database:
                     "ALTER TABLE giveaways ADD COLUMN admin_notified_at TEXT"
                 )
 
+            reroll_columns = {
+                row[1]
+                for row in await (
+                    await db.execute("PRAGMA table_info(giveaway_rerolls)")
+                ).fetchall()
+            }
+            if "undone_at" not in reroll_columns:
+                await db.execute("ALTER TABLE giveaway_rerolls ADD COLUMN undone_at TEXT")
+            if "undone_by" not in reroll_columns:
+                await db.execute("ALTER TABLE giveaway_rerolls ADD COLUMN undone_by INTEGER")
+
             support_columns = {
                 row[1]
                 for row in await (
@@ -449,6 +475,7 @@ class Database:
                 ("closed_by", "INTEGER"),
                 ("deleted_at", "TEXT"),
                 ("deleted_by", "INTEGER"),
+                ("server_code", "TEXT"),
             ):
                 if name not in support_columns:
                     await db.execute(
@@ -701,6 +728,256 @@ class Database:
                 "conversion": buyers / arrived * 100.0 if arrived else 0.0,
             })
         return result
+
+    async def get_service_setting(self, key: str, default: str = "") -> str:
+        key = str(key or "").strip()
+        if not key:
+            return default
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            row = await (
+                await db.execute(
+                    "SELECT value FROM service_settings WHERE key=?",
+                    (key,),
+                )
+            ).fetchone()
+        return str(row[0]) if row else default
+
+    async def set_service_setting(
+        self,
+        key: str,
+        value: str,
+        *,
+        updated_by: int | None = None,
+    ) -> None:
+        key = str(key or "").strip()
+        if not key or len(key) > 80:
+            raise ValueError("invalid setting key")
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute(
+                """
+                INSERT INTO service_settings (key, value, updated_at, updated_by)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value,
+                    updated_at=excluded.updated_at,
+                    updated_by=excluded.updated_by
+                """,
+                (key, str(value), to_iso(utcnow()), updated_by),
+            )
+            await db.commit()
+
+    async def maintenance_state(self) -> dict[str, Any]:
+        enabled = (await self.get_service_setting("maintenance_enabled", "0")) == "1"
+        message = await self.get_service_setting(
+            "maintenance_message",
+            "Покупки временно приостановлены. Активные VPN-подписки продолжают работать.",
+        )
+        return {"enabled": enabled, "message": message}
+
+    async def set_maintenance(
+        self,
+        enabled: bool,
+        *,
+        updated_by: int,
+        message: str | None = None,
+    ) -> dict[str, Any]:
+        await self.set_service_setting(
+            "maintenance_enabled",
+            "1" if enabled else "0",
+            updated_by=updated_by,
+        )
+        if message is not None and str(message).strip():
+            await self.set_service_setting(
+                "maintenance_message",
+                str(message).strip()[:500],
+                updated_by=updated_by,
+            )
+        return await self.maintenance_state()
+
+    async def set_preferred_country(
+        self,
+        telegram_id: int,
+        country: str,
+    ) -> dict[str, Any]:
+        country = str(country or "auto").strip().lower()
+        allowed = {"auto", "nl", "pk", "de", "pl", "fi", "us", "us2", "lt", "lv"}
+        if country not in allowed:
+            raise ValueError("unsupported country")
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            cursor = await db.execute(
+                "UPDATE users SET preferred_country=? WHERE telegram_id=?",
+                (country, int(telegram_id)),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(telegram_id)
+            await db.commit()
+        return await self.get_user(int(telegram_id))
+
+    async def list_user_payment_history(
+        self,
+        telegram_id: int,
+        *,
+        limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 30))
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT * FROM (
+                        SELECT 'СБП' AS method,
+                               amount_rub AS amount,
+                               'RUB' AS currency,
+                               plan_code,
+                               status,
+                               COALESCE(paid_at, created_at) AS created_at,
+                               promo_code
+                        FROM sbp_payments
+                        WHERE COALESCE(target_telegram_id, telegram_id)=?
+                           OR telegram_id=?
+                        UNION ALL
+                        SELECT 'Stars' AS method,
+                               stars AS amount,
+                               'XTR' AS currency,
+                               plan_code,
+                               'paid' AS status,
+                               created_at,
+                               NULL AS promo_code
+                        FROM star_payments
+                        WHERE target_telegram_id=? OR buyer_telegram_id=?
+                    )
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (
+                        int(telegram_id),
+                        int(telegram_id),
+                        int(telegram_id),
+                        int(telegram_id),
+                        limit,
+                    ),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def list_subscription_events(
+        self,
+        telegram_id: int,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            for row in await (
+                await db.execute(
+                    """
+                    SELECT plan_code, COALESCE(paid_at, created_at) AS happened_at
+                    FROM sbp_payments
+                    WHERE status='paid'
+                      AND COALESCE(target_telegram_id, telegram_id)=?
+                      AND plan_code!='device'
+                    """,
+                    (int(telegram_id),),
+                )
+            ).fetchall():
+                plan = PLANS.get(str(row["plan_code"]))
+                if plan:
+                    events.append({
+                        "source": "СБП",
+                        "days": int(plan["days"]),
+                        "at": str(row["happened_at"]),
+                    })
+            for row in await (
+                await db.execute(
+                    """
+                    SELECT plan_code, created_at AS happened_at
+                    FROM star_payments
+                    WHERE target_telegram_id=? AND plan_code!='device'
+                    """,
+                    (int(telegram_id),),
+                )
+            ).fetchall():
+                plan = PLANS.get(str(row["plan_code"]))
+                if plan:
+                    events.append({
+                        "source": "Stars",
+                        "days": int(plan["days"]),
+                        "at": str(row["happened_at"]),
+                    })
+            for row in await (
+                await db.execute(
+                    """
+                    SELECT days, action, granted_at
+                    FROM admin_subscription_grants
+                    WHERE telegram_id=?
+                    """,
+                    (int(telegram_id),),
+                )
+            ).fetchall():
+                events.append({
+                    "source": "Админ",
+                    "days": int(row["days"]),
+                    "at": str(row["granted_at"]),
+                })
+            for row in await (
+                await db.execute(
+                    """
+                    SELECT g.prize_days, gw.granted_at
+                    FROM giveaway_winners gw
+                    JOIN giveaways g ON g.id=gw.giveaway_id
+                    WHERE gw.telegram_id=? AND gw.granted_at IS NOT NULL
+                    """,
+                    (int(telegram_id),),
+                )
+            ).fetchall():
+                events.append({
+                    "source": "Розыгрыш",
+                    "days": int(row["prize_days"]),
+                    "at": str(row["granted_at"]),
+                })
+            for row in await (
+                await db.execute(
+                    """
+                    SELECT rewarded_at
+                    FROM referrals
+                    WHERE referrer_id=? AND rewarded_at IS NOT NULL
+                    """,
+                    (int(telegram_id),),
+                )
+            ).fetchall():
+                events.append({
+                    "source": "Реферал",
+                    "days": 1,
+                    "at": str(row["rewarded_at"]),
+                })
+            for row in await (
+                await db.execute(
+                    """
+                    SELECT p.value, pu.used_at
+                    FROM promo_uses pu
+                    JOIN service_promo_codes p ON p.id=pu.promo_id
+                    WHERE pu.telegram_id=? AND p.type='free_days'
+                    """,
+                    (int(telegram_id),),
+                )
+            ).fetchall():
+                events.append({
+                    "source": "Промокод",
+                    "days": int(row["value"]),
+                    "at": str(row["used_at"]),
+                })
+        events.sort(key=lambda item: from_iso(item.get("at")) or utcnow(), reverse=True)
+        return events[: max(1, min(int(limit), 50))]
+
+    async def user_promo_stats(self, telegram_id: int) -> dict[str, int]:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            used = int((await (await db.execute(
+                "SELECT COUNT(*) FROM promo_uses WHERE telegram_id=?",
+                (int(telegram_id),),
+            )).fetchone())[0])
+        return {"used": used}
 
     async def get_user(self, telegram_id: int) -> dict[str, Any]:
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
