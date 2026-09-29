@@ -4424,7 +4424,7 @@ def build_router(
                 )
 
         if sent_count == 0:
-            await db.cancel_giveaway(int(giveaway["id"]))
+            await db.delete_giveaway(int(giveaway["id"]))
             await safe_callback_answer(callback, "Не удалось опубликовать ни в один канал.", show_alert=True)
             return
 
