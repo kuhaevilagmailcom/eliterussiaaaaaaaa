@@ -454,6 +454,72 @@ def test_h1_server_diagnostics_reports_main_and_federated_nodes():
     asyncio.run(run())
 
 
+def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty():
+    async def run():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider.api_url = "https://nl1.h1cloud.net/api"
+        provider.server_name = "Нидерланды"
+        provider._endpoint_health_cache = {}
+        provider._endpoint_failure_streak = {}
+
+        async def request(method, path, **kwargs):
+            assert method == "GET"
+            if path == "/health":
+                return {"ok": True}
+            if path == "/fed/link":
+                return {"links": []}
+            if path == "/fed/registry":
+                return {"nodes": []}
+            if path == "/fed/lagg":
+                return None
+            raise AssertionError(path)
+
+        provider._request = AsyncMock(side_effect=request)
+        provider._get_client = AsyncMock(
+            return_value={
+                "sub_url": "https://nl1.h1cloud.net/sub/test",
+                "links": {},
+            }
+        )
+        provider._fetch_public_subscription = AsyncMock(
+            return_value=(
+                "vless://u@nl1.h1cloud.net:443#MGN-NL\n"
+                "vless://u@pk1.h1cloud.net:443#MGN-PK\n"
+                "vless://u@de5.h1cloud.net:443#MGN-DE\n"
+                "vless://u@pl-d1.h1cloud.net:443#MGN-PL\n"
+                "vless://u@fi5.h1cloud.net:443#MGN-FI\n"
+                "vless://u@us3.h1cloud.net:443#MGN-US\n"
+                "vless://u@us4.h1cloud.net:443#MGN-US\n"
+            ).encode()
+        )
+
+        async def probe(host, port):
+            if host.startswith("fi"):
+                return None
+            return 42.0
+
+        provider._probe_vless_endpoint = probe
+
+        report = await provider.server_diagnostics(
+            {
+                "telegram_id": 42,
+                "vpn_client_id": "sample",
+            }
+        )
+        servers = report["servers"]
+        assert len(servers) == 7
+        assert all(item["configured"] for item in servers)
+        assert next(item for item in servers if "Германия" in item["name"])["available"] is True
+        finland = next(item for item in servers if "Финляндия" in item["name"])
+        assert finland["configured"] is True
+        assert finland["available"] is False
+        assert finland["error"] == "probe_unverified"
+        assert next(item for item in servers if item["name"] == "🇺🇸 США 2")["configured"] is True
+        assert report["sources"]["subscription"]["count"] == 7
+
+    asyncio.run(run())
+
+
 def test_h1_server_diagnostics_distinguishes_empty_federation_from_main_config():
     async def run():
         provider = object.__new__(H1CloudVpnProvider)
