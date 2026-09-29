@@ -3685,8 +3685,8 @@ def build_router(
     def admin_role_label(role: str | None) -> str:
         return {
             "owner": "Владелец",
-            "full": "Полная",
-            "limited": "Ограниченная",
+            "full": "Администратор",
+            "limited": "Администратор",
         }.get(role or "", "Нет")
 
     def format_joined(value: str | None) -> str:
