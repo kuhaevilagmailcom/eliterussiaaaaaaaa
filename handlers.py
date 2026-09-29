@@ -311,11 +311,17 @@ def blue_inline_button(
     premium_icon: bool = True,
     style: str | None = None,
 ) -> InlineKeyboardButton:
-    # The admin panel intentionally uses only regular Unicode emoji.
-    # No Premium/custom emoji IDs are ever attached to admin callbacks.
+    # Admin controls intentionally use ordinary Unicode emoji, not Premium/custom
+    # emoji. Keep those characters in the visible label; the old generic cleaner
+    # removed them and even turned arrow-only pagination buttons into empty text.
     is_admin_button = str(callback_data or "").startswith("admin:")
+    visible_text = (
+        str(text or "").strip()
+        if is_admin_button or not premium_icon
+        else _clean_button_text(text)
+    )
     kwargs: dict[str, Any] = {
-        "text": _clean_button_text(text),
+        "text": visible_text,
         "callback_data": callback_data,
         "url": url,
         "web_app": web_app,
@@ -3401,30 +3407,31 @@ def build_router(
         return dt.astimezone(config.display_tz).strftime("%d.%m.%Y %H:%M")
 
     def admin_main_keyboard(role: str) -> Any:
+        """Compact admin navigation with regular emoji and native button styles."""
         kb = InlineKeyboardBuilder()
         kb.row(
-            admin_inline_button("📊 Сводка", callback_data="admin:stats"),
+            admin_inline_button("📊 Обзор", callback_data="admin:stats"),
             admin_inline_button("👥 Пользователи", callback_data="admin:users"),
         )
         kb.row(
-            admin_inline_button("💳 Платежи", callback_data="admin:payments"),
-            admin_inline_button("📈 Бизнес", callback_data="admin:business"),
+            admin_inline_button("💳 Платежи", callback_data="admin:payments", style="success"),
+            admin_inline_button("📈 Аналитика", callback_data="admin:business", style="success"),
         )
         kb.row(
-            admin_inline_button("🆘 Обращения", callback_data="admin:support"),
             admin_inline_button("🌐 Серверы", callback_data="admin:servers"),
+            admin_inline_button("🆘 Поддержка", callback_data="admin:support"),
         )
         if role in {"owner", "full"}:
             kb.row(
                 admin_inline_button("🎟 Промокоды", callback_data="admin:bonuses"),
-                admin_inline_button("⚙️ Система", callback_data="admin:system"),
+                admin_inline_button("🎁 Розыгрыши", callback_data="admin:giveaways"),
             )
             kb.row(
                 admin_inline_button("📣 Рассылка", callback_data="admin:broadcast:start"),
-                admin_inline_button("📢 В канал", callback_data="admin:ad:start"),
+                admin_inline_button("📢 Публикация", callback_data="admin:ad:start"),
             )
             kb.row(
-                admin_inline_button("🎁 Розыгрыши", callback_data="admin:giveaways"),
+                admin_inline_button("⚙️ Система", callback_data="admin:system"),
             )
         if role == "owner":
             kb.row(
@@ -3435,6 +3442,7 @@ def build_router(
                 "🏠 Главное меню",
                 callback_data="home",
                 premium_icon=False,
+                style=None,
             ),
         )
         return kb.as_markup()
@@ -3457,15 +3465,17 @@ def build_router(
 
         lines = [
             "🛡 <b>MGN VPN · Админка</b>",
-            f"Доступ: <b>{admin_role_label(role)}</b>",
+            f"👮 Доступ: <b>{admin_role_label(role)}</b>",
             "",
             "👥 <b>Пользователи</b>",
-            f"Всего: <b>{stats['total']}</b> · 🟢 активных: <b>{stats['active']}</b>",
-            f"Новые: <b>+{stats['new_24h']}</b> за 24ч · <b>+{stats['new_7d']}</b> за 7д",
+            f"├ Всего — <b>{stats['total']}</b>",
+            f"├ 🟢 Активных — <b>{stats['active']}</b>",
+            f"└ Новые — <b>+{stats['new_24h']}</b> за 24ч · <b>+{stats['new_7d']}</b> за 7д",
             "",
-            "💰 <b>Оплаты</b>",
-            f"СБП: <b>{stats['sbp_revenue']} ₽</b> · Stars: <b>{stats['star_revenue']} ⭐</b>",
-            f"RollyPay: <b>{pay_status}</b>",
+            "💳 <b>Оплаты</b>",
+            f"├ СБП — <b>{stats['sbp_revenue']} ₽</b>",
+            f"├ Stars — <b>{stats['star_revenue']} ⭐</b>",
+            f"└ RollyPay — <b>{pay_status}</b>",
             "",
             "📣 <b>Источники</b>",
             f"Anon Chat: <b>{anonchat['buyers']}/{anonchat['arrived']}</b> · {anonchat['conversion']:.1f}%",
@@ -3473,7 +3483,7 @@ def build_router(
             "",
             f"🌐 VPN: <b>{vpn_status}</b>",
             "",
-            "<i>Выберите раздел ниже.</i>",
+            "<i>Все разделы и действия доступны кнопками ниже.</i>",
         ]
 
         await send_screen(
@@ -3668,7 +3678,7 @@ def build_router(
         kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
 
         lines = [
-            "📈 <b>Бизнес MGN VPN</b>",
+            "📈 <b>Аналитика MGN VPN</b>",
             "",
             "💰 <b>Выручка</b>",
             f"├ 24 часа — <b>{data['rub_day']} ₽</b> · <b>{data['stars_day']} ⭐</b>",
@@ -3766,17 +3776,35 @@ def build_router(
 
         nav = []
         if page > 0:
-            nav.append(admin_inline_button("⬅️", callback_data=f"admin:users:{page - 1}", style=None))
+            nav.append(
+                admin_inline_button(
+                    "⬅️ Назад",
+                    callback_data=f"admin:users:{page - 1}",
+                    style=None,
+                )
+            )
+        nav.append(
+            admin_inline_button(
+                f"📄 {page + 1}/{pages}",
+                callback_data=f"admin:users:{page}",
+                style=None,
+            )
+        )
         if page + 1 < pages:
-            nav.append(admin_inline_button("➡️", callback_data=f"admin:users:{page + 1}", style=None))
-        if nav:
-            kb.row(*nav)
+            nav.append(
+                admin_inline_button(
+                    "Дальше ➡️",
+                    callback_data=f"admin:users:{page + 1}",
+                    style=None,
+                )
+            )
+        kb.row(*nav)
 
         kb.row(
             admin_inline_button("🔎 Поиск", callback_data="admin:usersearch"),
             admin_inline_button("🔄 Обновить", callback_data=f"admin:users:{page}"),
         )
-        kb.row(admin_inline_button("⬅️ Админка", callback_data="admin:home", style=None))
+        kb.row(admin_inline_button("🏠 Админка", callback_data="admin:home", style=None))
 
         lines = [
             "👥 <b>Пользователи</b>",
@@ -4048,8 +4076,11 @@ def build_router(
             return
 
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("🔄 Проверить ещё раз", callback_data="admin:servers"))
-        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
+        kb.row(
+            admin_inline_button("🔄 Обновить", callback_data="admin:servers"),
+            admin_inline_button("⚙️ Система", callback_data="admin:system", style=None),
+        )
+        kb.row(admin_inline_button("🏠 Админка", callback_data="admin:home", style=None))
 
         try:
             sample_users = await db.list_active_users_for_vpn_sync(limit=1)
@@ -4086,14 +4117,32 @@ def build_router(
         configured = sum(1 for item in servers if item.get("configured") or item.get("available"))
         unknown = len(servers) - configured
         remote_count = sum(1 for item in servers if item.get("kind") == "federation")
+        unverified = max(0, configured - available)
+        latency_values = [
+            float(item["latency_ms"])
+            for item in servers
+            if item.get("available") and isinstance(item.get("latency_ms"), (int, float))
+        ]
+        avg_latency = int(sum(latency_values) / len(latency_values)) if latency_values else None
+        sources = dict(report.get("sources") or {})
+        subscription_source = sources.get("subscription") if isinstance(sources.get("subscription"), dict) else {}
+        subscription_count = int(subscription_source.get("count") or 0)
 
         lines = [
             "🌐 <b>Серверы MGN VPN</b>",
             "",
-            f"Провайдер: <b>{html.escape(str(report.get('provider') or 'VPN'))}</b>",
-            f"Всего серверов: <b>{len(servers)}</b>",
-            f"Проверено онлайн: <b>{available}</b> · в подписке/настроено: <b>{configured}</b> · без данных: <b>{unknown}</b>",
-            f"Федеративных H1-узлов: <b>{remote_count}</b>",
+            f"🧩 Провайдер — <b>{html.escape(str(report.get('provider') or 'VPN'))}</b>",
+            f"⚙️ Сервис — <b>{'готов' if getattr(provider, 'service_ready', True) else 'не готов'}</b>",
+            f"🖥 Серверов в каталоге — <b>{len(servers)}</b>",
+            f"✅ Подтверждено онлайн — <b>{available}</b>",
+            f"⚠️ Настроено, но не подтверждено — <b>{unverified}</b>",
+            f"➖ Без данных — <b>{unknown}</b>",
+            f"🔗 VLESS в тестовой подписке — <b>{subscription_count}</b>",
+            f"🕸 Узлов federation — <b>{remote_count}</b>",
+        ]
+        if avg_latency is not None:
+            lines.append(f"⚡ Средний TCP-отклик — <b>{avg_latency} мс</b>")
+        lines += [
             "",
             "🖥 <b>Состояние серверов</b>",
         ]
@@ -4110,8 +4159,10 @@ def build_router(
 
             details: list[str] = [kind]
             host = str(item.get("host") or "").strip()
+            port = int(item.get("port") or 0)
             if host:
-                details.append(html.escape(host))
+                endpoint = f"{host}:{port}" if port else host
+                details.append(f"<code>{html.escape(endpoint)}</code>")
             node_id = str(item.get("id") or "").strip()
             if node_id and node_id != "main":
                 safe_id = node_id if len(node_id) <= 28 else node_id[:12] + "…" + node_id[-6:]
@@ -4133,16 +4184,16 @@ def build_router(
                 elif not configured:
                     lines.append("   ↳ нет данных для проверки, сервер не скрыт")
 
-        sources = dict(report.get("sources") or {})
         if sources:
-            lines += ["", "🔗 <b>H1 federation discovery</b>"]
-            for path in ("/fed/link", "/fed/registry", "/fed/lagg"):
+            lines += ["", "🔗 <b>Источники диагностики</b>"]
+            for path in ("/fed/link", "/fed/registry", "/fed/lagg", "subscription"):
                 item = sources.get(path)
                 if not isinstance(item, dict):
                     continue
                 icon = "✅" if item.get("available") else "❌"
                 count = int(item.get("count") or 0)
-                line = f"{icon} <code>{html.escape(path)}</code> — <b>{count}</b>"
+                source_label = "тестовая подписка" if path == "subscription" else path
+                line = f"{icon} <code>{html.escape(source_label)}</code> — <b>{count}</b>"
                 error = str(item.get("error") or "").strip()
                 if error and not item.get("available"):
                     line += f" · {html.escape(error)}"
