@@ -4021,7 +4021,8 @@ def build_router(
             lines += ["", "🏆 <b>Победители</b>"]
             for index, winner in enumerate(winners, start=1):
                 username = str(winner.get("username") or "").strip()
-                label = f"@{username}" if username else f"Победитель #{index}"
+                first_name = str(winner.get("first_name") or "").strip()
+                label = f"@{username}" if username else (first_name or f"Победитель #{index}")
                 lines.append(f"{index}. {html.escape(label)}")
         kb = InlineKeyboardBuilder()
         if str(item.get("status")) == "active":
@@ -4601,16 +4602,18 @@ def build_router(
 
         winners_count = int(giveaway.get("winners_count") or 1)
         prize_days = int(giveaway.get("prize_days") or 1)
+        end_label = giveaway_end_label(giveaway)
         if state == "already":
             message_text = (
                 f"Вы уже участвуете в розыгрыше!\n"
-                f"Призов: {winners_count}, по {prize_days} дней MGN VPN."
+                f"Призов: {winners_count}, по {prize_days} дней MGN VPN.\n"
+                f"Завершение: {end_label}."
             )
         else:
             message_text = (
                 f"🎉 Вы участвуете в розыгрыше!\n"
                 f"Призов: {winners_count}, по {prize_days} дней MGN VPN.\n"
-                f"Сейчас участников: {int(result.get('count') or 0)}."
+                f"Завершение: {end_label}. Участников: {int(result.get('count') or 0)}."
             )
         await safe_callback_answer(callback, message_text, show_alert=True)
         if result.get("due"):
