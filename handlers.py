@@ -2515,6 +2515,8 @@ def build_router(
     @router.message(F.text.in_({"Подписка", "💳 Подписка", "💳 Купить VPN", "Купить VPN", "Продлить VPN"}))
     async def plans_message(message: Message) -> None:
         await ensure_actor(message.from_user)
+        if not await guard_purchase_message(message, message.from_user):
+            return
         e = emoji.icon(0, pack=PACK_NEWS)
         await send_screen(
             message,
@@ -2527,6 +2529,8 @@ def build_router(
 
     @router.callback_query(F.data == "menu:gift")
     async def gift_menu(callback: CallbackQuery) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         await safe_callback_answer(callback, )
         if not callback.message:
             return
@@ -2539,6 +2543,8 @@ def build_router(
 
     @router.callback_query(F.data == "plans")
     async def plans_callback(callback: CallbackQuery) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         await safe_callback_answer(callback, )
         if not callback.message:
             return
@@ -2554,6 +2560,8 @@ def build_router(
 
     @router.callback_query(F.data.startswith("plan:"))
     async def choose_plan(callback: CallbackQuery) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         if not callback.message:
             return
         code = callback.data.split(":", 1)[1]
@@ -2587,6 +2595,8 @@ def build_router(
 
     @router.callback_query(F.data.startswith("gift:"))
     async def start_gift(callback: CallbackQuery) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         if not callback.message:
             return
         code = callback.data.split(":", 1)[1]
@@ -2721,6 +2731,8 @@ def build_router(
         code: str,
         target_telegram_id: int,
     ) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         if not callback.message:
             return
         plan = PLANS.get(code)
@@ -2830,6 +2842,8 @@ def build_router(
 
     @router.callback_query(F.data == "device:sbp")
     async def buy_device_sbp(callback: CallbackQuery) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         if not callback.message:
             return
         user = await ensure_actor(callback.from_user)
@@ -2902,6 +2916,8 @@ def build_router(
         code: str,
         target_telegram_id: int,
     ) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         if not callback.message:
             return
 
@@ -3011,6 +3027,8 @@ def build_router(
 
     @router.callback_query(F.data == "device:stars")
     async def buy_device_stars(callback: CallbackQuery) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         if not callback.message:
             return
         user = await ensure_actor(callback.from_user)
@@ -3083,6 +3101,13 @@ def build_router(
 
     @router.pre_checkout_query()
     async def pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
+        opened, maintenance_reason = await purchases_open()
+        if not opened:
+            await pre_checkout_query.answer(
+                ok=False,
+                error_message=maintenance_reason[:180],
+            )
+            return
         payload = pre_checkout_query.invoice_payload or ""
         parts = payload.split("|")
         if len(parts) == 2 and parts[0] == "xtr2":
