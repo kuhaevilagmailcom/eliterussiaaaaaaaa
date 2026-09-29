@@ -2219,6 +2219,15 @@ def build_router(
     @router.message(F.text.in_({"Подписка", "💳 Подписка", "💳 Купить VPN", "Купить VPN", "Продлить VPN"}))
     async def plans_message(message: Message) -> None:
         await ensure_actor(message.from_user)
+        if await db.maintenance_enabled():
+            await send_screen(
+                message,
+                message.from_user,
+                "🚧 <b>Временные техработы</b>\n\n"
+                "Новые покупки сейчас приостановлены. Действующие VPN-подписки продолжают работать.",
+                reply_markup=section_nav_keyboard(back_data="home"),
+            )
+            return
         e = emoji.icon(0, pack=PACK_NEWS)
         await send_screen(
             message,
@@ -2243,6 +2252,9 @@ def build_router(
 
     @router.callback_query(F.data == "plans")
     async def plans_callback(callback: CallbackQuery) -> None:
+        if await db.maintenance_enabled():
+            await safe_callback_answer(callback, "Новые покупки временно приостановлены.", show_alert=True)
+            return
         await safe_callback_answer(callback, )
         if not callback.message:
             return
@@ -2258,6 +2270,9 @@ def build_router(
 
     @router.callback_query(F.data.startswith("plan:"))
     async def choose_plan(callback: CallbackQuery) -> None:
+        if await db.maintenance_enabled():
+            await safe_callback_answer(callback, "Новые покупки временно приостановлены.", show_alert=True)
+            return
         if not callback.message:
             return
         code = callback.data.split(":", 1)[1]
