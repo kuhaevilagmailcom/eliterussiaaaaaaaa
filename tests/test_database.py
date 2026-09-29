@@ -640,3 +640,112 @@ def test_giveaway_can_be_staged_before_channel_publication(tmp_path):
         assert (await db.get_giveaway(int(item["id"])))["status"] == "active"
 
     run(scenario())
+
+def test_finished_giveaway_winner_can_be_replaced_atomically(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "reroll.sqlite3"))
+        await db.init()
+        await db.ensure_user(1, "owner", "Owner")
+        await db.ensure_user(101, "oldwinner", "Old")
+        await db.ensure_user(102, "newwinner", "New")
+        await db.ensure_user(103, "third", "Third")
+
+        paid = await db.extend_subscription(101, 60, "2 месяца", 1)
+        paid_until = from_iso(paid["subscription_until"])
+
+        giveaway = await db.create_giveaway(
+            created_by=1,
+            text_html="Test",
+            text_plain="Test",
+            photo_file_id=None,
+            winners_count=1,
+            prize_days=30,
+            end_mode="participants",
+            participant_limit=3,
+        )
+        giveaway_id = int(giveaway["id"])
+        for uid, username, name in (
+            (101, "oldwinner", "Old"),
+            (102, "newwinner", "New"),
+            (103, "third", "Third"),
+        ):
+            result = await db.add_giveaway_participant(
+                giveaway_id=giveaway_id,
+                telegram_id=uid,
+                username=username,
+                first_name=name,
+            )
+            assert result["state"] == "joined"
+
+        participants = await db.list_giveaway_participants(giveaway_id)
+        old = next(item for item in participants if int(item["telegram_id"]) == 101)
+        await db.save_giveaway_winners(giveaway_id, [old])
+        assert await db.grant_giveaway_prizes(giveaway_id) == [101]
+        await db.mark_giveaway_finished(giveaway_id)
+
+        after_prize = from_iso((await db.get_user(101))["subscription_until"])
+        assert after_prize >= paid_until + timedelta(days=30) - timedelta(seconds=2)
+
+        result = await db.replace_giveaway_winner(
+            giveaway_id,
+            old_telegram_id=101,
+            new_telegram_id=102,
+            rerolled_by=1,
+        )
+        assert result["old_telegram_id"] == 101
+        assert result["new_telegram_id"] == 102
+
+        restored = from_iso((await db.get_user(101))["subscription_until"])
+        assert abs((restored - paid_until).total_seconds()) < 3
+
+        winners = await db.get_giveaway_winners(giveaway_id)
+        assert [int(item["telegram_id"]) for item in winners] == [102]
+        assert winners[0]["granted_at"] is None
+        rerolls = await db.list_giveaway_rerolls(giveaway_id)
+        assert len(rerolls) == 1
+        assert int(rerolls[0]["old_telegram_id"]) == 101
+        assert int(rerolls[0]["new_telegram_id"]) == 102
+
+        assert await db.grant_giveaway_prizes(giveaway_id) == [102]
+        replacement = await db.get_user(102)
+        assert from_iso(replacement["subscription_until"]) > utcnow() + timedelta(days=29)
+
+    run(scenario())
+
+
+def test_giveaway_participants_page_marks_current_winner(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "participants.sqlite3"))
+        await db.init()
+        await db.ensure_user(1, "owner", "Owner")
+        giveaway = await db.create_giveaway(
+            created_by=1,
+            text_html="Test",
+            text_plain="Test",
+            photo_file_id=None,
+            winners_count=1,
+            prize_days=30,
+            end_mode="participants",
+            participant_limit=2,
+        )
+        giveaway_id = int(giveaway["id"])
+        for uid in (201, 202):
+            await db.ensure_user(uid, f"user{uid}", f"User {uid}")
+            await db.add_giveaway_participant(
+                giveaway_id=giveaway_id,
+                telegram_id=uid,
+                username=f"user{uid}",
+                first_name=f"User {uid}",
+            )
+        participants = await db.list_giveaway_participants(giveaway_id)
+        await db.save_giveaway_winners(giveaway_id, [participants[0]])
+
+        rows, total = await db.list_giveaway_participants_page(
+            giveaway_id,
+            page=0,
+            page_size=20,
+        )
+        assert total == 2
+        assert [int(item["is_winner"]) for item in rows] == [1, 0]
+
+    run(scenario())

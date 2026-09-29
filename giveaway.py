@@ -258,6 +258,199 @@ async def _notify_winners(
         await db.mark_giveaway_winner_notified(int(giveaway["id"]), telegram_id)
 
 
+def _winner_admin_label(item: dict[str, Any], index: int) -> str:
+    username = str(item.get("username") or "").strip().lstrip("@")
+    telegram_id = int(item.get("telegram_id") or 0)
+    if username:
+        return f"@{html.escape(username)} · <code>{telegram_id}</code>"
+    return f"Победитель #{index} · <code>{telegram_id}</code>"
+
+
+async def _sync_vpn_users(
+    db: Database,
+    provider: VpnProvider,
+    telegram_ids: list[int] | tuple[int, ...] | set[int],
+) -> None:
+    if not getattr(provider, "service_ready", True):
+        return
+
+    async def sync_one(telegram_id: int) -> None:
+        try:
+            user = await db.get_user(int(telegram_id))
+            await asyncio.wait_for(provider.provision(user), timeout=8.0)
+        except Exception as exc:
+            logger.warning(
+                "Giveaway VPN sync deferred for user %s: %s",
+                telegram_id,
+                type(exc).__name__,
+            )
+
+    unique = sorted({int(value) for value in telegram_ids if int(value) > 0})
+    if unique:
+        await asyncio.gather(*(sync_one(telegram_id) for telegram_id in unique))
+
+
+async def _notify_admins_giveaway_finished(
+    bot,
+    db: Database,
+    config,
+    giveaway: dict[str, Any],
+    winners: list[dict[str, Any]],
+) -> None:
+    if giveaway.get("admin_notified_at"):
+        return
+
+    giveaway_id = int(giveaway["id"])
+    recipients = {int(giveaway.get("created_by") or 0)}
+    recipients.update(int(value) for value in getattr(config, "admin_ids", ()) if int(value) > 0)
+    try:
+        for item in await db.list_admin_roles():
+            if str(item.get("role") or "") == "full":
+                recipients.add(int(item["telegram_id"]))
+    except Exception as exc:
+        logger.warning(
+            "Could not load dynamic admins for giveaway #%s: %s",
+            giveaway_id,
+            type(exc).__name__,
+        )
+    recipients.discard(0)
+
+    lines = [
+        f"🎁 <b>Розыгрыш #{giveaway_id} завершён</b>",
+        "",
+        f"Участников: <b>{int(giveaway.get('participant_count') or 0)}</b>",
+        f"Приз: <b>{int(giveaway.get('prize_days') or 0)} дней MGN VPN</b>",
+        "",
+        "🏆 <b>Победители:</b>",
+    ]
+    if winners:
+        lines.extend(
+            f"{index}. {_winner_admin_label(item, index)}"
+            for index, item in enumerate(winners, start=1)
+        )
+    else:
+        lines.append("Победителей нет — участников не было.")
+
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"👥 Участники ({int(giveaway.get('participant_count') or 0)})",
+                callback_data=f"admin:giveaway:participants:{giveaway_id}:0",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🔄 Перевыбрать победителя",
+                callback_data=f"admin:giveaway:reroll:{giveaway_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="Открыть розыгрыш",
+                callback_data=f"admin:giveaway:view:{giveaway_id}",
+            )
+        ],
+    ]
+    markup = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    for telegram_id in sorted(recipients):
+        try:
+            await bot.send_message(
+                telegram_id,
+                "\n".join(lines),
+                reply_markup=markup,
+            )
+        except (TelegramForbiddenError, TelegramBadRequest):
+            continue
+        except Exception as exc:
+            logger.warning(
+                "Admin giveaway notification failed for #%s / admin %s: %s",
+                giveaway_id,
+                telegram_id,
+                type(exc).__name__,
+            )
+
+    # Mark after the delivery pass so reconciliation does not spam admins after
+    # restarts. The giveaway card remains available in the admin panel.
+    await db.mark_giveaway_admin_notified(giveaway_id)
+
+
+async def reroll_giveaway_winner(
+    bot,
+    db: Database,
+    config,
+    provider: VpnProvider,
+    giveaway_id: int,
+    old_telegram_id: int,
+    *,
+    rerolled_by: int,
+) -> dict[str, Any]:
+    """Replace one finished winner, move the prize, refresh posts, and persist everything."""
+    giveaway_id = int(giveaway_id)
+    old_telegram_id = int(old_telegram_id)
+    lock = _finish_locks.setdefault(giveaway_id, asyncio.Lock())
+
+    async with lock:
+        giveaway = await db.get_giveaway(giveaway_id)
+        if not giveaway or str(giveaway.get("status")) != "finished":
+            raise ValueError("Розыгрыш ещё не завершён.")
+
+        winners = await db.get_giveaway_winners(giveaway_id)
+        if old_telegram_id not in {int(item["telegram_id"]) for item in winners}:
+            raise ValueError("Этот пользователь больше не является победителем.")
+
+        participants = await db.list_giveaway_participants(giveaway_id)
+        rerolls = await db.list_giveaway_rerolls(giveaway_id)
+        excluded = {int(item["telegram_id"]) for item in winners}
+        excluded.update(int(item["old_telegram_id"]) for item in rerolls)
+        excluded.update(int(item["new_telegram_id"]) for item in rerolls)
+        candidates = [
+            item for item in participants
+            if int(item["telegram_id"]) not in excluded
+        ]
+        if not candidates:
+            raise ValueError("Нет других участников для перевыбора.")
+
+        replacement = secrets.SystemRandom().choice(candidates)
+        result = await db.replace_giveaway_winner(
+            giveaway_id,
+            old_telegram_id=old_telegram_id,
+            new_telegram_id=int(replacement["telegram_id"]),
+            rerolled_by=int(rerolled_by),
+        )
+
+        granted = await db.grant_giveaway_prizes(giveaway_id)
+        await _sync_vpn_users(
+            db,
+            provider,
+            {old_telegram_id, int(replacement["telegram_id"]), *granted},
+        )
+
+        giveaway = await db.get_giveaway(giveaway_id)
+        winners = await db.get_giveaway_winners(giveaway_id)
+        if giveaway:
+            await _finalize_channel_posts(bot, db, config, giveaway, winners)
+            winners = await db.get_giveaway_winners(giveaway_id)
+            await _notify_winners(bot, db, giveaway, winners)
+
+        try:
+            await bot.send_message(
+                old_telegram_id,
+                "ℹ️ <b>В розыгрыше MGN VPN проведён перевыбор победителя.</b>\n\n"
+                "Ранее начисленный приз этого розыгрыша отозван администратором.",
+            )
+        except (TelegramForbiddenError, TelegramBadRequest):
+            pass
+        except Exception as exc:
+            logger.warning(
+                "Could not notify replaced giveaway winner %s: %s",
+                old_telegram_id,
+                type(exc).__name__,
+            )
+
+        return result
+
+
 async def cancel_giveaway(
     bot,
     db: Database,
@@ -427,30 +620,24 @@ async def finish_giveaway(
 
             granted = await db.grant_giveaway_prizes(giveaway_id)
             await db.mark_giveaway_finished(giveaway_id)
-
-            async def sync_winner(telegram_id: int) -> None:
-                try:
-                    user = await db.get_user(int(telegram_id))
-                    if getattr(provider, "service_ready", True):
-                        await asyncio.wait_for(provider.provision(user), timeout=8.0)
-                except Exception as exc:
-                    logger.warning(
-                        "Giveaway VPN sync deferred for user %s: %s",
-                        telegram_id,
-                        type(exc).__name__,
-                    )
-
             if granted:
-                await asyncio.gather(*(sync_winner(telegram_id) for telegram_id in granted))
+                await _sync_vpn_users(db, provider, granted)
 
         giveaway = await db.get_giveaway(giveaway_id)
         if not giveaway:
             return False
+        # This also repairs a reroll interrupted after winner replacement but
+        # before prize delivery. grant_giveaway_prizes is idempotent.
+        repaired_grants = await db.grant_giveaway_prizes(giveaway_id)
+        if repaired_grants:
+            await _sync_vpn_users(db, provider, repaired_grants)
         winners = await db.get_giveaway_winners(giveaway_id)
 
         await _finalize_channel_posts(bot, db, config, giveaway, winners)
         winners = await db.get_giveaway_winners(giveaway_id)
         await _notify_winners(bot, db, giveaway, winners)
+        giveaway = await db.get_giveaway(giveaway_id) or giveaway
+        await _notify_admins_giveaway_finished(bot, db, config, giveaway, winners)
         return True
 
 

@@ -160,7 +160,8 @@ class Database:
                         CHECK(status IN ('active', 'finishing', 'finished', 'cancelled')),
                     created_at TEXT NOT NULL,
                     started_at TEXT NOT NULL,
-                    finished_at TEXT
+                    finished_at TEXT,
+                    admin_notified_at TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_giveaways_status_end
@@ -200,6 +201,22 @@ class Database:
                     UNIQUE (giveaway_id, position),
                     FOREIGN KEY(giveaway_id) REFERENCES giveaways(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS giveaway_rerolls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    giveaway_id INTEGER NOT NULL,
+                    position INTEGER NOT NULL,
+                    old_telegram_id INTEGER NOT NULL,
+                    old_username TEXT,
+                    new_telegram_id INTEGER NOT NULL,
+                    new_username TEXT,
+                    rerolled_by INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(giveaway_id) REFERENCES giveaways(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_giveaway_rerolls_giveaway
+                ON giveaway_rerolls(giveaway_id, id);
 
                 CREATE TABLE IF NOT EXISTS referrals (
                     referrer_id INTEGER NOT NULL,
@@ -408,6 +425,17 @@ class Database:
                 "(telegram_id, mode, ticket_id, payload, updated_at) "
                 "SELECT telegram_id, mode, ticket_id, payload, updated_at FROM support_sessions"
             )
+
+            giveaway_columns = {
+                row[1]
+                for row in await (
+                    await db.execute("PRAGMA table_info(giveaways)")
+                ).fetchall()
+            }
+            if "admin_notified_at" not in giveaway_columns:
+                await db.execute(
+                    "ALTER TABLE giveaways ADD COLUMN admin_notified_at TEXT"
+                )
 
             support_columns = {
                 row[1]
@@ -2506,6 +2534,46 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    async def list_giveaway_participants_page(
+        self,
+        giveaway_id: int,
+        *,
+        page: int = 0,
+        page_size: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        page = max(0, int(page))
+        page_size = max(1, min(int(page_size), 30))
+        offset = page * page_size
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            total = int(
+                (
+                    await (
+                        await db.execute(
+                            "SELECT COUNT(*) FROM giveaway_participants WHERE giveaway_id=?",
+                            (int(giveaway_id),),
+                        )
+                    ).fetchone()
+                )[0]
+            )
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT p.*,
+                           CASE WHEN w.telegram_id IS NULL THEN 0 ELSE 1 END AS is_winner
+                    FROM giveaway_participants p
+                    LEFT JOIN giveaway_winners w
+                      ON w.giveaway_id=p.giveaway_id
+                     AND w.telegram_id=p.telegram_id
+                    WHERE p.giveaway_id=?
+                    ORDER BY p.joined_at, p.telegram_id
+                    LIMIT ? OFFSET ?
+                    """,
+                    (int(giveaway_id), page_size, offset),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows], total
+
     async def add_giveaway_participant(
         self,
         *,
@@ -2702,6 +2770,195 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    async def list_giveaway_rerolls(self, giveaway_id: int) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT *
+                    FROM giveaway_rerolls
+                    WHERE giveaway_id=?
+                    ORDER BY id
+                    """,
+                    (int(giveaway_id),),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def replace_giveaway_winner(
+        self,
+        giveaway_id: int,
+        *,
+        old_telegram_id: int,
+        new_telegram_id: int,
+        rerolled_by: int,
+    ) -> dict[str, Any]:
+        """Atomically revoke the old giveaway prize and install a new winner."""
+        giveaway_id = int(giveaway_id)
+        old_telegram_id = int(old_telegram_id)
+        new_telegram_id = int(new_telegram_id)
+        now_dt = utcnow()
+        now = to_iso(now_dt)
+
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+
+            giveaway = await (
+                await db.execute(
+                    "SELECT status, prize_days FROM giveaways WHERE id=?",
+                    (giveaway_id,),
+                )
+            ).fetchone()
+            if giveaway is None:
+                await db.rollback()
+                raise KeyError(giveaway_id)
+            if str(giveaway["status"]) != "finished":
+                await db.rollback()
+                raise ValueError("giveaway is not finished")
+
+            old_winner = await (
+                await db.execute(
+                    """
+                    SELECT *
+                    FROM giveaway_winners
+                    WHERE giveaway_id=? AND telegram_id=?
+                    """,
+                    (giveaway_id, old_telegram_id),
+                )
+            ).fetchone()
+            if old_winner is None:
+                await db.rollback()
+                raise ValueError("selected user is not a current winner")
+
+            new_participant = await (
+                await db.execute(
+                    """
+                    SELECT *
+                    FROM giveaway_participants
+                    WHERE giveaway_id=? AND telegram_id=?
+                    """,
+                    (giveaway_id, new_telegram_id),
+                )
+            ).fetchone()
+            if new_participant is None:
+                await db.rollback()
+                raise ValueError("replacement is not a participant")
+
+            duplicate = await (
+                await db.execute(
+                    """
+                    SELECT 1 FROM giveaway_winners
+                    WHERE giveaway_id=? AND telegram_id=?
+                    """,
+                    (giveaway_id, new_telegram_id),
+                )
+            ).fetchone()
+            if duplicate is not None:
+                await db.rollback()
+                raise ValueError("replacement is already a winner")
+
+            days = int(giveaway["prize_days"])
+            if old_winner["granted_at"]:
+                old_user = await (
+                    await db.execute(
+                        """
+                        SELECT subscription_until, plan_name
+                        FROM users
+                        WHERE telegram_id=?
+                        """,
+                        (old_telegram_id,),
+                    )
+                ).fetchone()
+                if old_user is not None:
+                    current = from_iso(old_user["subscription_until"])
+                    if current:
+                        reversed_until = current - timedelta(days=days)
+                        still_active = reversed_until > now_dt
+                        plan_name = str(old_user["plan_name"] or "")
+                        if not still_active:
+                            plan_name = ""
+                        await db.execute(
+                            """
+                            UPDATE users
+                            SET subscription_until=?, plan_name=?
+                            WHERE telegram_id=?
+                            """,
+                            (
+                                to_iso(reversed_until) if still_active else None,
+                                plan_name,
+                                old_telegram_id,
+                            ),
+                        )
+
+            position = int(old_winner["position"])
+            await db.execute(
+                """
+                INSERT INTO giveaway_rerolls (
+                    giveaway_id, position,
+                    old_telegram_id, old_username,
+                    new_telegram_id, new_username,
+                    rerolled_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    giveaway_id,
+                    position,
+                    old_telegram_id,
+                    str(old_winner["username"] or "").strip() or None,
+                    new_telegram_id,
+                    str(new_participant["username"] or "").strip() or None,
+                    int(rerolled_by),
+                    now,
+                ),
+            )
+
+            await db.execute(
+                """
+                DELETE FROM giveaway_winners
+                WHERE giveaway_id=? AND telegram_id=?
+                """,
+                (giveaway_id, old_telegram_id),
+            )
+            await db.execute(
+                """
+                INSERT INTO giveaway_winners (
+                    giveaway_id, telegram_id, username, first_name,
+                    position, granted_at, notified_at
+                ) VALUES (?, ?, ?, ?, ?, NULL, NULL)
+                """,
+                (
+                    giveaway_id,
+                    new_telegram_id,
+                    str(new_participant["username"] or "").strip() or None,
+                    str(new_participant["first_name"] or "").strip(),
+                    position,
+                ),
+            )
+            # Make channel result refresh crash-safe. If the process dies after
+            # this transaction, reconciliation will edit the old result later.
+            await db.execute(
+                """
+                UPDATE giveaway_posts
+                SET finalized_at=NULL
+                WHERE giveaway_id=?
+                """,
+                (giveaway_id,),
+            )
+            await db.commit()
+
+        return {
+            "giveaway_id": giveaway_id,
+            "position": position,
+            "old_telegram_id": old_telegram_id,
+            "old_username": str(old_winner["username"] or "").strip(),
+            "new_telegram_id": new_telegram_id,
+            "new_username": str(new_participant["username"] or "").strip(),
+            "new_first_name": str(new_participant["first_name"] or "").strip(),
+            "prize_days": days,
+        }
+
     async def grant_giveaway_prizes(self, giveaway_id: int) -> list[int]:
         """Grant every selected prize exactly once in one SQLite transaction."""
         now_dt = utcnow()
@@ -2796,6 +3053,18 @@ class Database:
             )
             await db.commit()
 
+    async def mark_giveaway_admin_notified(self, giveaway_id: int) -> None:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute(
+                """
+                UPDATE giveaways
+                SET admin_notified_at=COALESCE(admin_notified_at, ?)
+                WHERE id=?
+                """,
+                (to_iso(utcnow()), int(giveaway_id)),
+            )
+            await db.commit()
+
     async def mark_giveaway_post_finalized(
         self,
         giveaway_id: int,
@@ -2861,8 +3130,10 @@ class Database:
                                 )
                                 OR EXISTS (
                                     SELECT 1 FROM giveaway_winners gw
-                                    WHERE gw.giveaway_id=g.id AND gw.notified_at IS NULL
+                                    WHERE gw.giveaway_id=g.id
+                                      AND (gw.granted_at IS NULL OR gw.notified_at IS NULL)
                                 )
+                                OR g.admin_notified_at IS NULL
                             )
                         )
                     ORDER BY g.id
@@ -2901,6 +3172,10 @@ class Database:
                 await db.rollback()
                 return False
 
+            await db.execute(
+                "DELETE FROM giveaway_rerolls WHERE giveaway_id=?",
+                (giveaway_id,),
+            )
             await db.execute(
                 "DELETE FROM giveaway_winners WHERE giveaway_id=?",
                 (giveaway_id,),
