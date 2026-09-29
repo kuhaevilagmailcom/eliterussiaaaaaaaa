@@ -101,6 +101,7 @@ def prettify_subscription_payload(payload: bytes) -> tuple[bytes, int]:
             continue
 
         if line.lower().startswith("vless://"):
+            smart_recommended = "MGN-SMART" in unquote(line or "").upper()
             label = _location_label(line)
             if label:
                 base_label = label
@@ -108,7 +109,7 @@ def prettify_subscription_payload(payload: bytes) -> tuple[bytes, int]:
                 suffix = used_labels[base_label]
                 if suffix > 1:
                     label = f"{label} · {suffix}"
-                if count == 0:
+                if smart_recommended:
                     label = f"⚡ Рекомендуемый · {label}"
                 line = line.split("#", 1)[0] + "#" + quote(label, safe="")
             count += 1
@@ -1397,7 +1398,16 @@ class H1CloudVpnProvider(VpnProvider):
             removed,
             live[0][0],
         )
-        return [item[2] for item in live]
+        ranked = [item[2] for item in live]
+        # Mark only the verified fastest link. The fragment is display-only and
+        # is replaced by prettify_subscription_payload before it reaches users.
+        best = ranked[0]
+        if "#" in best:
+            base, fragment = best.split("#", 1)
+            ranked[0] = f"{base}#{fragment}|MGN-SMART"
+        else:
+            ranked[0] = best + "#MGN-SMART"
+        return ranked
 
     async def fetch_subscription(
         self,
