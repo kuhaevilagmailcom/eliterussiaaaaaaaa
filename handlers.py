@@ -3279,6 +3279,9 @@ def build_router(
                 blue_inline_button("⚙️ Система", callback_data="admin:system"),
             )
             kb.row(
+                blue_inline_button("🌐 Серверы VPN", callback_data="admin:servers"),
+            )
+            kb.row(
                 blue_inline_button("📣 Рассылка", callback_data="admin:broadcast:start"),
                 blue_inline_button("Публикация в канал", callback_data="admin:ad:start"),
             )
@@ -3773,6 +3776,7 @@ def build_router(
         vpn_ready = "✅" if getattr(provider, "service_ready", True) else "⚠️"
 
         kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("🌐 Серверы VPN", callback_data="admin:servers"))
         kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:system"))
         kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
 
@@ -3780,12 +3784,144 @@ def build_router(
             "⚙️ <b>Система</b>\n\n"
             f"{vpn_ready} VPN-система — <b>{'доступна' if getattr(provider, 'service_ready', True) else 'недоступна'}</b>\n"
             f"🔗 Реальные подключения — <b>{'готовы' if getattr(provider, 'service_ready', True) else 'ожидают серверы'}</b>\n"
-            f"🌐 Сервер — <b>{html.escape(config.vpn_server_name)}</b>\n"
+            f"🌐 Основной сервер — <b>{html.escape(config.vpn_server_name)}</b>\n"
             f"💳 RollyPay — <b>{rolly}</b>\n"
             f"🧾 Режим оплаты — <b>{rolly_mode}</b>\n\n"
+            "<i>Основной сервер — это только базовая H1-нода. "
+            "Список стран федерации смотрите в «Серверы VPN».</i>\n\n"
             "<i>Секретные ключи здесь не отображаются.</i>"
         )
         await send_screen(message, actor, text, reply_markup=kb.as_markup())
+
+    async def show_admin_servers(message: Message, actor) -> None:
+        if not await has_full_admin_access(actor.id):
+            return
+
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("🔄 Проверить ещё раз", callback_data="admin:servers"))
+        kb.row(blue_inline_button("⬅️ Система", callback_data="admin:system"))
+
+        try:
+            report = await asyncio.wait_for(provider.server_diagnostics(), timeout=12.0)
+        except asyncio.TimeoutError:
+            await send_screen(
+                message,
+                actor,
+                "🌐 <b>Серверы VPN</b>\n\n"
+                "⚠️ Диагностика H1 не успела завершиться за 12 секунд.\n"
+                "Пользовательские конфиги при этом не изменялись.",
+                reply_markup=kb.as_markup(),
+            )
+            return
+        except Exception as exc:
+            logger.exception("Admin VPN server diagnostics failed: %s", type(exc).__name__)
+            await send_screen(
+                message,
+                actor,
+                "🌐 <b>Серверы VPN</b>\n\n"
+                "❌ Не удалось получить список серверов.\n"
+                f"Ошибка: <code>{html.escape(type(exc).__name__)}</code>\n\n"
+                "<i>Проверка только читает H1 и ничего не меняет у пользователей.</i>",
+                reply_markup=kb.as_markup(),
+            )
+            return
+
+        servers = list(report.get("servers") or [])
+        available = sum(1 for item in servers if item.get("available"))
+        unavailable = len(servers) - available
+        remote_count = sum(1 for item in servers if item.get("kind") == "federation")
+
+        lines = [
+            "🌐 <b>Серверы MGN VPN</b>",
+            "",
+            f"Провайдер: <b>{html.escape(str(report.get('provider') or 'VPN'))}</b>",
+            f"Всего обнаружено: <b>{len(servers)}</b>",
+            f"Доступно: <b>{available}</b> · недоступно: <b>{unavailable}</b>",
+            f"Федеративных H1-узлов: <b>{remote_count}</b>",
+            "",
+            "🖥 <b>Состояние серверов</b>",
+        ]
+
+        for index, item in enumerate(servers, start=1):
+            ok = bool(item.get("available"))
+            icon = "✅" if ok else "❌"
+            name = html.escape(str(item.get("name") or f"Сервер {index}"))
+            kind = "основной" if item.get("kind") == "main" else "federation"
+            latency = item.get("latency_ms")
+            latency_text = f" · {int(latency)} мс" if isinstance(latency, (int, float)) else ""
+            lines.append(f"{icon} <b>{name}</b>{latency_text}")
+
+            details: list[str] = [kind]
+            host = str(item.get("host") or "").strip()
+            if host:
+                details.append(html.escape(host))
+            node_id = str(item.get("id") or "").strip()
+            if node_id and node_id != "main":
+                safe_id = node_id if len(node_id) <= 28 else node_id[:12] + "…" + node_id[-6:]
+                details.append(f"ID <code>{html.escape(safe_id)}</code>")
+            proxy_kind = str(item.get("proxy_kind") or "").strip()
+            if proxy_kind and proxy_kind not in {"direct", ""}:
+                details.append(html.escape(proxy_kind))
+            check = str(item.get("check") or "").strip()
+            if check:
+                details.append(f"проверка: {html.escape(check)}")
+            lines.append("   " + " · ".join(details))
+
+            error = str(item.get("error") or "").strip()
+            if not ok and error:
+                lines.append(f"   ↳ ошибка: <code>{html.escape(error)}</code>")
+
+        sources = dict(report.get("sources") or {})
+        if sources:
+            lines += ["", "🔗 <b>H1 federation discovery</b>"]
+            for path in ("/fed/link", "/fed/registry", "/fed/lagg"):
+                item = sources.get(path)
+                if not isinstance(item, dict):
+                    continue
+                icon = "✅" if item.get("available") else "❌"
+                count = int(item.get("count") or 0)
+                line = f"{icon} <code>{html.escape(path)}</code> — <b>{count}</b>"
+                error = str(item.get("error") or "").strip()
+                if error and not item.get("available"):
+                    line += f" · {html.escape(error)}"
+                lines.append(line)
+
+        if remote_count == 0:
+            lines += [
+                "",
+                "⚠️ <b>H1 не отдал ни одного удалённого сервера.</b>",
+                "Если в Happ сейчас видны только Нидерланды, это не из-за поля "
+                f"<code>VPN_SERVER_NAME={html.escape(config.vpn_server_name)}</code>: "
+                "оно задаёт имя основной ноды и не является списком стран.",
+                "Проверьте привязки серверов в H1 federation / billing — бот не будет "
+                "сам создавать или удалять ноды этой диагностикой.",
+            ]
+        elif unavailable:
+            lines += [
+                "",
+                "⚠️ Недоступные узлы показаны только для диагностики. "
+                "Эта проверка <b>не удаляет страны из подписок</b>.",
+            ]
+
+        if not report.get("discovery_ok", True):
+            error = str(report.get("discovery_error") or "federation unavailable")
+            lines += [
+                "",
+                "❌ <b>Не удалось нормально прочитать federation H1.</b>",
+                f"<code>{html.escape(error)}</code>",
+            ]
+
+        lines += [
+            "",
+            "<i>Проверка read-only: пользователей, UUID, подписки и серверные настройки не меняет.</i>",
+        ]
+
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
+        )
 
     async def show_admin_admins(message: Message, actor) -> None:
         if not is_owner(actor.id):
@@ -5137,6 +5273,19 @@ def build_router(
         await safe_callback_answer(callback, )
         if callback.message:
             await show_admin_system(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:servers")
+    async def admin_servers_callback(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await safe_callback_answer(
+                callback,
+                "Нужна полная админка.",
+                show_alert=True,
+            )
+            return
+        await safe_callback_answer(callback, "Проверяю H1…")
+        if callback.message:
+            await show_admin_servers(callback.message, callback.from_user)
 
     @router.callback_query(F.data == "admin:admins")
     async def admin_admins_callback(callback: CallbackQuery) -> None:
