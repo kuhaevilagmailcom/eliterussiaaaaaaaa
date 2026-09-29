@@ -2834,6 +2834,40 @@ class Database:
             await db.commit()
         return cursor.rowcount == 1
 
+    async def delete_giveaway(self, giveaway_id: int) -> bool:
+        """Permanently remove giveaway metadata without touching granted subscriptions."""
+        giveaway_id = int(giveaway_id)
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            exists = await (
+                await db.execute(
+                    "SELECT 1 FROM giveaways WHERE id=?",
+                    (giveaway_id,),
+                )
+            ).fetchone()
+            if exists is None:
+                await db.rollback()
+                return False
+
+            await db.execute(
+                "DELETE FROM giveaway_winners WHERE giveaway_id=?",
+                (giveaway_id,),
+            )
+            await db.execute(
+                "DELETE FROM giveaway_participants WHERE giveaway_id=?",
+                (giveaway_id,),
+            )
+            await db.execute(
+                "DELETE FROM giveaway_posts WHERE giveaway_id=?",
+                (giveaway_id,),
+            )
+            await db.execute(
+                "DELETE FROM giveaways WHERE id=?",
+                (giveaway_id,),
+            )
+            await db.commit()
+        return True
+
     async def record_traffic_sample(
         self,
         telegram_id: int,
