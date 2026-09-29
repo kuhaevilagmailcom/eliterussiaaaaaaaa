@@ -397,6 +397,8 @@ class Database:
                 ("promo_id", "INTEGER"),
                 ("promo_code", "TEXT"),
                 ("pay_url", "TEXT"),
+                ("reconciliation_checked_at", "TEXT"),
+                ("access_reversed_at", "TEXT"),
             ):
                 if name not in sbp_columns:
                     await db.execute(
@@ -1416,16 +1418,125 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
-    async def list_sbp_for_reconciliation(self, limit: int = 50) -> list[dict[str, Any]]:
-        since = to_iso(utcnow() - timedelta(days=7))
+    async def list_sbp_for_reconciliation(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Prioritize unsettled payments, then rotate through paid history forever."""
+        limit = max(10, min(int(limit), 500))
+        pending_limit = max(1, int(limit * 0.75))
+        paid_limit = max(1, limit - pending_limit)
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
-            rows = await (await db.execute(
-                "SELECT * FROM sbp_payments WHERE created_at>=? AND status IN "
-                "('awaiting_payment','processing','paid') ORDER BY created_at LIMIT ?",
-                (since, max(1, min(int(limit), 100))),
-            )).fetchall()
-        return [dict(row) for row in rows]
+            pending = await (
+                await db.execute(
+                    """
+                    SELECT * FROM sbp_payments
+                    WHERE status IN ('created','creating','awaiting_payment','processing')
+                    ORDER BY
+                        COALESCE(reconciliation_checked_at, '1970-01-01T00:00:00+00:00'),
+                        created_at
+                    LIMIT ?
+                    """,
+                    (pending_limit,),
+                )
+            ).fetchall()
+            paid = await (
+                await db.execute(
+                    """
+                    SELECT * FROM sbp_payments
+                    WHERE status='paid'
+                    ORDER BY
+                        COALESCE(reconciliation_checked_at, '1970-01-01T00:00:00+00:00'),
+                        COALESCE(paid_at, created_at)
+                    LIMIT ?
+                    """,
+                    (paid_limit,),
+                )
+            ).fetchall()
+        return [dict(row) for row in (*pending, *paid)]
+
+    async def mark_sbp_reconciled(self, payment_id: str) -> None:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute(
+                "UPDATE sbp_payments SET reconciliation_checked_at=? WHERE payment_id=?",
+                (to_iso(utcnow()), payment_id),
+            )
+            await db.commit()
+
+    async def reverse_sbp_access(self, payment_id: str, status: str) -> dict[str, Any] | None:
+        """Reverse exactly the entitlement created by an SBP payment, once."""
+        normalized = str(status or "").lower()
+        if normalized not in {"refunded", "chargeback"}:
+            raise ValueError("Only refunded/chargeback can reverse access")
+
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            payment = await (
+                await db.execute(
+                    "SELECT * FROM sbp_payments WHERE payment_id=?",
+                    (payment_id,),
+                )
+            ).fetchone()
+            if payment is None:
+                await db.rollback()
+                return None
+
+            if payment["access_reversed_at"]:
+                await db.execute(
+                    "UPDATE sbp_payments SET status=?, reconciliation_checked_at=? WHERE payment_id=?",
+                    (normalized, to_iso(utcnow()), payment_id),
+                )
+                await db.commit()
+                return {"changed": False, "target_telegram_id": int(payment["target_telegram_id"] or payment["telegram_id"])}
+
+            target_id = int(payment["target_telegram_id"] or payment["telegram_id"])
+            user = await (
+                await db.execute(
+                    "SELECT * FROM users WHERE telegram_id=?",
+                    (target_id,),
+                )
+            ).fetchone()
+            if user is None:
+                await db.rollback()
+                raise ValueError("Payment recipient does not exist")
+
+            code = str(payment["plan_code"])
+            if code == DEVICE_PRODUCT_CODE:
+                bonus = max(0, int(user["bonus_devices"] or 0) - 1)
+                max_devices = max(BASE_DEVICES, min(MAX_DEVICES, BASE_DEVICES + bonus))
+                await db.execute(
+                    "UPDATE users SET bonus_devices=?, max_devices=? WHERE telegram_id=?",
+                    (bonus, max_devices, target_id),
+                )
+            else:
+                if code not in PLANS:
+                    await db.rollback()
+                    raise ValueError("Unknown refunded payment product")
+                days = int(PLANS[code]["days"])
+                current = from_iso(user["subscription_until"])
+                if current:
+                    until = current - timedelta(days=days)
+                    if until <= utcnow():
+                        until_value = None
+                        plan_name = ""
+                    else:
+                        until_value = to_iso(until)
+                        plan_name = str(user["plan_name"] or "")
+                    await db.execute(
+                        "UPDATE users SET subscription_until=?, plan_name=? WHERE telegram_id=?",
+                        (until_value, plan_name, target_id),
+                    )
+
+            reversed_at = to_iso(utcnow())
+            await db.execute(
+                """
+                UPDATE sbp_payments
+                SET status=?, access_reversed_at=?, reconciliation_checked_at=?
+                WHERE payment_id=?
+                """,
+                (normalized, reversed_at, reversed_at, payment_id),
+            )
+            await db.commit()
+            return {"changed": True, "target_telegram_id": target_id, "plan_code": code}
 
     async def set_sbp_status(self, payment_id: str, status: str) -> None:
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
