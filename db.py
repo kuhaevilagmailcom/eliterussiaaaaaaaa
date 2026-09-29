@@ -133,6 +133,17 @@ class Database:
                     PRIMARY KEY (telegram_id, subscription_until, days_before)
                 );
 
+                CREATE TABLE IF NOT EXISTS traffic_daily (
+                    telegram_id INTEGER NOT NULL,
+                    day TEXT NOT NULL,
+                    used_gb REAL NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (telegram_id, day)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_traffic_daily_user_day
+                ON traffic_daily(telegram_id, day);
+
                 CREATE TABLE IF NOT EXISTS referrals (
                     referrer_id INTEGER NOT NULL,
                     referred_id INTEGER NOT NULL UNIQUE,
@@ -2231,6 +2242,125 @@ class Database:
             )
             await db.commit()
             return cursor.rowcount == 1
+
+    async def record_traffic_sample(
+        self,
+        telegram_id: int,
+        used_gb: float,
+        *,
+        day: str,
+    ) -> None:
+        """Keep one lightweight cumulative traffic sample per user/day."""
+        try:
+            current_day = datetime.fromisoformat(str(day)).date()
+            used = max(0.0, float(used_gb or 0))
+        except (TypeError, ValueError):
+            return
+
+        previous_day = (current_day - timedelta(days=1)).isoformat()
+        cutoff = (current_day - timedelta(days=45)).isoformat()
+        now = to_iso(utcnow())
+
+        async with aiosqlite.connect(self.path) as db:
+            row = await (
+                await db.execute(
+                    """
+                    SELECT day, used_gb
+                    FROM traffic_daily
+                    WHERE telegram_id=?
+                    ORDER BY day DESC
+                    LIMIT 1
+                    """,
+                    (telegram_id,),
+                )
+            ).fetchone()
+
+            # When collection starts (or resumes after a long gap), create a
+            # zero-delta baseline for yesterday instead of attributing old
+            # cumulative traffic to the current day.
+            if row is None or str(row[0]) < previous_day:
+                await db.execute(
+                    """
+                    INSERT OR IGNORE INTO traffic_daily
+                        (telegram_id, day, used_gb, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (telegram_id, previous_day, used, now),
+                )
+
+            await db.execute(
+                """
+                INSERT INTO traffic_daily (telegram_id, day, used_gb, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(telegram_id, day) DO UPDATE SET
+                    used_gb=excluded.used_gb,
+                    updated_at=excluded.updated_at
+                """,
+                (telegram_id, current_day.isoformat(), used, now),
+            )
+            await db.execute(
+                "DELETE FROM traffic_daily WHERE telegram_id=? AND day<?",
+                (telegram_id, cutoff),
+            )
+            await db.commit()
+
+    async def traffic_usage_history(
+        self,
+        telegram_id: int,
+        *,
+        end_day: str,
+        days: int = 30,
+    ) -> dict[str, Any]:
+        """Return observed daily deltas and compact 1/7/30-day summaries."""
+        days = max(1, min(int(days), 30))
+        try:
+            end = datetime.fromisoformat(str(end_day)).date()
+        except (TypeError, ValueError):
+            end = utcnow().date()
+        start = end - timedelta(days=days - 1)
+        baseline = start - timedelta(days=1)
+
+        async with aiosqlite.connect(self.path) as db:
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT day, used_gb
+                    FROM traffic_daily
+                    WHERE telegram_id=? AND day>=? AND day<=?
+                    ORDER BY day
+                    """,
+                    (telegram_id, baseline.isoformat(), end.isoformat()),
+                )
+            ).fetchall()
+
+        cumulative = {str(day): max(0.0, float(value or 0)) for day, value in rows}
+        usage: dict[str, float] = {}
+        previous: float | None = cumulative.get(baseline.isoformat())
+        cursor = start
+        while cursor <= end:
+            key = cursor.isoformat()
+            current = cumulative.get(key)
+            if current is None:
+                usage[key] = 0.0
+            elif previous is None:
+                usage[key] = 0.0
+                previous = current
+            else:
+                usage[key] = max(0.0, current - previous) if current >= previous else current
+                previous = current
+            cursor += timedelta(days=1)
+
+        ordered = [
+            {"date": key, "gb": round(value, 3)}
+            for key, value in sorted(usage.items())
+        ]
+        values = [float(item["gb"]) for item in ordered]
+        return {
+            "today_gb": round(values[-1] if values else 0.0, 3),
+            "week_gb": round(sum(values[-7:]), 3),
+            "month_gb": round(sum(values[-30:]), 3),
+            "days": ordered,
+        }
 
     async def stats(self) -> tuple[int, int]:
         now = to_iso(utcnow())
