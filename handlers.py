@@ -3362,6 +3362,60 @@ def build_router(
         kb.row(blue_inline_button("⬅️ Профиль", callback_data="menu:profile"))
         await send_screen(message, actor, "\n".join(lines), reply_markup=kb.as_markup())
 
+    async def show_user_server_status(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        try:
+            report = await asyncio.wait_for(provider.server_diagnostics(user), timeout=10.0)
+        except Exception as exc:
+            await send_screen(
+                message,
+                actor,
+                "🌐 <b>Статус серверов</b>\n\n"
+                f"Не удалось получить состояние: <code>{html.escape(type(exc).__name__)}</code>",
+                reply_markup=section_nav_keyboard(back_data="menu:profile"),
+            )
+            return
+
+        names = {
+            "auto": "⚡ Авто",
+            "nl": "🇳🇱 Нидерланды",
+            "de": "🇩🇪 Германия",
+            "fi": "🇫🇮 Финляндия",
+            "pl": "🇵🇱 Польша",
+            "pk": "🇵🇰 Пакистан",
+            "us": "🇺🇸 США",
+            "us2": "🇺🇸 США 2",
+            "lt": "🇱🇹 Литва",
+        }
+        lines = ["🌐 <b>Статус серверов MGN VPN</b>", ""]
+        shown = 0
+        for item in list(report.get("servers") or []):
+            configured = bool(item.get("configured") or item.get("available"))
+            if not configured:
+                continue
+            shown += 1
+            icon = "✅" if item.get("available") else "⚠️"
+            latency = item.get("latency_ms")
+            suffix = f" · {int(latency)} мс" if isinstance(latency, (int, float)) else ""
+            lines.append(f"{icon} <b>{html.escape(str(item.get('name') or 'Сервер'))}</b>{suffix}")
+        if not shown:
+            lines.append("Список серверов временно недоступен.")
+
+        preferred = str(user.get("preferred_country") or "auto")
+        lines += [
+            "",
+            f"Выбор: <b>{names.get(preferred, preferred)}</b>",
+            "<i>Авто оставляет оптимальный порядок. Выбор страны поднимает её выше, но остальные страны не удаляются.</i>",
+        ]
+
+        kb = InlineKeyboardBuilder()
+        for code in ("auto", "nl", "de", "fi", "pl", "pk", "us", "us2", "lt"):
+            kb.button(text=names[code], callback_data=f"profile:country:{code}")
+        kb.adjust(2)
+        kb.row(blue_inline_button("🔄 Обновить", callback_data="profile:servers"))
+        kb.row(blue_inline_button("⬅️ Профиль", callback_data="menu:profile"))
+        await send_screen(message, actor, "\n".join(lines), reply_markup=kb.as_markup())
+
     async def show_admin(message: Message, actor) -> None:
         role = await get_admin_role(actor.id)
         if not role:
