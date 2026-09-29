@@ -35,6 +35,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from PIL import Image
 
+from admin_notifications import notify_purchase_admins as send_purchase_admin_notification
 from catalog import (
     BASE_DEVICES,
     DEVICE_PRODUCT_CODE,
@@ -1703,11 +1704,12 @@ def build_router(
             else "—"
         )
         return (
-            f"<b>Новое обращение #{int(ticket['id'])}</b>\n\n"
-            f"Пользователь: <b>{username}</b>\n"
-            f"Telegram ID: <code>{int(ticket['telegram_id'])}</code>\n"
-            f"Дата: <b>{created_text}</b>\n\n"
-            f"<b>Сообщение:</b>\n{html.escape(str(ticket.get('message') or ''))}"
+            f"🆘 <b>Новое обращение в поддержку #{int(ticket['id'])}</b>\n\n"
+            f"👤 Пользователь: <b>{username}</b>\n"
+            f"🆔 Telegram ID: <code>{int(ticket['telegram_id'])}</code>\n"
+            f"🕒 Время: <b>{created_text}</b>\n\n"
+            f"💬 <b>Сообщение</b>\n"
+            f"{html.escape(str(ticket.get('message') or ''))}"
         )
 
     async def notify_support_admins(bot, ticket: dict[str, Any]) -> None:
@@ -1729,9 +1731,15 @@ def build_router(
 
         for admin_id in recipients:
             try:
+                base_text = support_ticket_admin_text(ticket)
+                status_text = (
+                    "🟢 Подписка: <b>активна</b>"
+                    if support_active
+                    else "🔴 Подписка: <b>неактивна</b>"
+                )
                 await bot.send_message(
                     chat_id=admin_id,
-                    text=support_ticket_admin_text(ticket),
+                    text=base_text + "\n\n" + status_text,
                     reply_markup=support_admin_keyboard(int(ticket["id"])),
                 )
             except Exception as exc:
@@ -2344,53 +2352,19 @@ def build_router(
         code: str,
         method: str,
         amount: int,
+        payment_id: str | None = None,
     ) -> None:
-        recipients = set(int(value) for value in config.admin_ids)
-        try:
-            recipients.update(
-                int(item["telegram_id"])
-                for item in await db.list_admin_roles()
-            )
-        except Exception:
-            logger.exception("Could not load purchase admin recipients")
-
-        try:
-            buyer = await db.get_user(int(buyer_id))
-        except KeyError:
-            buyer = {"telegram_id": buyer_id}
-        buyer_name = (
-            f"@{buyer['username']}"
-            if buyer.get("username")
-            else str(buyer_id)
+        await send_purchase_admin_notification(
+            bot,
+            config,
+            db,
+            buyer_id=buyer_id,
+            target_id=target_id,
+            code=code,
+            method=method,
+            amount=amount,
+            payment_id=payment_id,
         )
-        plan_name = PLANS.get(code, {}).get("name") or (
-            "Доп. устройство" if code == DEVICE_PRODUCT_CODE else code
-        )
-        price = f"{amount} ₽" if method == "СБП" else f"{amount} ⭐"
-        gift_line = (
-            f"\n🎁 Получатель: <code>{target_id}</code>"
-            if int(target_id) != int(buyer_id)
-            else ""
-        )
-        text = (
-            "💳 <b>Новая оплата MGN VPN</b>\n\n"
-            f"Покупатель: <b>{html.escape(str(buyer_name))}</b> · <code>{buyer_id}</code>\n"
-            f"Тариф: <b>{html.escape(str(plan_name))}</b>\n"
-            f"Способ: <b>{method}</b>\n"
-            f"Сумма: <b>{price}</b>"
-            f"{gift_line}"
-        )
-        for admin_id in sorted(recipients):
-            try:
-                await bot.send_message(admin_id, text)
-            except (TelegramForbiddenError, TelegramBadRequest):
-                continue
-            except Exception as exc:
-                logger.warning(
-                    "Could not notify admin %s about purchase: %s",
-                    admin_id,
-                    type(exc).__name__,
-                )
 
     async def notify_subscription_granted(bot, user: dict[str, Any], days: int) -> None:
         telegram_id = int(user["telegram_id"])
