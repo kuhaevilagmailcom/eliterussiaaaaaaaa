@@ -8,7 +8,7 @@
   <title>MGN VPN</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="/static/assets/lucide.min.js?v=1"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20">
+  <link rel="stylesheet" href="/static/styles.css?v=21">
 </head>
 <body>
   <section id="appError" class="app-error" hidden role="status">
@@ -50,6 +50,7 @@
           <div class="hero-stats">
             <div><span class="stat-icon"><i data-lucide="calendar-days"></i></span><span><small>Осталось</small><b id="homeRemaining">—</b></span></div>
             <div><span class="stat-icon"><i data-lucide="monitor-smartphone"></i></span><span><small>Устройства</small><b id="homeDeviceUsage">0 / 1</b></span></div>
+            <div class="traffic-stat"><span class="stat-icon"><i data-lucide="activity"></i></span><span><small>Трафик</small><b id="homeTraffic">—</b></span></div>
           </div>
           <div class="progress"><span id="deviceProgress"></span></div>
           <button type="button" class="primary" id="homeSubscriptionAction" data-nav="plans">
@@ -139,6 +140,7 @@
           <article><i data-lucide="gift"></i><small>Бонусные дни</small><b id="profileRewards">0</b></article>
           <article><i data-lucide="users-round"></i><small>Друзья</small><b id="profileRefs">0</b></article>
           <article><i data-lucide="monitor-smartphone"></i><small>Устройства</small><b id="profileDevices">1</b></article>
+          <article><i data-lucide="activity"></i><small>Трафик</small><b id="profileTraffic">—</b></article>
         </div>
 
         <div class="page-section-head compact-head">
@@ -298,6 +300,6 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"><span><i></i></span></div>
 
-  <script src="/static/app.js?v=21"></script>
+  <script src="/static/app.js?v=22"></script>
 </body>
 </html>
