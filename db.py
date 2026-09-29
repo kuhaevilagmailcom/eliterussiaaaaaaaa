@@ -9,6 +9,7 @@ from typing import Any
 import aiosqlite
 
 from catalog import (
+    BASE_DEVICES,
     DEVICE_PRODUCT_CODE,
     EXTRA_DEVICE_PRICE_RUB,
     MAX_DEVICES,
