@@ -70,6 +70,7 @@ class Config:
     h1_subscription_hosts: tuple[str, ...]
     allow_insecure_h1: bool
     trusted_proxy_ips: tuple[str, ...]
+    happ_provider_id: str
 
     xui_url: str
     xui_token: str
@@ -181,6 +182,7 @@ class Config:
                 for value in os.getenv("TRUSTED_PROXY_IPS", "").split(",")
                 if value.strip()
             ),
+            happ_provider_id=os.getenv("HAPP_PROVIDER_ID", "").strip(),
             xui_url=os.getenv("XUI_URL", "").rstrip("/"),
             xui_token=os.getenv("XUI_TOKEN", "").strip(),
             xui_inbound_ids=_ints(os.getenv("XUI_INBOUND_IDS", "")),
