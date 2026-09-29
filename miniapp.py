@@ -512,11 +512,8 @@ class MiniAppServer:
             "Support-Url": support_url,
             "Profile-Web-Page-Url": "https://mgnvpn.ru",
             "Announce": f"base64:{announce}",
-            # Happ advanced subscription card. With Provider ID configured this
-            # shows a dedicated renewal action and expiry reminders.
-            "Sub-Info-Text": "Управляйте подпиской MGN VPN прямо в Telegram.",
-            "Sub-Info-Button-Text": "Продлить",
-            "Sub-Info-Button-Link": renew_url,
+            # Happ advanced expiry card. With Provider ID configured this
+            # shows its localized "Renew" action during the last 3 days.
             "Sub-Expire": "1",
             "Notification-Subs-Expire": "1",
             "Sub-Expire-Button-Link": renew_url,
