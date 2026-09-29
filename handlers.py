@@ -3403,6 +3403,11 @@ def build_router(
             return
 
         if status == "paid":
+            target_id = int(
+                local.get("target_telegram_id")
+                or callback.from_user.id
+            )
+            before_purchase = await db.get_user(target_id)
             try:
                 fresh = await db.settle_sbp_payment(payment_id)
             except ValueError as exc:
@@ -3413,10 +3418,6 @@ def build_router(
                 )
                 return
             code = str(local["plan_code"])
-            target_id = int(
-                local.get("target_telegram_id")
-                or callback.from_user.id
-            )
 
             if code == DEVICE_PRODUCT_CODE:
                 if fresh:
@@ -3429,6 +3430,18 @@ def build_router(
                             show_alert=True,
                         )
                         return
+                    await notify_purchase(
+                        callback.bot,
+                        db,
+                        config,
+                        buyer_id=callback.from_user.id,
+                        target_id=target_id,
+                        product_code=code,
+                        method="СБП",
+                        amount_text=f"{int(local['amount_rub'])} ₽",
+                        purchase_kind="Дополнительное устройство",
+                        promo_code=str(local.get("promo_code") or "") or None,
+                    )
                 await safe_callback_answer(callback, "Оплата получена · +1 устройство")
                 await show_devices_panel(
                     callback.message,
@@ -3444,6 +3457,18 @@ def build_router(
                     target_telegram_id=target_id,
                     code=code,
                     payment_event_key=f"sbp:{payment_id}",
+                )
+                await notify_purchase(
+                    callback.bot,
+                    db,
+                    config,
+                    buyer_id=callback.from_user.id,
+                    target_id=target_id,
+                    product_code=code,
+                    method="СБП",
+                    amount_text=f"{int(local['amount_rub'])} ₽",
+                    purchase_kind="Продление" if is_active(before_purchase) else "Новая подписка",
+                    promo_code=str(local.get("promo_code") or "") or None,
                 )
 
             await safe_callback_answer(callback, "Оплата получена")
