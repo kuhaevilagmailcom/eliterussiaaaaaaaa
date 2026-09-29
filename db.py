@@ -2186,6 +2186,135 @@ class Database:
             "star_revenue": int(star_revenue),
         }
 
+    async def business_analytics(self) -> dict[str, Any]:
+        """Business KPIs for the Telegram admin dashboard."""
+        now = utcnow()
+        day_ago = to_iso(now - timedelta(days=1))
+        week_ago = to_iso(now - timedelta(days=7))
+        month_ago = to_iso(now - timedelta(days=30))
+        now_iso = to_iso(now)
+        in_1d = to_iso(now + timedelta(days=1))
+        in_3d = to_iso(now + timedelta(days=3))
+        in_7d = to_iso(now + timedelta(days=7))
+
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (
+                await db.execute(
+                    """
+                    WITH payments AS (
+                        SELECT
+                            'sbp' AS method,
+                            COALESCE(target_telegram_id, telegram_id) AS target_id,
+                            amount_rub AS rub,
+                            0 AS stars,
+                            COALESCE(paid_at, created_at) AS paid_at
+                        FROM sbp_payments
+                        WHERE status='paid' AND plan_code!='device'
+                        UNION ALL
+                        SELECT
+                            'stars' AS method,
+                            target_telegram_id AS target_id,
+                            0 AS rub,
+                            stars AS stars,
+                            created_at AS paid_at
+                        FROM star_payments
+                        WHERE plan_code!='device'
+                    ),
+                    ranked AS (
+                        SELECT
+                            *,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY target_id
+                                ORDER BY paid_at, method
+                            ) AS purchase_no
+                        FROM payments
+                    )
+                    SELECT
+                        COALESCE(SUM(CASE WHEN paid_at>=? THEN rub ELSE 0 END), 0) AS rub_day,
+                        COALESCE(SUM(CASE WHEN paid_at>=? THEN rub ELSE 0 END), 0) AS rub_week,
+                        COALESCE(SUM(CASE WHEN paid_at>=? THEN rub ELSE 0 END), 0) AS rub_month,
+                        COALESCE(SUM(CASE WHEN paid_at>=? THEN stars ELSE 0 END), 0) AS stars_day,
+                        COALESCE(SUM(CASE WHEN paid_at>=? THEN stars ELSE 0 END), 0) AS stars_week,
+                        COALESCE(SUM(CASE WHEN paid_at>=? THEN stars ELSE 0 END), 0) AS stars_month,
+                        COALESCE(SUM(CASE WHEN paid_at>=? AND purchase_no=1 THEN 1 ELSE 0 END), 0) AS new_month,
+                        COALESCE(SUM(CASE WHEN paid_at>=? AND purchase_no>1 THEN 1 ELSE 0 END), 0) AS renew_month,
+                        COALESCE(AVG(CASE WHEN paid_at>=? AND method='sbp' THEN rub END), 0) AS avg_rub_month,
+                        COALESCE(AVG(CASE WHEN paid_at>=? AND method='stars' THEN stars END), 0) AS avg_stars_month
+                    FROM ranked
+                    """,
+                    (
+                        day_ago, week_ago, month_ago,
+                        day_ago, week_ago, month_ago,
+                        month_ago, month_ago, month_ago, month_ago,
+                    ),
+                )
+            ).fetchone()
+
+            expiry = await (
+                await db.execute(
+                    """
+                    SELECT
+                        SUM(CASE WHEN subscription_until>? AND subscription_until<=? THEN 1 ELSE 0 END) AS d1,
+                        SUM(CASE WHEN subscription_until>? AND subscription_until<=? THEN 1 ELSE 0 END) AS d3,
+                        SUM(CASE WHEN subscription_until>? AND subscription_until<=? THEN 1 ELSE 0 END) AS d7
+                    FROM users
+                    WHERE subscription_until IS NOT NULL
+                    """,
+                    (now_iso, in_1d, now_iso, in_3d, now_iso, in_7d),
+                )
+            ).fetchone()
+
+            promo_rows = await (
+                await db.execute(
+                    """
+                    SELECT
+                        p.code,
+                        p.type,
+                        p.value,
+                        p.used_count,
+                        COUNT(DISTINCT pu.telegram_id) AS users
+                    FROM service_promo_codes p
+                    LEFT JOIN promo_uses pu ON pu.promo_id=p.id
+                    GROUP BY p.id
+                    ORDER BY p.used_count DESC, p.id DESC
+                    LIMIT 8
+                    """
+                )
+            ).fetchall()
+
+            referral = await (
+                await db.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS invited,
+                        SUM(CASE WHEN qualified_at IS NOT NULL THEN 1 ELSE 0 END) AS qualified,
+                        SUM(CASE WHEN rewarded_at IS NOT NULL THEN 1 ELSE 0 END) AS rewarded
+                    FROM referrals
+                    """
+                )
+            ).fetchone()
+
+        return {
+            "rub_day": int(row["rub_day"] or 0),
+            "rub_week": int(row["rub_week"] or 0),
+            "rub_month": int(row["rub_month"] or 0),
+            "stars_day": int(row["stars_day"] or 0),
+            "stars_week": int(row["stars_week"] or 0),
+            "stars_month": int(row["stars_month"] or 0),
+            "new_month": int(row["new_month"] or 0),
+            "renew_month": int(row["renew_month"] or 0),
+            "avg_rub_month": float(row["avg_rub_month"] or 0),
+            "avg_stars_month": float(row["avg_stars_month"] or 0),
+            "expires_1d": int(expiry["d1"] or 0),
+            "expires_3d": int(expiry["d3"] or 0),
+            "expires_7d": int(expiry["d7"] or 0),
+            "referrals_invited": int(referral["invited"] or 0),
+            "referrals_qualified": int(referral["qualified"] or 0),
+            "referrals_rewarded": int(referral["rewarded"] or 0),
+            "promos": [dict(item) for item in promo_rows],
+        }
+
     async def list_due_expiry_notifications(
         self,
         *,
