@@ -3835,7 +3835,7 @@ def build_router(
             "🌐 <b>Серверы MGN VPN</b>",
             "",
             f"Провайдер: <b>{html.escape(str(report.get('provider') or 'VPN'))}</b>",
-            f"Всего обнаружено: <b>{len(servers)}</b>",
+            f"Всего серверов: <b>{len(servers)}</b>",
             f"Доступно: <b>{available}</b> · недоступно: <b>{unavailable}</b>",
             f"Федеративных H1-узлов: <b>{remote_count}</b>",
             "",
@@ -3869,7 +3869,10 @@ def build_router(
 
             error = str(item.get("error") or "").strip()
             if not ok and error:
-                lines.append(f"   ↳ ошибка: <code>{html.escape(error)}</code>")
+                if error == "not_discovered":
+                    lines.append("   ↳ H1 сейчас не отдал этот узел")
+                else:
+                    lines.append(f"   ↳ ошибка: <code>{html.escape(error)}</code>")
 
         sources = dict(report.get("sources") or {})
         if sources:
@@ -3889,12 +3892,9 @@ def build_router(
         if remote_count == 0:
             lines += [
                 "",
-                "⚠️ <b>H1 не отдал ни одного удалённого сервера.</b>",
-                "Если в Happ сейчас видны только Нидерланды, это не из-за поля "
-                f"<code>VPN_SERVER_NAME={html.escape(config.vpn_server_name)}</code>: "
-                "оно задаёт имя основной ноды и не является списком стран.",
-                "Проверьте привязки серверов в H1 federation / billing — бот не будет "
-                "сам создавать или удалять ноды этой диагностикой.",
+                "⚠️ <b>H1 сейчас не отдал удалённые узлы.</b>",
+                "Каталог MGN VPN всё равно показывает все серверы; "
+                "недоступность влияет только на статус, а не скрывает страну.",
             ]
         elif unavailable:
             lines += [
