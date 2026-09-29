@@ -163,6 +163,10 @@ class VpnProvider:
     ) -> tuple[bytes, dict[str, str]]:
         raise RuntimeError("Provider does not expose subscription payloads")
 
+    async def health(self) -> dict[str, Any]:
+        """Provider readiness signal. Concrete providers may perform a real upstream check."""
+        return {"ok": bool(self.service_ready), "mode": self.mode_name}
+
     async def close(self) -> None:
         return None
 
@@ -369,6 +373,11 @@ class H1CloudVpnProvider(VpnProvider):
                 "User-Agent": "MGN-VPN/1.0",
             },
         )
+        # Endpoint health is deliberately conservative: one or two failed
+        # probes must never remove a user's working country from an existing
+        # subscription. Only repeated fresh failures are eligible for removal.
+        self._endpoint_health_cache: dict[tuple[str, int], tuple[float, float | None]] = {}
+        self._endpoint_failure_streak: dict[tuple[str, int], int] = {}
 
     @staticmethod
     def _name(user: dict[str, Any]) -> str:
@@ -1337,6 +1346,11 @@ class H1CloudVpnProvider(VpnProvider):
                         pass
 
         cache[endpoint] = (loop.time(), latency)
+        streaks = self._endpoint_failure_streak
+        if latency is None:
+            streaks[endpoint] = min(20, int(streaks.get(endpoint, 0)) + 1)
+        else:
+            streaks.pop(endpoint, None)
         if len(cache) > 128:
             cutoff = loop.time() - 120.0
             self._endpoint_health_cache = {
@@ -1347,7 +1361,7 @@ class H1CloudVpnProvider(VpnProvider):
         return latency
 
     async def _rank_live_vless_links(self, links: list[str]) -> list[str]:
-        """Drop unreachable VLESS endpoints and put the lowest-latency endpoint first."""
+        """Rank verified endpoints, but remove one only after repeated fresh failures."""
         parsed_links: list[tuple[int, str, tuple[str, int] | None]] = []
         endpoints: set[tuple[str, int]] = set()
         for index, link in enumerate(links):
@@ -1357,7 +1371,7 @@ class H1CloudVpnProvider(VpnProvider):
                 host = parsed.hostname
                 port = parsed.port
                 if host and port:
-                    endpoint = (host, int(port))
+                    endpoint = (host.lower().rstrip("."), int(port))
                     endpoints.add(endpoint)
             except (TypeError, ValueError):
                 endpoint = None
@@ -1373,34 +1387,51 @@ class H1CloudVpnProvider(VpnProvider):
         )
         latency_by_endpoint = dict(zip(endpoint_list, latencies))
 
-        live: list[tuple[float, int, str]] = []
+        verified: list[tuple[float, int, str]] = []
+        preserved: list[tuple[int, str]] = []
+        removed = 0
         for index, link, endpoint in parsed_links:
             if endpoint is None:
+                # Never remove a link just because its URI could not be probed.
+                preserved.append((index, link))
                 continue
             latency = latency_by_endpoint.get(endpoint)
             if latency is not None:
-                live.append((float(latency), index, link))
+                verified.append((float(latency), index, link))
+                continue
 
-        if not live:
-            # Do not return an empty subscription if the hosting network itself
-            # temporarily cannot probe outbound endpoints.
+            # A single failed TCP probe from BotHost is not evidence that the
+            # user's mobile network cannot use the country. Keep the node for
+            # the first two fresh failures. Probe results are cached for 20s,
+            # so the streak only advances on a new network check.
+            if int(self._endpoint_failure_streak.get(endpoint, 0)) < 3:
+                preserved.append((index, link))
+            else:
+                removed += 1
+
+        if not verified:
+            # If the hosting network cannot verify even one endpoint, preserve
+            # the entire subscription. Availability is more important than a
+            # server-side guess about the user's network.
             logger.warning(
-                "H1Cloud endpoint health probes all failed; preserving %s candidate link(s)",
+                "H1Cloud endpoint health probes found no verified endpoint; preserving %s candidate link(s)",
                 len(links),
             )
             return links
 
-        live.sort(key=lambda item: (item[0], item[1]))
-        removed = len(links) - len(live)
+        verified.sort(key=lambda item: (item[0], item[1]))
+        preserved.sort(key=lambda item: item[0])
+        ranked = [item[2] for item in verified] + [item[1] for item in preserved]
         logger.info(
-            "H1Cloud smart selection: %s live link(s), %s removed, best %.0f ms",
-            len(live),
+            "H1Cloud smart selection: %s verified, %s preserved, %s removed, best %.0f ms",
+            len(verified),
+            len(preserved),
             removed,
-            live[0][0],
+            verified[0][0],
         )
-        ranked = [item[2] for item in live]
-        # Mark only the verified fastest link. The fragment is display-only and
-        # is replaced by prettify_subscription_payload before it reaches users.
+
+        # Mark only the verified fastest link. Happ can additionally measure
+        # delay on the user's own network when Provider ID is configured.
         best = ranked[0]
         if "#" in best:
             base, fragment = best.split("#", 1)
