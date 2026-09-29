@@ -4072,14 +4072,18 @@ def build_router(
         await send_screen(message, actor, text, reply_markup=kb.as_markup())
 
     async def show_admin_servers(message: Message, actor) -> None:
-        if not await has_admin_access(actor.id):
+        role = await get_admin_role(actor.id)
+        if not role:
             return
 
         kb = InlineKeyboardBuilder()
-        kb.row(
-            admin_inline_button("🔄 Обновить", callback_data="admin:servers"),
-            admin_inline_button("⚙️ Система", callback_data="admin:system", style=None),
-        )
+        if role in {"owner", "full"}:
+            kb.row(
+                admin_inline_button("🔄 Обновить", callback_data="admin:servers"),
+                admin_inline_button("⚙️ Система", callback_data="admin:system", style=None),
+            )
+        else:
+            kb.row(admin_inline_button("🔄 Обновить", callback_data="admin:servers"))
         kb.row(admin_inline_button("🏠 Админка", callback_data="admin:home", style=None))
 
         try:
@@ -5698,7 +5702,7 @@ def build_router(
             kb.button(text=f"{days} дней", callback_data=f"admin:grant:{uid}:{days}")
         kb.adjust(2)
         kb.row(blue_inline_button("Ввести вручную", callback_data=f"admin:manualdays:{uid}:grant"))
-        kb.row(blue_inline_button("Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
+        kb.row(blue_inline_button("⬅️ Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
         await safe_callback_answer(callback, )
         await send_screen(callback.message, callback.from_user, "<b>Выдать подписку</b>\n\nВыберите срок.", reply_markup=kb.as_markup())
 
@@ -5717,7 +5721,7 @@ def build_router(
             kb.button(text=str(days), callback_data=f"admin:adjust:{uid}:{action}:{days}")
         kb.adjust(3)
         kb.row(blue_inline_button("Ввести вручную", callback_data=f"admin:manualdays:{uid}:{action}"))
-        kb.row(blue_inline_button("Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
+        kb.row(blue_inline_button("⬅️ Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
         await safe_callback_answer(callback, )
         title = "Добавить дни" if action == "add" else "Списать дни"
         await send_screen(callback.message, callback.from_user, f"<b>{title}</b>", reply_markup=kb.as_markup())
@@ -5807,7 +5811,7 @@ def build_router(
         for limit in range(1, 6):
             kb.button(text=str(limit), callback_data=f"admin:setdevice:{uid}:{limit}")
         kb.adjust(3)
-        kb.row(blue_inline_button("Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
+        kb.row(blue_inline_button("⬅️ Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
         await safe_callback_answer(callback, )
         await send_screen(callback.message, callback.from_user, "<b>Лимит устройств</b>\n\nВыберите значение от 1 до 5.", reply_markup=kb.as_markup())
 
@@ -5842,7 +5846,7 @@ def build_router(
         uid = int(raw)
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("Отключить", callback_data=f"admin:revoke:{uid}"))
-        kb.row(blue_inline_button("Отмена", callback_data=f"admin:user:{uid}", premium_icon=False))
+        kb.row(blue_inline_button("❌ Отмена", callback_data=f"admin:user:{uid}", premium_icon=False))
         await safe_callback_answer(callback, )
         await send_screen(callback.message, callback.from_user, f"<b>Отключить подписку?</b>\n\nПользователь <code>{uid}</code> потеряет доступ.", reply_markup=kb.as_markup())
 
@@ -6190,7 +6194,7 @@ def build_router(
                 await db.clear_support_session(user_id)
                 kb = InlineKeyboardBuilder()
                 kb.row(blue_inline_button("Подтвердить списание", callback_data=f"admin:adjustconfirmed:{uid}:sub:{days}"))
-                kb.row(blue_inline_button("Отмена", callback_data=f"admin:user:{uid}", premium_icon=False))
+                kb.row(blue_inline_button("❌ Отмена", callback_data=f"admin:user:{uid}", premium_icon=False))
                 await message.answer(
                     f"<b>Списать {days} дней?</b>\n\nПользователь: <code>{uid}</code>",
                     reply_markup=kb.as_markup(),
