@@ -378,7 +378,8 @@ def test_h1_smart_selection_preserves_transient_probe_failures():
 
         provider._endpoint_failure_streak[("de.example", 443)] = 3
         ranked = await provider._rank_live_vless_links(links)
-        assert len(ranked) == 1
+        assert len(ranked) == 2
         assert "@nl.example:443" in ranked[0]
+        assert any("@de.example:443" in item for item in ranked)
 
     asyncio.run(run())
