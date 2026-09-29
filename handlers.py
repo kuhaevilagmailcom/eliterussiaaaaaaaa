@@ -445,6 +445,13 @@ def main_menu_inline_keyboard(
     )
     kb.row(
         blue_inline_button(
+            "Статус серверов",
+            callback_data="menu:serverstatus",
+            icon_index=2,
+        )
+    )
+    kb.row(
+        blue_inline_button(
             "О сервисе",
             callback_data="menu:info",
             icon_index=5,
@@ -1314,6 +1321,18 @@ def build_router(
             )
             kb.row(
                 blue_inline_button(
+                    "Выбор сервера",
+                    callback_data="menu:country",
+                    icon_index=2,
+                ),
+                blue_inline_button(
+                    "Статус серверов",
+                    callback_data="menu:serverstatus",
+                    icon_index=3,
+                ),
+            )
+            kb.row(
+                blue_inline_button(
                     "Продлить VPN",
                     callback_data="plans",
                     icon_index=1,
@@ -1327,6 +1346,22 @@ def build_router(
                     icon_index=1,
                 )
             )
+        kb.row(
+            blue_inline_button(
+                "История оплат",
+                callback_data="menu:paymenthistory",
+            ),
+            blue_inline_button(
+                "Начисления",
+                callback_data="menu:accruals",
+            ),
+        )
+        kb.row(
+            blue_inline_button(
+                "Бонусы",
+                callback_data="menu:bonusstats",
+            )
+        )
         add_nav_buttons(kb, back_data="home")
         await send_screen(
             message,
@@ -1335,6 +1370,232 @@ def build_router(
             reply_markup=kb.as_markup(),
         )
 
+
+    def country_label(code: str) -> str:
+        labels = dict(CANONICAL_SERVERS)
+        labels.update({
+            "auto": "⚡ Автоматически",
+            "lt": "🇱🇹 Литва",
+            "lv": "🇱🇻 Латвия",
+        })
+        return labels.get(str(code or ""), str(code or "—"))
+
+    async def show_user_server_status(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "Выбор сервера",
+                callback_data="menu:country",
+            )
+        )
+        kb.row(
+            blue_inline_button(
+                "Обновить",
+                callback_data="menu:serverstatus",
+            )
+        )
+        add_nav_buttons(kb, back_data="menu:profile")
+        try:
+            report = await asyncio.wait_for(
+                provider.server_diagnostics(user),
+                timeout=12.0,
+            )
+        except Exception:
+            await send_screen(
+                message,
+                actor,
+                "🌐 <b>Статус серверов</b>\n\n"
+                "Сейчас не удалось получить диагностику. Ваша подписка и конфиги не изменялись.",
+                reply_markup=kb.as_markup(),
+            )
+            return
+
+        preferred = str(user.get("preferred_country") or "auto")
+        lines = [
+            "🌐 <b>Статус серверов MGN VPN</b>",
+            f"Режим: <b>{html.escape(country_label(preferred))}</b>",
+            "",
+        ]
+        for item in report.get("servers") or []:
+            name = html.escape(str(item.get("name") or "VPN-сервер"))
+            configured = bool(item.get("configured") or item.get("available"))
+            available = bool(item.get("available"))
+            latency = item.get("latency_ms")
+            if available:
+                state = "🟢 доступен"
+            elif configured:
+                state = "🟡 настроен, проверка не прошла"
+            else:
+                state = "⚪ нет данных"
+            latency_text = (
+                f" · {int(latency)} мс"
+                if isinstance(latency, (int, float)) and available
+                else ""
+            )
+            lines.append(f"{state} · <b>{name}</b>{latency_text}")
+
+        lines += [
+            "",
+            "<i>Статус — это диагностика со стороны MGN VPN. "
+            "Мы не удаляем сервер из вашей подписки из-за одной неудачной проверки.</i>",
+        ]
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
+        )
+
+    async def show_country_picker(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        if not is_active(user):
+            await send_screen(
+                message,
+                actor,
+                "⚡ <b>Выбор сервера</b>\n\nСначала активируйте подписку.",
+                reply_markup=section_nav_keyboard(back_data="menu:profile"),
+            )
+            return
+
+        preferred = str(user.get("preferred_country") or "auto")
+        candidates: list[tuple[str, str, bool]] = []
+        try:
+            report = await asyncio.wait_for(provider.server_diagnostics(user), timeout=10.0)
+            for item in report.get("servers") or []:
+                code = str(item.get("catalog_id") or item.get("id") or "").strip().lower()
+                if code in {"main"}:
+                    code = "nl"
+                if code not in {"nl", "pk", "de", "pl", "fi", "us", "us2", "lt", "lv"}:
+                    continue
+                candidates.append(
+                    (
+                        code,
+                        str(item.get("name") or country_label(code)),
+                        bool(item.get("available")),
+                    )
+                )
+        except Exception:
+            candidates = []
+
+        if not candidates:
+            candidates = [(code, label, False) for code, label in CANONICAL_SERVERS]
+
+        dedup: dict[str, tuple[str, str, bool]] = {}
+        for item in candidates:
+            if item[0] not in dedup or item[2]:
+                dedup[item[0]] = item
+
+        kb = InlineKeyboardBuilder()
+        auto_prefix = "✓ " if preferred == "auto" else ""
+        kb.row(
+            blue_inline_button(
+                f"{auto_prefix}⚡ Автоматически",
+                callback_data="menu:country:set:auto",
+            )
+        )
+        for code, name, available in dedup.values():
+            prefix = "✓ " if preferred == code else ""
+            state = "🟢 " if available else ""
+            kb.row(
+                blue_inline_button(
+                    f"{prefix}{state}{name}",
+                    callback_data=f"menu:country:set:{code}",
+                )
+            )
+        kb.row(
+            blue_inline_button(
+                "Статус серверов",
+                callback_data="menu:serverstatus",
+            )
+        )
+        add_nav_buttons(kb, back_data="menu:profile")
+        await send_screen(
+            message,
+            actor,
+            "⚡ <b>Предпочитаемый сервер</b>\n\n"
+            "В режиме «Автоматически» проверенные быстрые серверы идут первыми. "
+            "При выборе страны она поднимается в начало подписки, <b>остальные страны не удаляются</b>.\n\n"
+            f"Сейчас: <b>{html.escape(country_label(preferred))}</b>",
+            reply_markup=kb.as_markup(),
+        )
+
+    async def show_payment_history(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        rows = await db.list_user_payment_history(int(user["telegram_id"]), limit=12)
+        lines = ["💳 <b>История оплат</b>", ""]
+        if not rows:
+            lines.append("Оплат пока нет.")
+        else:
+            for item in rows:
+                dt = from_iso(item.get("created_at"))
+                date_text = (
+                    dt.astimezone(config.display_tz).strftime("%d.%m.%Y · %H:%M")
+                    if dt else "—"
+                )
+                code = str(item.get("plan_code") or "")
+                product = (
+                    "+1 устройство"
+                    if code == DEVICE_PRODUCT_CODE
+                    else str(PLANS.get(code, {}).get("name") or code)
+                )
+                amount = int(item.get("amount") or 0)
+                currency = "₽" if str(item.get("currency")) == "RUB" else "⭐"
+                status = str(item.get("status") or "")
+                lines.append(
+                    f"• <b>{html.escape(product)}</b> · {amount} {currency}\n"
+                    f"  {html.escape(str(item.get('method') or ''))} · {date_text} · {html.escape(status)}"
+                )
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=section_nav_keyboard(back_data="menu:profile"),
+        )
+
+    async def show_subscription_events(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        rows = await db.list_subscription_events(int(user["telegram_id"]), limit=20)
+        lines = ["🎁 <b>История начислений</b>", ""]
+        if not rows:
+            lines.append("Начислений пока нет.")
+        else:
+            for item in rows:
+                dt = from_iso(item.get("at"))
+                date_text = (
+                    dt.astimezone(config.display_tz).strftime("%d.%m.%Y · %H:%M")
+                    if dt else "—"
+                )
+                lines.append(
+                    f"• <b>+{int(item.get('days') or 0)} дней</b> · "
+                    f"{html.escape(str(item.get('source') or ''))} · {date_text}"
+                )
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=section_nav_keyboard(back_data="menu:profile"),
+        )
+
+    async def show_bonus_stats(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        uid = int(user["telegram_id"])
+        referrals = await db.referral_stats(uid)
+        promos = await db.user_promo_stats(uid)
+        username = (await message.bot.get_me()).username or "mgnvpn_bot"
+        text = (
+            "🎁 <b>Бонусы</b>\n\n"
+            f"👥 Приглашено друзей: <b>{referrals['invited']}</b>\n"
+            f"✅ Получено реферальных наград: <b>{referrals['rewarded']}</b> / 3\n"
+            f"🎟 Использовано промокодов: <b>{promos['used']}</b>\n\n"
+            f"Ваша ссылка:\n<code>https://t.me/{username}?start=ref_{uid}</code>"
+        )
+        await send_screen(
+            message,
+            actor,
+            text,
+            reply_markup=section_nav_keyboard(back_data="menu:profile"),
+        )
 
     async def show_subscription(message: Message, actor) -> None:
         user = await ensure_actor(actor)
