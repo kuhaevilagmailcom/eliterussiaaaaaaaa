@@ -660,17 +660,19 @@ class H1CloudVpnProvider(VpnProvider):
         return selected
 
     async def _federated_nodes(self) -> list[dict[str, Any]]:
-        """Return every H1 remote node with the correct proxy transport.
-
-        H1 has TWO federation stores:
-        - /fed/link -> billing-linked server IDs, accessed through /fed/lproxy/<sid>
-        - /fed/registry -> manual registry node IDs/tokens, accessed through /fed/proxy/<id>
-
-        They are separate stores. Using only one store explains why a unified
-        subscription could contain NL + US while FI/DE/LT were missing.
-        """
+        """Merge every known H1 federation store instead of treating lagg as fallback-only."""
         nodes: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
+
+        def add_node(item: dict[str, Any], proxy_kind: str) -> None:
+            node_id = self._node_id(item)
+            key = (proxy_kind, node_id)
+            if not node_id or key in seen:
+                return
+            seen.add(key)
+            node = dict(item)
+            node["proxy_kind"] = proxy_kind
+            nodes.append(node)
 
         async def load_linked() -> None:
             try:
@@ -678,29 +680,17 @@ class H1CloudVpnProvider(VpnProvider):
                     self._request("GET", "/fed/link"),
                     timeout=1.5,
                 )
+                raw = data.get("links") if isinstance(data, dict) else None
+                if isinstance(raw, list):
+                    for value in raw:
+                        node_id = str(value or "").strip()
+                        if node_id:
+                            add_node({"id": node_id}, "lproxy")
             except Exception as exc:
                 logger.warning(
                     "H1Cloud /fed/link unavailable: %s",
                     str(exc).strip() or type(exc).__name__,
                 )
-                return
-
-            if not isinstance(data, dict):
-                return
-            raw_links = data.get("links")
-            if not isinstance(raw_links, list):
-                return
-            for value in raw_links:
-                node_id = str(value or "").strip()
-                key = ("lproxy", node_id)
-                if node_id and key not in seen:
-                    seen.add(key)
-                    nodes.append(
-                        {
-                            "id": node_id,
-                            "proxy_kind": "lproxy",
-                        }
-                    )
 
         async def load_registry() -> None:
             try:
@@ -708,52 +698,39 @@ class H1CloudVpnProvider(VpnProvider):
                     self._request("GET", "/fed/registry"),
                     timeout=1.5,
                 )
+                raw = data.get("nodes") if isinstance(data, dict) else None
+                if isinstance(raw, list):
+                    for item in raw:
+                        if isinstance(item, dict):
+                            add_node(item, "proxy")
             except Exception as exc:
                 logger.warning(
                     "H1Cloud /fed/registry unavailable: %s",
                     str(exc).strip() or type(exc).__name__,
                 )
-                return
 
-            if not isinstance(data, dict):
-                return
-            raw_nodes = data.get("nodes")
-            if not isinstance(raw_nodes, list):
-                return
-            for item in raw_nodes:
-                if not isinstance(item, dict):
-                    continue
-                node_id = self._node_id(item)
-                key = ("proxy", node_id)
-                if node_id and key not in seen:
-                    seen.add(key)
-                    node = dict(item)
-                    node["proxy_kind"] = "proxy"
-                    nodes.append(node)
-
-        await asyncio.gather(load_linked(), load_registry())
-
-        if not nodes:
-            # Compatibility fallback for older H1 builds.
+        async def load_lagg() -> None:
             try:
                 data = await asyncio.wait_for(
-                    self._request("GET", "/fed/lagg"),
-                    timeout=3.0,
+                    self._request("GET", "/fed/lagg", allow_missing=True),
+                    timeout=2.5,
                 )
-                raw_nodes = data.get("nodes") if isinstance(data, dict) else None
-                if isinstance(raw_nodes, list):
-                    for item in raw_nodes:
-                        if not isinstance(item, dict):
-                            continue
-                        node_id = self._node_id(item)
-                        key = ("lproxy", node_id)
-                        if node_id and key not in seen:
-                            seen.add(key)
-                            node = dict(item)
-                            node["proxy_kind"] = "lproxy"
-                            nodes.append(node)
-            except Exception:
-                pass
+                raw = data.get("nodes") if isinstance(data, dict) else None
+                if isinstance(raw, list):
+                    for item in raw:
+                        if isinstance(item, dict):
+                            add_node(item, "lproxy")
+            except Exception as exc:
+                logger.warning(
+                    "H1Cloud /fed/lagg unavailable: %s",
+                    str(exc).strip() or type(exc).__name__,
+                )
+
+        await asyncio.gather(
+            load_linked(),
+            load_registry(),
+            load_lagg(),
+        )
 
         logger.info(
             "H1Cloud federation discovery: %s remote node(s): %s",
@@ -1458,9 +1435,10 @@ class H1CloudVpnProvider(VpnProvider):
                     count = len(value)
             return path, data, count, error
 
-        linked_result, registry_result = await asyncio.gather(
+        linked_result, registry_result, lagg_result = await asyncio.gather(
             source("/fed/link", "links"),
             source("/fed/registry", "nodes"),
+            source("/fed/lagg", "nodes"),
         )
 
         source_rows: dict[str, dict[str, Any]] = {}
@@ -1501,32 +1479,24 @@ class H1CloudVpnProvider(VpnProvider):
                     node["proxy_kind"] = "proxy"
                     nodes.append(node)
 
-        # Older H1 builds may expose only /fed/lagg. Probe it only when both
-        # modern federation stores produced no nodes.
-        if not nodes:
-            lagg_data, _lagg_ms, lagg_error = await timed_request(
-                "/fed/lagg",
-                timeout=2.5,
-                allow_missing=True,
-            )
-            raw_lagg = lagg_data.get("nodes") if isinstance(lagg_data, dict) else None
-            lagg_count = len(raw_lagg) if isinstance(raw_lagg, list) else 0
-            source_rows["/fed/lagg"] = {
-                "available": lagg_data is not None,
-                "count": lagg_count,
-                "error": lagg_error,
-            }
-            if isinstance(raw_lagg, list):
-                for item in raw_lagg:
-                    if not isinstance(item, dict):
-                        continue
-                    node_id = self._node_id(item)
-                    key = ("lproxy", node_id)
-                    if node_id and key not in seen:
-                        seen.add(key)
-                        node = dict(item)
-                        node["proxy_kind"] = "lproxy"
-                        nodes.append(node)
+        path, lagg_data, lagg_count, lagg_error = lagg_result
+        source_rows[path] = {
+            "available": lagg_data is not None,
+            "count": lagg_count,
+            "error": lagg_error,
+        }
+        raw_lagg = lagg_data.get("nodes") if isinstance(lagg_data, dict) else None
+        if isinstance(raw_lagg, list):
+            for item in raw_lagg:
+                if not isinstance(item, dict):
+                    continue
+                node_id = self._node_id(item)
+                key = ("lproxy", node_id)
+                if node_id and key not in seen:
+                    seen.add(key)
+                    node = dict(item)
+                    node["proxy_kind"] = "lproxy"
+                    nodes.append(node)
 
         async def inspect_remote(node: dict[str, Any]) -> dict[str, Any]:
             node_id = self._node_id(node)
