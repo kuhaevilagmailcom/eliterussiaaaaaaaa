@@ -857,7 +857,8 @@ def build_router(
         return bool(await get_admin_role(user_id))
 
     async def has_full_admin_access(user_id: int) -> bool:
-        return (await get_admin_role(user_id)) in {"owner", "full"}
+        # Product rule: every issued admin has the same operational access.
+        return await has_admin_access(user_id)
 
     def is_owner(user_id: int) -> bool:
         return user_id in config.admin_ids
@@ -1406,7 +1407,7 @@ def build_router(
 
     @router.message(Command("setbanner"))
     async def set_banner(message: Message) -> None:
-        if not message.from_user or message.from_user.id not in config.admin_ids:
+        if not message.from_user or not await has_admin_access(message.from_user.id):
             return
 
         source_message = message.reply_to_message or message
@@ -3277,7 +3278,10 @@ def build_router(
         kb.row(
             blue_inline_button("Обращения", callback_data="admin:support", icon_index=6),
         )
-        if role in {"owner", "full"}:
+        if role:
+            kb.row(
+                blue_inline_button("📈 Аналитика", callback_data="admin:analytics"),
+            )
             kb.row(
                 blue_inline_button("🎟 Промокоды", callback_data="admin:bonuses"),
                 blue_inline_button("⚙️ Система", callback_data="admin:system"),
@@ -3292,7 +3296,6 @@ def build_router(
             kb.row(
                 blue_inline_button("🎁 Розыгрыши", callback_data="admin:giveaways"),
             )
-        if role == "owner":
             kb.row(
                 blue_inline_button("🛡 Администраторы", callback_data="admin:admins"),
             )
@@ -3638,7 +3641,7 @@ def build_router(
             blue_inline_button("Выдать подписку", callback_data=f"admin:grantmenu:{telegram_id}"),
         )
 
-        if actor_role in {"owner", "full"}:
+        if actor_role:
             kb.row(
                 blue_inline_button("Добавить дни", callback_data=f"admin:daysmenu:{telegram_id}:add"),
                 blue_inline_button("Списать дни", callback_data=f"admin:daysmenu:{telegram_id}:sub"),
@@ -3648,7 +3651,7 @@ def build_router(
             )
             kb.row(blue_inline_button("Отключить подписку", callback_data=f"admin:revokeconfirm:{telegram_id}"))
 
-        if actor_role == "owner" and telegram_id not in config.admin_ids:
+        if actor_role and telegram_id not in config.admin_ids:
             kb.row(
                 blue_inline_button(
                     "🛡 Полная админка",
@@ -3933,7 +3936,7 @@ def build_router(
         )
 
     async def show_admin_admins(message: Message, actor) -> None:
-        if not is_owner(actor.id):
+        if not await has_admin_access(actor.id):
             return
 
         dynamic_admins = await db.list_admin_roles()
@@ -3985,8 +3988,8 @@ def build_router(
             "<i>Выдать доступ можно из карточки пользователя: "
             "Пользователи → выбрать человека.</i>",
             "",
-            "Полная — управление подписками, бонусами и системой.",
-            "Ограниченная — просмотр сводки, пользователей и платежей + выдача подписок.",
+            "Все выданные администраторы имеют полный операционный доступ.",
+            "Владельцы из конфигурации нельзя удалить из панели.",
         ]
 
         kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:admins"))
@@ -5298,11 +5301,8 @@ def build_router(
 
     @router.callback_query(F.data == "admin:admins")
     async def admin_admins_callback(callback: CallbackQuery) -> None:
-        if not is_owner(callback.from_user.id):
-            await safe_callback_answer(callback, 
-                "Управление администраторами доступно только владельцу.",
-                show_alert=True,
-            )
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа.", show_alert=True)
             return
         await safe_callback_answer(callback, )
         if callback.message:
@@ -5324,11 +5324,8 @@ def build_router(
 
     @router.callback_query(F.data.startswith("admin:role:"))
     async def admin_role_callback(callback: CallbackQuery) -> None:
-        if not is_owner(callback.from_user.id):
-            await safe_callback_answer(callback, 
-                "Выдавать админки может только владелец.",
-                show_alert=True,
-            )
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа.", show_alert=True)
             return
         if not callback.message:
             return
