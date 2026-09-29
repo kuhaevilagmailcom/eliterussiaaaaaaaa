@@ -3284,6 +3284,7 @@ def build_router(
         target_id = int(target_raw)
 
         if code == DEVICE_PRODUCT_CODE:
+            before_purchase = await db.get_user(buyer_id)
             if (
                 target_id != buyer_id
                 or payment.total_amount != extra_device_price_stars()
@@ -3314,6 +3315,17 @@ def build_router(
                         reply_markup=section_nav_keyboard(back_data="home"),
                     )
                     return
+                await notify_purchase(
+                    message.bot,
+                    db,
+                    config,
+                    buyer_id=buyer_id,
+                    target_id=buyer_id,
+                    product_code=DEVICE_PRODUCT_CODE,
+                    method="Telegram Stars",
+                    amount_text=f"{int(payment.total_amount)} ⭐",
+                    purchase_kind="Дополнительное устройство",
+                )
 
             await show_devices_panel(
                 message,
@@ -3332,6 +3344,7 @@ def build_router(
             )
             return
 
+        before_purchase = await db.get_user(target_id)
         charge_id = payment.telegram_payment_charge_id
         fresh = await db.settle_star_payment(
             telegram_payment_charge_id=charge_id,
@@ -3348,6 +3361,17 @@ def build_router(
                 target_telegram_id=target_id,
                 code=code,
                 payment_event_key=f"stars:{charge_id}",
+            )
+            await notify_purchase(
+                message.bot,
+                db,
+                config,
+                buyer_id=buyer_id,
+                target_id=target_id,
+                product_code=code,
+                method="Telegram Stars",
+                amount_text=f"{int(payment.total_amount)} ⭐",
+                purchase_kind="Продление" if is_active(before_purchase) else "Новая подписка",
             )
 
         if target_id == buyer_id:
