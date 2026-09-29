@@ -870,6 +870,37 @@ def build_router(
     def is_owner(user_id: int) -> bool:
         return user_id in config.admin_ids
 
+    async def purchases_open() -> tuple[bool, str]:
+        state = await db.maintenance_state()
+        return (
+            not bool(state.get("enabled")),
+            str(
+                state.get("message")
+                or "Покупки временно приостановлены. Активные VPN-подписки продолжают работать."
+            ),
+        )
+
+    async def guard_purchase_message(message: Message, actor) -> bool:
+        opened, reason = await purchases_open()
+        if opened:
+            return True
+        await send_screen(
+            message,
+            actor,
+            "🛠 <b>Технические работы</b>\n\n"
+            f"{html.escape(reason)}\n\n"
+            "<i>Если VPN уже активен, он продолжает работать как обычно.</i>",
+            reply_markup=section_nav_keyboard(back_data="home"),
+        )
+        return False
+
+    async def guard_purchase_callback(callback: CallbackQuery) -> bool:
+        opened, reason = await purchases_open()
+        if opened:
+            return True
+        await safe_callback_answer(callback, reason[:180], show_alert=True)
+        return False
+
     async def _send_screen_unlocked(
         message: Message,
         actor,
