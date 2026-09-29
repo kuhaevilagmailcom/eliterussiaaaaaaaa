@@ -3628,10 +3628,13 @@ def build_router(
 
         kb = InlineKeyboardBuilder()
 
+        # Every admin role may issue a subscription. Advanced subscription
+        # management remains restricted to owner/full admins.
+        kb.row(
+            blue_inline_button("Выдать подписку", callback_data=f"admin:grantmenu:{telegram_id}"),
+        )
+
         if actor_role in {"owner", "full"}:
-            kb.row(
-                blue_inline_button("Выдать подписку", callback_data=f"admin:grantmenu:{telegram_id}"),
-            )
             kb.row(
                 blue_inline_button("Добавить дни", callback_data=f"admin:daysmenu:{telegram_id}:add"),
                 blue_inline_button("Списать дни", callback_data=f"admin:daysmenu:{telegram_id}:sub"),
@@ -3979,7 +3982,7 @@ def build_router(
             "Пользователи → выбрать человека.</i>",
             "",
             "Полная — управление подписками, бонусами и системой.",
-            "Ограниченная — просмотр сводки, пользователей и платежей.",
+            "Ограниченная — просмотр сводки, пользователей и платежей + выдача подписок.",
         ]
 
         kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:admins"))
@@ -5375,7 +5378,7 @@ def build_router(
 
     @router.callback_query(F.data.startswith("admin:grantmenu:"))
     async def admin_grant_menu(callback: CallbackQuery) -> None:
-        if not await has_full_admin_access(callback.from_user.id):
+        if not await has_admin_access(callback.from_user.id):
             await safe_callback_answer(callback, "Нет доступа", show_alert=True)
             return
         raw = callback.data.rsplit(":", 1)[-1]
@@ -5414,14 +5417,20 @@ def build_router(
 
     @router.callback_query(F.data.startswith("admin:manualdays:"))
     async def admin_manual_days(callback: CallbackQuery) -> None:
-        if not await has_full_admin_access(callback.from_user.id):
-            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
-            return
         parts = callback.data.split(":")
         if len(parts) != 4 or not parts[2].isdigit() or parts[3] not in {"grant", "add", "sub"}:
             await safe_callback_answer(callback, "Некорректная команда", show_alert=True)
             return
-        await db.set_support_session(callback.from_user.id, "admin_days", payload=f"{parts[2]}:{parts[3]}")
+        action = parts[3]
+        allowed = (
+            await has_admin_access(callback.from_user.id)
+            if action == "grant"
+            else await has_full_admin_access(callback.from_user.id)
+        )
+        if not allowed:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await db.set_support_session(callback.from_user.id, "admin_days", payload=f"{parts[2]}:{action}")
         await safe_callback_answer(callback, )
         if callback.message:
             await callback.message.answer("Отправьте целое количество дней от 1 до 3650.")
@@ -5613,9 +5622,9 @@ def build_router(
 
     @router.callback_query(F.data.startswith("admin:grant:"))
     async def admin_grant_callback(callback: CallbackQuery) -> None:
-        if not await has_full_admin_access(callback.from_user.id):
+        if not await has_admin_access(callback.from_user.id):
             await safe_callback_answer(callback, 
-                "Нужна полная админка.",
+                "Нет доступа.",
                 show_alert=True,
             )
             return
@@ -5733,7 +5742,7 @@ def build_router(
 
     @router.message(Command("grant"))
     async def grant(message: Message) -> None:
-        if not await has_full_admin_access(message.from_user.id):
+        if not await has_admin_access(message.from_user.id):
             return
 
         parts = (message.text or "").split()
@@ -5849,7 +5858,7 @@ def build_router(
                 await show_admin_user(message, message.from_user, int(user["telegram_id"]))
             return True
 
-        if session["mode"] == "admin_days" and await has_full_admin_access(user_id):
+        if session["mode"] == "admin_days":
             raw = str(message.text or "").strip()
             payload_value = str(session.get("payload") or "")
             if not raw.isdigit() or not 1 <= int(raw) <= 3650 or ":" not in payload_value:
@@ -5859,6 +5868,15 @@ def build_router(
             if not uid_raw.isdigit() or action not in {"grant", "add", "sub"}:
                 await db.clear_support_session(user_id)
                 await message.answer("Команда устарела. Откройте карточку пользователя заново.")
+                return True
+            allowed = (
+                await has_admin_access(user_id)
+                if action == "grant"
+                else await has_full_admin_access(user_id)
+            )
+            if not allowed:
+                await db.clear_support_session(user_id)
+                await message.answer("Нет доступа к этой операции.")
                 return True
             uid, days = int(uid_raw), int(raw)
             if action == "sub" and days > 30:
