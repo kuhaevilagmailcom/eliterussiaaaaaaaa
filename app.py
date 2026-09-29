@@ -246,7 +246,20 @@ async def payment_reconciliation_loop(
                             promo_code=str(local.get("promo_code") or "") or None,
                         )
                 elif status in {"refunded", "chargeback", "canceled", "expired"}:
+                    old_status = str(local.get("status") or "").lower()
                     await db.set_sbp_status(payment_id, status)
+                    if status in {"refunded", "chargeback"} and old_status != status:
+                        await notify_all_admins(
+                            bot,
+                            db,
+                            config,
+                            "⚠️ <b>Платёж изменил статус</b>\n\n"
+                            f"Платёж: <code>{payment_id}</code>\n"
+                            f"Пользователь: <code>{int(local['telegram_id'])}</code>\n"
+                            f"Сумма: <b>{int(local['amount_rub'])} ₽</b>\n"
+                            f"Статус: <b>{status}</b>\n\n"
+                            "<i>Проверьте подписку пользователя и возврат вручную.</i>",
+                        )
             except (RollyPayError, ValueError, KeyError) as exc:
                 logger.warning("Payment reconciliation failed for %s: %s", local["order_id"], type(exc).__name__)
 
