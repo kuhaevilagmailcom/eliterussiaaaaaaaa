@@ -521,13 +521,17 @@ async def main() -> None:
         try:
             db_root = Path(config.db_path).resolve().parent
             backup_root = Path(config.backup_dir).expanduser().resolve()
-            if backup_root == db_root or db_root in backup_root.parents:
+            backup_root.mkdir(parents=True, exist_ok=True)
+            same_device = db_root.stat().st_dev == backup_root.stat().st_dev
+            if same_device:
                 logging.getLogger(__name__).warning(
-                    "BACKUP_DIR is on the same filesystem tree as DB_PATH; "
+                    "BACKUP_DIR is on the same filesystem/device as DB_PATH; "
                     "mount a separate persistent volume for real disaster recovery"
                 )
         except OSError:
-            pass
+            logging.getLogger(__name__).warning(
+                "Could not verify BACKUP_DIR filesystem separation"
+            )
     else:
         logging.getLogger(__name__).warning(
             "BACKUP_DIR is not configured; SQLite backups remain beside the main DB "
