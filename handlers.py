@@ -3377,6 +3377,173 @@ def build_router(
             reply_markup=admin_main_keyboard(role),
         )
 
+    def analytics_bar(value: int | float, maximum: int | float, width: int = 10) -> str:
+        maximum = max(float(maximum or 0), 1.0)
+        ratio = max(0.0, min(1.0, float(value or 0) / maximum))
+        filled = int(round(ratio * width))
+        return "█" * filled + "░" * (width - filled)
+
+    async def show_admin_analytics(message: Message, actor) -> None:
+        if not await has_admin_access(actor.id):
+            return
+        data = await load_business_analytics(db)
+        revenue = data["revenue"]
+        purchases = data["purchases"]
+        avg = data["average_check_30d"]
+        expiring = data["expiring"]
+        usage = data["observed_usage"]
+
+        max_rub = max(
+            int(revenue["day"]["rub"]),
+            int(revenue["week"]["rub"]),
+            int(revenue["month"]["rub"]),
+            1,
+        )
+        max_sales = max(
+            int(purchases["day"]["new"]) + int(purchases["day"]["renewal"]),
+            int(purchases["week"]["new"]) + int(purchases["week"]["renewal"]),
+            int(purchases["month"]["new"]) + int(purchases["month"]["renewal"]),
+            1,
+        )
+
+        lines = [
+            "📈 <b>Бизнес-аналитика MGN VPN</b>",
+            "",
+            f"👥 Пользователей: <b>{data['total_users']}</b> · активных: <b>{data['active_subscriptions']}</b>",
+            "",
+            "💰 <b>Выручка</b>",
+            "<blockquote>",
+            f"24ч  <code>{analytics_bar(revenue['day']['rub'], max_rub)}</code> <b>{revenue['day']['rub']} ₽</b> · {revenue['day']['stars']} ⭐",
+            f"7д   <code>{analytics_bar(revenue['week']['rub'], max_rub)}</code> <b>{revenue['week']['rub']} ₽</b> · {revenue['week']['stars']} ⭐",
+            f"30д  <code>{analytics_bar(revenue['month']['rub'], max_rub)}</code> <b>{revenue['month']['rub']} ₽</b> · {revenue['month']['stars']} ⭐",
+            "</blockquote>",
+            "",
+            "🛒 <b>Покупки: новые / продления</b>",
+            "<blockquote>",
+            f"24ч  <code>{analytics_bar(purchases['day']['new'] + purchases['day']['renewal'], max_sales)}</code> {purchases['day']['new']} / {purchases['day']['renewal']}",
+            f"7д   <code>{analytics_bar(purchases['week']['new'] + purchases['week']['renewal'], max_sales)}</code> {purchases['week']['new']} / {purchases['week']['renewal']}",
+            f"30д  <code>{analytics_bar(purchases['month']['new'] + purchases['month']['renewal'], max_sales)}</code> {purchases['month']['new']} / {purchases['month']['renewal']}",
+            "</blockquote>",
+            "",
+            f"🧾 Средний чек 30д: <b>{avg.get('rub', 0):g} ₽</b> · <b>{avg.get('stars', 0):g} ⭐</b>",
+            f"🔁 Retention 30д: <b>{data['retention_30d']:.1f}%</b> <i>(выборка {data['retention_sample']})</i>",
+            "",
+            "⏳ <b>Скоро закончатся</b>",
+            f"1 день — <b>{expiring['1']}</b> · 3 дня — <b>{expiring['3']}</b> · 7 дней — <b>{expiring['7']}</b>",
+            "",
+            "📡 <b>Наблюдаемая активность VPN</b>",
+            f"24ч — <b>{usage['day']}</b> · 7д — <b>{usage['week']}</b> · 30д — <b>{usage['month']}</b>",
+            "<i>Считаются пользователи, по которым получался ненулевой traffic sample.</i>",
+        ]
+
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button("📣 Источники", callback_data="admin:analytics:sources"),
+            blue_inline_button("🎟 Промокоды", callback_data="admin:analytics:promos"),
+        )
+        kb.row(
+            blue_inline_button("🌐 VPN / Support", callback_data="admin:analytics:vpn"),
+        )
+        kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:analytics"))
+        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
+        await send_screen(message, actor, "\n".join(lines), reply_markup=kb.as_markup())
+
+    async def show_admin_analytics_sources(message: Message, actor) -> None:
+        if not await has_admin_access(actor.id):
+            return
+        data = await load_business_analytics(db)
+        sources = list(data.get("sources") or [])
+        max_arrived = max([int(item["arrived"]) for item in sources] or [1])
+
+        lines = ["📣 <b>Источники и конверсия</b>", ""]
+        priority = {"anonchat_mgn": 0, "pozor_mgn": 1}
+        sources.sort(key=lambda item: (priority.get(str(item["source"]), 9), -int(item["arrived"])))
+        if not sources:
+            lines.append("Данных по источникам пока нет.")
+        else:
+            for item in sources[:20]:
+                source = html.escape(str(item["source"]))
+                arrived = int(item["arrived"])
+                buyers = int(item["buyers"])
+                lines += [
+                    f"<b>{source}</b>",
+                    f"<code>{analytics_bar(arrived, max_arrived, 12)}</code> {arrived} пришли · {buyers} купили · <b>{float(item['conversion']):.1f}%</b>",
+                    "",
+                ]
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("⬅️ Аналитика", callback_data="admin:analytics"))
+        await send_screen(message, actor, "\n".join(lines).rstrip(), reply_markup=kb.as_markup())
+
+    async def show_admin_analytics_promos(message: Message, actor) -> None:
+        if not await has_admin_access(actor.id):
+            return
+        data = await load_business_analytics(db)
+        promos = list(data.get("promos") or [])
+        lines = ["🎟 <b>Промокоды — аналитика</b>", ""]
+        if not promos:
+            lines.append("Промокодов пока нет.")
+        else:
+            for item in promos[:20]:
+                state = "🟢" if item.get("active") else "⚪"
+                lines += [
+                    f"{state} <code>{html.escape(str(item['code']))}</code> · {html.escape(str(item['type']))} {int(item['value'])}",
+                    f"использований <b>{int(item['uses'])}</b> · пользователей <b>{int(item['buyers'])}</b> · попыток <b>{int(item['attempts'])}</b> · конверсия <b>{float(item['conversion']):.1f}%</b>",
+                    "",
+                ]
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("⬅️ Аналитика", callback_data="admin:analytics"))
+        await send_screen(message, actor, "\n".join(lines).rstrip(), reply_markup=kb.as_markup())
+
+    async def show_admin_analytics_vpn(message: Message, actor) -> None:
+        if not await has_admin_access(actor.id):
+            return
+        data = await load_business_analytics(db)
+        country_names = {
+            "auto": "⚡ Авто",
+            "nl": "🇳🇱 Нидерланды",
+            "pk": "🇵🇰 Пакистан",
+            "de": "🇩🇪 Германия",
+            "pl": "🇵🇱 Польша",
+            "fi": "🇫🇮 Финляндия",
+            "us": "🇺🇸 США",
+            "us2": "🇺🇸 США 2",
+            "lt": "🇱🇹 Литва",
+            "lv": "🇱🇻 Латвия",
+        }
+        preferences = list(data.get("country_preferences") or [])
+        max_pref = max([int(item["count"]) for item in preferences] or [1])
+        lines = [
+            "🌐 <b>VPN и поддержка</b>",
+            "",
+            "⚡ <b>Предпочтения активных пользователей</b>",
+        ]
+        if preferences:
+            for item in preferences:
+                code = str(item["country"])
+                count = int(item["count"])
+                lines.append(
+                    f"{country_names.get(code, html.escape(code))}: "
+                    f"<code>{analytics_bar(count, max_pref, 10)}</code> <b>{count}</b>"
+                )
+        else:
+            lines.append("Нет данных.")
+
+        lines += ["", "🆘 <b>Обращения по серверу</b>"]
+        support_rows = list(data.get("support_servers") or [])
+        if support_rows:
+            for item in support_rows:
+                code = str(item["server_code"])
+                lines.append(
+                    f"{country_names.get(code, html.escape(code))}: <b>{int(item['count'])}</b>"
+                )
+        else:
+            lines.append("Пока нет обращений с привязкой к серверу.")
+
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("🌐 Состояние серверов", callback_data="admin:servers"))
+        kb.row(blue_inline_button("⬅️ Аналитика", callback_data="admin:analytics"))
+        await send_screen(message, actor, "\n".join(lines), reply_markup=kb.as_markup())
+
     async def show_admin_support(message: Message, actor, status: str = "all", page: int = 0) -> None:
         role = await get_admin_role(actor.id)
         if not role:
