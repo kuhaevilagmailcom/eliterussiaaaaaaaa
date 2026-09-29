@@ -2041,6 +2041,7 @@ class Database:
         username: str | None,
         first_name: str | None,
         message: str,
+        server_code: str | None = None,
     ) -> dict[str, Any]:
         return await self.create_support_thread(
             telegram_id=telegram_id,
@@ -2048,6 +2049,7 @@ class Database:
             first_name=first_name,
             message_type="text",
             text=message,
+            server_code=server_code,
         )
 
     async def list_support_tickets(
@@ -2156,6 +2158,7 @@ class Database:
         self, *, telegram_id: int, username: str | None, first_name: str | None,
         message_type: str, text: str | None = None, file_id: str | None = None,
         file_unique_id: str | None = None, caption: str | None = None,
+        server_code: str | None = None,
     ) -> dict[str, Any]:
         created = to_iso(utcnow())
         preview = (text or caption or {"photo": "Фото", "video": "Видео"}.get(message_type, "Обращение")).strip()
@@ -2163,9 +2166,18 @@ class Database:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
-                "INSERT INTO support_tickets (telegram_id, username, first_name, message, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, 'open', ?, ?)",
-                (telegram_id, username, first_name or "", preview[:3000], created, created),
+                "INSERT INTO support_tickets "
+                "(telegram_id, username, first_name, message, status, created_at, updated_at, server_code) "
+                "VALUES (?, ?, ?, ?, 'open', ?, ?, ?)",
+                (
+                    telegram_id,
+                    username,
+                    first_name or "",
+                    preview[:3000],
+                    created,
+                    created,
+                    str(server_code or "").strip().lower() or None,
+                ),
             )
             ticket_id = int(cursor.lastrowid)
             await self._insert_support_message(
@@ -3233,6 +3245,146 @@ class Database:
             "new_telegram_id": new_telegram_id,
             "new_username": str(new_participant["username"] or "").strip(),
             "new_first_name": str(new_participant["first_name"] or "").strip(),
+            "prize_days": days,
+        }
+
+    async def undo_last_giveaway_reroll(
+        self,
+        giveaway_id: int,
+        *,
+        undone_by: int,
+        max_age_seconds: int = 600,
+    ) -> dict[str, Any]:
+        """Undo the latest active reroll when it is still inside the safety window."""
+        giveaway_id = int(giveaway_id)
+        now_dt = utcnow()
+        cutoff = now_dt - timedelta(seconds=max(30, int(max_age_seconds)))
+        now = to_iso(now_dt)
+
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+
+            reroll = await (
+                await db.execute(
+                    """
+                    SELECT *
+                    FROM giveaway_rerolls
+                    WHERE giveaway_id=? AND undone_at IS NULL
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (giveaway_id,),
+                )
+            ).fetchone()
+            if reroll is None:
+                await db.rollback()
+                raise ValueError("Нет перевыбора для отмены")
+
+            created = from_iso(reroll["created_at"])
+            if not created or created < cutoff:
+                await db.rollback()
+                raise ValueError("Время отмены перевыбора истекло")
+
+            giveaway = await (
+                await db.execute(
+                    "SELECT status, prize_days FROM giveaways WHERE id=?",
+                    (giveaway_id,),
+                )
+            ).fetchone()
+            if giveaway is None or str(giveaway["status"]) != "finished":
+                await db.rollback()
+                raise ValueError("Розыгрыш не завершён")
+
+            current = await (
+                await db.execute(
+                    """
+                    SELECT * FROM giveaway_winners
+                    WHERE giveaway_id=? AND telegram_id=?
+                    """,
+                    (giveaway_id, int(reroll["new_telegram_id"])),
+                )
+            ).fetchone()
+            if current is None:
+                await db.rollback()
+                raise ValueError("Текущий победитель уже изменён")
+
+            old_participant = await (
+                await db.execute(
+                    """
+                    SELECT *
+                    FROM giveaway_participants
+                    WHERE giveaway_id=? AND telegram_id=?
+                    """,
+                    (giveaway_id, int(reroll["old_telegram_id"])),
+                )
+            ).fetchone()
+            if old_participant is None:
+                await db.rollback()
+                raise ValueError("Исходный победитель больше не найден")
+
+            days = int(giveaway["prize_days"])
+            if current["granted_at"]:
+                user = await (
+                    await db.execute(
+                        "SELECT subscription_until, plan_name FROM users WHERE telegram_id=?",
+                        (int(current["telegram_id"]),),
+                    )
+                ).fetchone()
+                if user is not None:
+                    until = from_iso(user["subscription_until"])
+                    if until:
+                        reversed_until = until - timedelta(days=days)
+                        still_active = reversed_until > now_dt
+                        await db.execute(
+                            """
+                            UPDATE users
+                            SET subscription_until=?,
+                                plan_name=CASE WHEN ? THEN plan_name ELSE '' END
+                            WHERE telegram_id=?
+                            """,
+                            (
+                                to_iso(reversed_until) if still_active else None,
+                                int(still_active),
+                                int(current["telegram_id"]),
+                            ),
+                        )
+
+            position = int(current["position"])
+            await db.execute(
+                "DELETE FROM giveaway_winners WHERE giveaway_id=? AND telegram_id=?",
+                (giveaway_id, int(current["telegram_id"])),
+            )
+            await db.execute(
+                """
+                INSERT INTO giveaway_winners (
+                    giveaway_id, telegram_id, username, first_name,
+                    position, granted_at, notified_at
+                ) VALUES (?, ?, ?, ?, ?, NULL, NULL)
+                """,
+                (
+                    giveaway_id,
+                    int(old_participant["telegram_id"]),
+                    str(old_participant["username"] or "").strip() or None,
+                    str(old_participant["first_name"] or "").strip(),
+                    position,
+                ),
+            )
+            await db.execute(
+                "UPDATE giveaway_rerolls SET undone_at=?, undone_by=? WHERE id=?",
+                (now, int(undone_by), int(reroll["id"])),
+            )
+            await db.execute(
+                "UPDATE giveaway_posts SET finalized_at=NULL WHERE giveaway_id=?",
+                (giveaway_id,),
+            )
+            await db.commit()
+
+        return {
+            "giveaway_id": giveaway_id,
+            "reroll_id": int(reroll["id"]),
+            "restored_telegram_id": int(old_participant["telegram_id"]),
+            "removed_telegram_id": int(current["telegram_id"]),
             "prize_days": days,
         }
 
