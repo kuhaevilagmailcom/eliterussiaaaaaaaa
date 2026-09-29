@@ -2914,6 +2914,7 @@ def build_router(
                     code=str(intent["product_code"]),
                     method="Stars",
                     amount=int(payment.total_amount),
+                    payment_id=charge_id,
                 )
             await show_home(message, message.from_user, force_new=True)
             await refresh_main_keyboard(message, message.from_user)
@@ -3117,6 +3118,7 @@ def build_router(
                         code=DEVICE_PRODUCT_CODE,
                         method="СБП",
                         amount=int(local["amount_rub"]),
+                        payment_id=payment_id,
                     )
                     if updated is None:
                         await safe_callback_answer(callback, 
@@ -3147,6 +3149,7 @@ def build_router(
                     code=code,
                     method="СБП",
                     amount=int(local["amount_rub"]),
+                    payment_id=payment_id,
                 )
 
             await safe_callback_answer(callback, "Оплата получена")
