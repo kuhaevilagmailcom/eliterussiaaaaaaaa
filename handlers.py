@@ -6929,10 +6929,13 @@ def build_router(
             if await db.recent_support_ticket_count(user_id) >= 3:
                 await message.answer("Слишком много новых обращений. Продолжите одно из уже созданных.")
                 return True
-            await ensure_actor(message.from_user)
+            support_user = await ensure_actor(message.from_user)
             ticket = await db.create_support_thread(
-                telegram_id=user_id, username=message.from_user.username,
-                first_name=message.from_user.first_name, **payload,
+                telegram_id=user_id,
+                username=message.from_user.username,
+                first_name=message.from_user.first_name,
+                server_code=str(support_user.get("preferred_country") or "auto"),
+                **payload,
             )
             ticket_id = int(ticket["id"])
             await db.clear_support_session(user_id)
