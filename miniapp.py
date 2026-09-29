@@ -358,9 +358,9 @@ class MiniAppServer:
         try:
             async with self._h1_semaphore:
                 await asyncio.wait_for(self.provider.provision(user), 45.0)
-            # Force one rebuild, but keep the last payload available so a
-            # temporarily unavailable country (for example US) is not dropped.
-            await self.invalidate_subscription_cache(token)
+            # Не удаляем последний рабочий payload после federation refresh.
+            # Следующий обычный refresh сам соберёт новую версию; старый полный
+            # список остаётся страховкой, если одна из стран временно недоступна.
             logger.info(
                 "H1Cloud background federation refresh completed for %s",
                 user_id,
@@ -842,6 +842,41 @@ class MiniAppServer:
             )
             if count < 1:
                 raise RuntimeError("H1Cloud subscription contains no VLESS nodes")
+
+            # Никогда не заменяем более полный последний subscription урезанным
+            # только потому, что одна H1-нода сейчас недоступна/медленная.
+            richer_cached = None
+            richer_count = count
+            for candidate in (cached, persistent_cached):
+                if not candidate:
+                    continue
+                candidate_body = candidate.get("body")
+                if not isinstance(candidate_body, (bytes, bytearray)) or not candidate_body:
+                    continue
+                try:
+                    _normalized, candidate_count = prettify_subscription_payload(
+                        bytes(candidate_body)
+                    )
+                except Exception:
+                    continue
+                if candidate_count > richer_count:
+                    richer_count = candidate_count
+                    richer_cached = candidate
+
+            if richer_cached is not None:
+                logger.warning(
+                    "MGN subscription refresh for %s returned only %s node(s); "
+                    "preserving richer cached payload with %s node(s)",
+                    user["telegram_id"],
+                    count,
+                    richer_count,
+                )
+                cached_headers = dict(richer_cached.get("headers") or {})
+                self._schedule_subscription_federation_refresh(user, token)
+                return web.Response(
+                    body=bytes(richer_cached["body"]),
+                    headers=cached_headers,
+                )
 
             headers = await self._subscription_profile_headers(
                 user,
