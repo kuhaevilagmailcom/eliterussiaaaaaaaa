@@ -305,8 +305,7 @@ async def _notify_admins_giveaway_finished(
     recipients.update(int(value) for value in getattr(config, "admin_ids", ()) if int(value) > 0)
     try:
         for item in await db.list_admin_roles():
-            if str(item.get("role") or "") == "full":
-                recipients.add(int(item["telegram_id"]))
+            recipients.add(int(item["telegram_id"]))
     except Exception as exc:
         logger.warning(
             "Could not load dynamic admins for giveaway #%s: %s",
@@ -401,9 +400,10 @@ async def reroll_giveaway_winner(
 
         participants = await db.list_giveaway_participants(giveaway_id)
         rerolls = await db.list_giveaway_rerolls(giveaway_id)
+        active_rerolls = [item for item in rerolls if not item.get("undone_at")]
         excluded = {int(item["telegram_id"]) for item in winners}
-        excluded.update(int(item["old_telegram_id"]) for item in rerolls)
-        excluded.update(int(item["new_telegram_id"]) for item in rerolls)
+        excluded.update(int(item["old_telegram_id"]) for item in active_rerolls)
+        excluded.update(int(item["new_telegram_id"]) for item in active_rerolls)
         candidates = [
             item for item in participants
             if int(item["telegram_id"]) not in excluded
@@ -448,6 +448,57 @@ async def reroll_giveaway_winner(
                 type(exc).__name__,
             )
 
+        return result
+
+
+async def undo_giveaway_reroll(
+    bot,
+    db: Database,
+    config,
+    provider: VpnProvider,
+    giveaway_id: int,
+    *,
+    undone_by: int,
+    max_age_seconds: int = 600,
+) -> dict[str, Any]:
+    giveaway_id = int(giveaway_id)
+    lock = _finish_locks.setdefault(giveaway_id, asyncio.Lock())
+    async with lock:
+        result = await db.undo_last_giveaway_reroll(
+            giveaway_id,
+            undone_by=int(undone_by),
+            max_age_seconds=max_age_seconds,
+        )
+        restored_id = int(result["restored_telegram_id"])
+        removed_id = int(result["removed_telegram_id"])
+
+        granted = await db.grant_giveaway_prizes(giveaway_id)
+        await _sync_vpn_users(
+            db,
+            provider,
+            {restored_id, removed_id, *granted},
+        )
+
+        giveaway = await db.get_giveaway(giveaway_id)
+        winners = await db.get_giveaway_winners(giveaway_id)
+        if giveaway:
+            await _finalize_channel_posts(bot, db, config, giveaway, winners)
+            winners = await db.get_giveaway_winners(giveaway_id)
+            await _notify_winners(bot, db, giveaway, winners)
+
+        try:
+            await bot.send_message(
+                removed_id,
+                "ℹ️ <b>Перевыбор в розыгрыше MGN VPN отменён.</b>\n\n"
+                "Начисление, полученное из-за перевыбора, отозвано.",
+            )
+        except (TelegramForbiddenError, TelegramBadRequest):
+            pass
+        except Exception:
+            logger.exception(
+                "Could not notify removed reroll winner %s",
+                removed_id,
+            )
         return result
 
 
