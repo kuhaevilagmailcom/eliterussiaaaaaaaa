@@ -18,6 +18,7 @@ jobs:
       - run: python -m compileall -q .
       - run: python -m pytest -q
       - run: ruff check --select E9,F63,F7,F82 .
+      - run: docker build -t mgn-vpn-ci .
       - run: pip-audit -r requirements.txt
       - uses: actions/setup-node@v4
         with:
