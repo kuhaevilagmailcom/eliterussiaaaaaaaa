@@ -1828,6 +1828,51 @@ def build_router(
         if callback.message:
             await show_profile(callback.message, callback.from_user)
 
+    @router.callback_query(F.data == "menu:serverstatus")
+    async def menu_server_status(callback: CallbackQuery) -> None:
+        await safe_callback_answer(callback, "Проверяю серверы…")
+        if callback.message:
+            await show_user_server_status(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "menu:country")
+    async def menu_country(callback: CallbackQuery) -> None:
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_country_picker(callback.message, callback.from_user)
+
+    @router.callback_query(F.data.startswith("menu:country:set:"))
+    async def menu_country_set(callback: CallbackQuery) -> None:
+        code = str(callback.data.rsplit(":", 1)[-1]).lower()
+        try:
+            updated = await db.set_preferred_country(callback.from_user.id, code)
+        except (ValueError, KeyError):
+            await safe_callback_answer(callback, "Сервер не поддерживается.", show_alert=True)
+            return
+        await safe_callback_answer(
+            callback,
+            f"Выбрано: {country_label(str(updated.get('preferred_country') or 'auto'))}",
+        )
+        if callback.message:
+            await show_country_picker(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "menu:paymenthistory")
+    async def menu_payment_history(callback: CallbackQuery) -> None:
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_payment_history(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "menu:accruals")
+    async def menu_accruals(callback: CallbackQuery) -> None:
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_subscription_events(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "menu:bonusstats")
+    async def menu_bonus_stats(callback: CallbackQuery) -> None:
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_bonus_stats(callback.message, callback.from_user)
+
     @router.callback_query(F.data == "menu:connect")
     async def menu_connect(callback: CallbackQuery) -> None:
         await safe_callback_answer(callback, )
