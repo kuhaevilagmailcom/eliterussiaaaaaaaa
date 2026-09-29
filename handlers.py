@@ -37,6 +37,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from PIL import Image
 
 from admin_notify import notify_all_admins, notify_purchase
+from analytics import render_business_analytics
 from catalog import (
     BASE_DEVICES,
     DEVICE_PRODUCT_CODE,
@@ -3300,6 +3301,59 @@ def build_router(
             blue_inline_button("🏠 Главное меню", callback_data="home"),
         )
         return kb.as_markup()
+
+    async def show_admin_analytics(message: Message, actor) -> None:
+        if not await has_admin_access(actor.id):
+            return
+        data = await db.business_analytics()
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:analytics"))
+        kb.row(blue_inline_button("🌐 Серверы", callback_data="admin:servers"))
+        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
+        await send_screen(
+            message,
+            actor,
+            render_business_analytics(data),
+            reply_markup=kb.as_markup(),
+        )
+
+    async def show_user_payment_history(message: Message, actor) -> None:
+        rows = await db.user_payment_history(actor.id, limit=20)
+        lines = ["💳 <b>История платежей</b>", ""]
+        if not rows:
+            lines.append("Платежей пока нет.")
+        for row in rows:
+            dt = from_iso(row.get("created_at"))
+            when = dt.astimezone(config.display_tz).strftime("%d.%m.%Y") if dt else "—"
+            code = str(row.get("plan_code") or "")
+            name = "+1 устройство" if code == DEVICE_PRODUCT_CODE else str(PLANS.get(code, {}).get("name") or code)
+            amount = f"{int(row['amount'])} ₽" if row.get("currency") == "RUB" else f"{int(row['amount'])} ⭐"
+            status = str(row.get("status") or "")
+            icon = "✅" if status == "paid" else "🕓" if status in {"created", "processing"} else "▫️"
+            promo = f" · <code>{html.escape(str(row['promo_code']))}</code>" if row.get("promo_code") else ""
+            lines.append(f"{icon} <b>{html.escape(name)}</b> · {amount}\n   {when}{promo}")
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("📜 Начисления дней", callback_data="profile:access-history"))
+        kb.row(blue_inline_button("⬅️ Профиль", callback_data="menu:profile"))
+        await send_screen(message, actor, "\n".join(lines), reply_markup=kb.as_markup())
+
+    async def show_user_access_history(message: Message, actor) -> None:
+        rows = await db.user_access_history(actor.id, limit=30)
+        lines = ["📜 <b>История начислений</b>", ""]
+        if not rows:
+            lines.append("Дополнительных начислений пока нет.")
+        icons = {"admin": "🛡", "giveaway": "🎁", "referral": "👥", "promo": "🎟"}
+        for row in rows:
+            dt = from_iso(row.get("created_at"))
+            when = dt.astimezone(config.display_tz).strftime("%d.%m.%Y") if dt else "—"
+            lines.append(
+                f"{icons.get(str(row['source']), '➕')} <b>+{int(row['days'])} дней</b> · "
+                f"{html.escape(str(row['label']))} · {when}"
+            )
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("💳 Платежи", callback_data="profile:payments"))
+        kb.row(blue_inline_button("⬅️ Профиль", callback_data="menu:profile"))
+        await send_screen(message, actor, "\n".join(lines), reply_markup=kb.as_markup())
 
     async def show_admin(message: Message, actor) -> None:
         role = await get_admin_role(actor.id)
