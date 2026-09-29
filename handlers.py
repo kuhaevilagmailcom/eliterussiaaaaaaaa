@@ -477,7 +477,7 @@ def main_menu_inline_keyboard(
     if admin_role:
         kb.row(
             blue_inline_button(
-                "Админ-панель",
+                "🛡 Админ-панель",
                 callback_data="admin:home",
                 icon_index=10,
             )
@@ -3556,21 +3556,21 @@ def build_router(
                     ),
                 )
         kb.row(
-            blue_inline_button("Все", callback_data="admin:support:all:0"),
-            blue_inline_button("Открытые", callback_data="admin:support:open:0"),
+            blue_inline_button("📋 Все", callback_data="admin:support:all:0"),
+            blue_inline_button("🟢 Открытые", callback_data="admin:support:open:0"),
         )
         kb.row(
-            blue_inline_button("С ответом", callback_data="admin:support:answered:0"),
-            blue_inline_button("Закрытые", callback_data="admin:support:closed:0"),
+            blue_inline_button("🟡 С ответом", callback_data="admin:support:answered:0"),
+            blue_inline_button("✅ Закрытые", callback_data="admin:support:closed:0"),
         )
         nav = []
         if page > 0:
-            nav.append(blue_inline_button("←", callback_data=f"admin:support:{status}:{page - 1}"))
+            nav.append(blue_inline_button("⬅️ Назад", callback_data=f"admin:support:{status}:{page - 1}"))
         if page + 1 < pages:
-            nav.append(blue_inline_button("→", callback_data=f"admin:support:{status}:{page + 1}"))
+            nav.append(blue_inline_button("Дальше ➡️", callback_data=f"admin:support:{status}:{page + 1}"))
         if nav:
             kb.row(*nav)
-        kb.row(blue_inline_button("Админка", callback_data="admin:home"))
+        kb.row(blue_inline_button("🏠 Админка", callback_data="admin:home"))
         await send_screen(
             message,
             actor,
@@ -4441,7 +4441,7 @@ def build_router(
                 )
                 kb.row(
                     blue_inline_button(
-                        f"Открыть #{giveaway_id}",
+                        f"👁 Открыть #{giveaway_id}",
                         callback_data=f"admin:giveaway:view:{giveaway_id}",
                     )
                 )
@@ -4531,7 +4531,7 @@ def build_router(
             blue_inline_button("3", callback_data="admin:giveaway:winners:3"),
             blue_inline_button("5", callback_data="admin:giveaway:winners:5"),
         )
-        kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+        kb.row(blue_inline_button("❌ Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
         await message.answer(
             "<b>Новый розыгрыш · 3/7</b>\n\n"
             "Сколько подписок разыграть? Выберите кнопку или отправьте число от 1 до 10.",
@@ -4542,14 +4542,14 @@ def build_router(
         await db.set_support_session(actor_id, "giveaway_days", payload=json.dumps(draft))
         kb = InlineKeyboardBuilder()
         kb.row(
-            blue_inline_button("30 дней", callback_data="admin:giveaway:days:30"),
-            blue_inline_button("90 дней", callback_data="admin:giveaway:days:90"),
+            blue_inline_button("📅 30 дней", callback_data="admin:giveaway:days:30"),
+            blue_inline_button("📅 90 дней", callback_data="admin:giveaway:days:90"),
         )
         kb.row(
-            blue_inline_button("180 дней", callback_data="admin:giveaway:days:180"),
-            blue_inline_button("365 дней", callback_data="admin:giveaway:days:365"),
+            blue_inline_button("📅 180 дней", callback_data="admin:giveaway:days:180"),
+            blue_inline_button("📅 365 дней", callback_data="admin:giveaway:days:365"),
         )
-        kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+        kb.row(blue_inline_button("❌ Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
         await message.answer(
             "<b>Новый розыгрыш · 4/7</b>\n\n"
             "На какой срок выдать подписку каждому победителю? Можно отправить своё количество дней.",
@@ -4565,7 +4565,7 @@ def build_router(
         kb.row(
             blue_inline_button("👥 По числу участников", callback_data="admin:giveaway:end:participants"),
         )
-        kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+        kb.row(blue_inline_button("❌ Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
         await message.answer(
             "<b>Новый розыгрыш · 5/7</b>\n\nКогда завершить розыгрыш?",
             reply_markup=kb.as_markup(),
@@ -4581,7 +4581,7 @@ def build_router(
                     callback_data="admin:giveaway:channel:main",
                 )
             )
-        kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+        kb.row(blue_inline_button("❌ Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
         await message.answer(
             "<b>Новый розыгрыш · 7/7</b>\n\n"
             "Выберите основной канал или отправьте один/несколько каналов через пробел, запятую или с новой строки.\n"
@@ -4619,7 +4619,7 @@ def build_router(
             await message.answer(preview_text)
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("🚀 Запустить", callback_data="admin:giveaway:send"))
-        kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+        kb.row(blue_inline_button("❌ Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
         await message.answer("Всё готово. Запустить розыгрыш?", reply_markup=kb.as_markup())
 
     def first_custom_emoji_id(message: Message) -> str:
@@ -4646,13 +4646,13 @@ def build_router(
         kb = InlineKeyboardBuilder()
         kb.row(
             blue_inline_button(
-                "Всем пользователям бота",
+                "👥 Всем пользователям",
                 callback_data="admin:ad:channel:users",
             )
         )
         if normalize_channel(config.channel_url) is not None:
-            kb.row(blue_inline_button("Основной канал", callback_data="admin:ad:channel:main"))
-        kb.row(blue_inline_button("Отмена", callback_data="admin:ad:cancel", premium_icon=False))
+            kb.row(blue_inline_button("📢 Основной канал", callback_data="admin:ad:channel:main"))
+        kb.row(blue_inline_button("❌ Отмена", callback_data="admin:ad:cancel", premium_icon=False))
         await message.answer(
             "<b>Куда отправить</b>\n\nВыберите рассылку всем пользователям, основной канал или отправьте @username / ID вида <code>-100…</code>.",
             reply_markup=kb.as_markup(),
@@ -4661,8 +4661,8 @@ def build_router(
     async def show_ad_preview(message: Message, actor_id: int, draft: dict[str, Any]) -> None:
         await db.set_support_session(actor_id, "ad_confirm", payload=json.dumps(draft))
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("Опубликовать", callback_data="admin:ad:send"))
-        kb.row(blue_inline_button("Отмена", callback_data="admin:ad:cancel", premium_icon=False))
+        kb.row(blue_inline_button("✅ Опубликовать", callback_data="admin:ad:send"))
+        kb.row(blue_inline_button("❌ Отмена", callback_data="admin:ad:cancel", premium_icon=False))
         target = (
             "все пользователи бота"
             if draft.get("channel") == "all_users"
@@ -4730,7 +4730,7 @@ def build_router(
         await db.set_support_session(callback.from_user.id, "giveaway_text", payload="{}")
         await safe_callback_answer(callback)
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+        kb.row(blue_inline_button("❌ Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
         await callback.message.answer(
             "<b>Новый розыгрыш · 1/7</b>\n\n"
             "Отправьте текст поста. Форматирование сохраняется. Максимум 650 символов.",
@@ -5344,7 +5344,7 @@ def build_router(
         await safe_callback_answer(callback)
         if callback.message:
             kb = InlineKeyboardBuilder()
-            kb.row(blue_inline_button("Отмена", callback_data="admin:ad:cancel", premium_icon=False))
+            kb.row(blue_inline_button("❌ Отмена", callback_data="admin:ad:cancel", premium_icon=False))
             await callback.message.answer(
                 "<b>Новая рассылка · 1/4</b>\n\n"
                 "Отправьте текст рассылки. Фото и кнопка — необязательные.",
@@ -5360,7 +5360,7 @@ def build_router(
         await safe_callback_answer(callback)
         if callback.message:
             kb = InlineKeyboardBuilder()
-            kb.row(blue_inline_button("Отмена", callback_data="admin:ad:cancel", premium_icon=False))
+            kb.row(blue_inline_button("❌ Отмена", callback_data="admin:ad:cancel", premium_icon=False))
             await callback.message.answer(
                 "<b>Новая реклама · 1/5</b>\n\nОтправьте текст публикации. Форматирование и premium emoji сохранятся.",
                 reply_markup=kb.as_markup(),
@@ -6236,8 +6236,8 @@ def build_router(
                 draft["text_plain"] = text_plain
                 await db.set_support_session(user_id, "giveaway_photo", payload=json.dumps(draft))
                 kb = InlineKeyboardBuilder()
-                kb.row(blue_inline_button("Без изображения", callback_data="admin:giveaway:skip-photo"))
-                kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+                kb.row(blue_inline_button("⏭ Без изображения", callback_data="admin:giveaway:skip-photo"))
+                kb.row(blue_inline_button("❌ Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
                 await message.answer(
                     "<b>Новый розыгрыш · 2/7</b>\n\n"
                     "Отправьте изображение или продолжите без него.",
@@ -6347,8 +6347,8 @@ def build_router(
                 draft["text_plain"] = str(message.text or "")
                 await db.set_support_session(user_id, "ad_photo", payload=json.dumps(draft))
                 kb = InlineKeyboardBuilder()
-                kb.row(blue_inline_button("Без изображения", callback_data="admin:ad:skip-photo"))
-                kb.row(blue_inline_button("Отмена", callback_data="admin:ad:cancel", premium_icon=False))
+                kb.row(blue_inline_button("⏭ Без изображения", callback_data="admin:ad:skip-photo"))
+                kb.row(blue_inline_button("❌ Отмена", callback_data="admin:ad:cancel", premium_icon=False))
                 title = "Новая рассылка · 2/4" if draft.get("broadcast_only") else "Новая реклама · 2/5"
                 await message.answer(
                     f"<b>{title}</b>\n\nОтправьте изображение или продолжите без него.",
