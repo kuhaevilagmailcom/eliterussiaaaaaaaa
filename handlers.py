@@ -5707,6 +5707,15 @@ def build_router(
             await safe_callback_answer(callback, "Этот розыгрыш уже завершён.", show_alert=True)
             return
 
+        if not await is_channel_member(callback.bot, callback.from_user.id):
+            await safe_callback_answer(
+                callback,
+                "Для участия сначала подпишитесь на обязательный канал MGN VPN и нажмите кнопку ещё раз.",
+                show_alert=True,
+            )
+            return
+
+        await db.mark_channel_verified(callback.from_user.id)
         await ensure_actor(callback.from_user)
         result = await db.add_giveaway_participant(
             giveaway_id=giveaway_id,
