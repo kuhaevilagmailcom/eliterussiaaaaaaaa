@@ -30,6 +30,7 @@ from catalog import (
     rub_to_stars,
 )
 from db import Database, from_iso, utcnow
+from admin_notify import notify_purchase
 from payments import RollyPayError, create_payment, get_payment
 from legal import (
     AGREEMENT_SECTIONS,
@@ -38,7 +39,12 @@ from legal import (
     agreement_html,
     privacy_html,
 )
-from vpn import VpnProvider, VpnState, prettify_subscription_payload
+from vpn import (
+    VpnProvider,
+    VpnState,
+    prefer_subscription_country,
+    prettify_subscription_payload,
+)
 from vpn_clients import client_registry, get_client
 
 
@@ -449,6 +455,14 @@ class MiniAppServer:
                 raise _json_error(400, "Некорректное поле запроса")
         return data
 
+    async def _ensure_purchases_available(self) -> None:
+        state = await self.db.maintenance_state()
+        if state.get("enabled"):
+            raise _json_error(
+                503,
+                str(state.get("message") or "Покупки временно приостановлены"),
+            )
+
     def _public_subscription_url(
         self,
         user: dict,
@@ -630,6 +644,7 @@ class MiniAppServer:
         return web.json_response(payload, status=200 if payload["ok"] else 503)
 
     async def public_catalog(self, request: web.Request) -> web.Response:
+        maintenance = await self.db.maintenance_state()
         return web.json_response(
             {
                 "plans": [
@@ -649,12 +664,14 @@ class MiniAppServer:
                 "max_devices": MAX_DEVICES,
                 "extra_device_price_rub": EXTRA_DEVICE_PRICE_RUB,
                 "extra_device_price_stars": rub_to_stars(EXTRA_DEVICE_PRICE_RUB),
+                "maintenance": maintenance,
             },
             headers={"Cache-Control": "public, max-age=300"},
         )
 
 
     async def public_payment_create(self, request: web.Request) -> web.Response:
+        await self._ensure_purchases_available()
         self._rate_limit(
             f"public-payment-create:{self._client_identity(request)}",
             limit=8,
@@ -840,6 +857,10 @@ class MiniAppServer:
                 load_payload(),
                 14.0,
             )
+            body = prefer_subscription_country(
+                body,
+                str(user.get("preferred_country") or "auto"),
+            )
             if count < 1:
                 raise RuntimeError("H1Cloud subscription contains no VLESS nodes")
 
@@ -994,6 +1015,10 @@ class MiniAppServer:
             days=30,
         )
         referral_stats = await self.db.referral_stats(uid)
+        promo_stats = await self.db.user_promo_stats(uid)
+        payment_history = await self.db.list_user_payment_history(uid, limit=10)
+        subscription_events = await self.db.list_subscription_events(uid, limit=12)
+        maintenance = await self.db.maintenance_state()
         username = await self._username()
         until = from_iso(row.get("subscription_until"))
         until_text = ""
@@ -1019,6 +1044,7 @@ class MiniAppServer:
                     "remaining_seconds": _remaining_seconds(row),
                     "max_devices": int(row.get("max_devices") or 1),
                     "trial_used": bool(row.get("trial_used")),
+                    "preferred_country": str(row.get("preferred_country") or "auto"),
                 },
                 "vpn": {
                     "ready": bool(getattr(self.provider, "service_ready", True)),
@@ -1043,7 +1069,13 @@ class MiniAppServer:
                     }
                     for code, plan in PLANS.items()
                 ],
-                "payments": {"sbp_enabled": bool(self.config.rollypay_enabled)},
+                "payments": {
+                    "sbp_enabled": bool(self.config.rollypay_enabled),
+                    "history": payment_history,
+                },
+                "subscription_events": subscription_events,
+                "promo_stats": promo_stats,
+                "maintenance": maintenance,
                 "capabilities": {
                     "device_list": bool(self.provider.capabilities.supports_device_list),
                     "device_removal": bool(self.provider.capabilities.supports_device_removal),
@@ -1068,6 +1100,7 @@ class MiniAppServer:
 
     async def stars_invoice(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
+        await self._ensure_purchases_available()
         data = await self._json_body(request)
         code = str(data.get("plan_code") or "")
         plan = PLANS.get(code)
@@ -1137,6 +1170,7 @@ class MiniAppServer:
 
     async def sbp_create(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
+        await self._ensure_purchases_available()
         if not self.config.rollypay_enabled:
             raise _json_error(503, "СБП пока не настроена")
 
@@ -1267,6 +1301,7 @@ class MiniAppServer:
 
     async def buy_extra_device(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
+        await self._ensure_purchases_available()
         if not _active(row):
             raise _json_error(409, "Сначала активируйте подписку")
         if int(row.get("max_devices") or 1) >= MAX_DEVICES:
