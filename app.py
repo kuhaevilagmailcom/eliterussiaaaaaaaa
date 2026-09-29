@@ -98,18 +98,23 @@ def prepare_persistent_database(db_path: str) -> None:
         return
 
 
-def create_persistent_backup(db_path: str, *, keep: int = 5) -> Path | None:
+def create_persistent_backup(
+    db_path: str,
+    *,
+    keep: int = 5,
+    backup_dir: str | None = None,
+) -> Path | None:
     source = Path(db_path)
     if not source.exists() or source.stat().st_size <= 0:
         return None
 
-    backup_dir = source.parent / "backups"
+    backup_root = Path(backup_dir).expanduser() if backup_dir else source.parent / "backups"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    target = backup_dir / f"{source.stem}-{stamp}.sqlite3"
+    target = backup_root / f"{source.stem}-{stamp}.sqlite3"
     _sqlite_backup(source, target)
 
     backups = sorted(
-        backup_dir.glob(f"{source.stem}-*.sqlite3"),
+        backup_root.glob(f"{source.stem}-*.sqlite3"),
         key=lambda item: item.stat().st_mtime,
         reverse=True,
     )
@@ -124,12 +129,16 @@ def create_persistent_backup(db_path: str, *, keep: int = 5) -> Path | None:
     return target
 
 
-async def database_backup_loop(db_path: str) -> None:
+async def database_backup_loop(db_path: str, backup_dir: str = "") -> None:
     logger = logging.getLogger(__name__)
     while True:
         await asyncio.sleep(6 * 60 * 60)
         try:
-            path = await asyncio.to_thread(create_persistent_backup, db_path)
+            path = await asyncio.to_thread(
+                create_persistent_backup,
+                db_path,
+                backup_dir=backup_dir or None,
+            )
             if path:
                 logger.info("SQLite safety backup created: %s", path)
         except Exception:
@@ -493,7 +502,11 @@ async def main() -> None:
     logging.getLogger(__name__).info("Persistent SQLite path: %s", config.db_path)
 
     try:
-        backup_path = await asyncio.to_thread(create_persistent_backup, config.db_path)
+        backup_path = await asyncio.to_thread(
+            create_persistent_backup,
+            config.db_path,
+            backup_dir=config.backup_dir or None,
+        )
         if backup_path:
             logging.getLogger(__name__).info(
                 "SQLite startup backup created: %s",
@@ -504,7 +517,26 @@ async def main() -> None:
             "Could not create SQLite startup backup"
         )
 
-    backup_task = asyncio.create_task(database_backup_loop(config.db_path))
+    if config.backup_dir:
+        try:
+            db_root = Path(config.db_path).resolve().parent
+            backup_root = Path(config.backup_dir).expanduser().resolve()
+            if backup_root == db_root or db_root in backup_root.parents:
+                logging.getLogger(__name__).warning(
+                    "BACKUP_DIR is on the same filesystem tree as DB_PATH; "
+                    "mount a separate persistent volume for real disaster recovery"
+                )
+        except OSError:
+            pass
+    else:
+        logging.getLogger(__name__).warning(
+            "BACKUP_DIR is not configured; SQLite backups remain beside the main DB "
+            "and will not survive loss of the database volume"
+        )
+
+    backup_task = asyncio.create_task(
+        database_backup_loop(config.db_path, config.backup_dir)
+    )
 
     bot = Bot(
         token=config.bot_token,
