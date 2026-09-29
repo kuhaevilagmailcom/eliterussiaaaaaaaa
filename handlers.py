@@ -2336,6 +2336,62 @@ def build_router(
             word = "дней"
         return f"{value} {word}"
 
+    async def notify_purchase_admins(
+        bot,
+        *,
+        buyer_id: int,
+        target_id: int,
+        code: str,
+        method: str,
+        amount: int,
+    ) -> None:
+        recipients = set(int(value) for value in config.admin_ids)
+        try:
+            recipients.update(
+                int(item["telegram_id"])
+                for item in await db.list_admin_roles()
+            )
+        except Exception:
+            logger.exception("Could not load purchase admin recipients")
+
+        try:
+            buyer = await db.get_user(int(buyer_id))
+        except KeyError:
+            buyer = {"telegram_id": buyer_id}
+        buyer_name = (
+            f"@{buyer['username']}"
+            if buyer.get("username")
+            else str(buyer_id)
+        )
+        plan_name = PLANS.get(code, {}).get("name") or (
+            "Доп. устройство" if code == DEVICE_PRODUCT_CODE else code
+        )
+        price = f"{amount} ₽" if method == "СБП" else f"{amount} ⭐"
+        gift_line = (
+            f"\n🎁 Получатель: <code>{target_id}</code>"
+            if int(target_id) != int(buyer_id)
+            else ""
+        )
+        text = (
+            "💳 <b>Новая оплата MGN VPN</b>\n\n"
+            f"Покупатель: <b>{html.escape(str(buyer_name))}</b> · <code>{buyer_id}</code>\n"
+            f"Тариф: <b>{html.escape(str(plan_name))}</b>\n"
+            f"Способ: <b>{method}</b>\n"
+            f"Сумма: <b>{price}</b>"
+            f"{gift_line}"
+        )
+        for admin_id in sorted(recipients):
+            try:
+                await bot.send_message(admin_id, text)
+            except (TelegramForbiddenError, TelegramBadRequest):
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "Could not notify admin %s about purchase: %s",
+                    admin_id,
+                    type(exc).__name__,
+                )
+
     async def notify_subscription_granted(bot, user: dict[str, Any], days: int) -> None:
         telegram_id = int(user["telegram_id"])
         device_limit = max(1, min(MAX_DEVICES, int(user.get("max_devices") or BASE_DEVICES)))
@@ -2877,6 +2933,14 @@ def build_router(
                     str(intent["product_code"]),
                     f"stars:{charge_id}",
                 )
+                await notify_purchase_admins(
+                    message.bot,
+                    buyer_id=message.from_user.id,
+                    target_id=int(intent["target_telegram_id"]),
+                    code=str(intent["product_code"]),
+                    method="Stars",
+                    amount=int(payment.total_amount),
+                )
             await show_home(message, message.from_user, force_new=True)
             await refresh_main_keyboard(message, message.from_user)
             return
@@ -3056,6 +3120,14 @@ def build_router(
                     updated = await grant_paid_device_slot(
                         callback.from_user.id
                     )
+                    await notify_purchase_admins(
+                        callback.bot,
+                        buyer_id=callback.from_user.id,
+                        target_id=callback.from_user.id,
+                        code=DEVICE_PRODUCT_CODE,
+                        method="СБП",
+                        amount=int(local["amount_rub"]),
+                    )
                     if updated is None:
                         await safe_callback_answer(callback, 
                             "Оплата получена, но слот не добавлен. Напишите в поддержку.",
@@ -3077,6 +3149,14 @@ def build_router(
                     target_telegram_id=target_id,
                     code=code,
                     payment_event_key=f"sbp:{payment_id}",
+                )
+                await notify_purchase_admins(
+                    callback.bot,
+                    buyer_id=callback.from_user.id,
+                    target_id=target_id,
+                    code=code,
+                    method="СБП",
+                    amount=int(local["amount_rub"]),
                 )
 
             await safe_callback_answer(callback, "Оплата получена")
@@ -3269,17 +3349,18 @@ def build_router(
         )
         kb.row(
             blue_inline_button("💳 Платежи", callback_data="admin:payments"),
+            blue_inline_button("📈 Бизнес", callback_data="admin:business"),
         )
         kb.row(
             blue_inline_button("Обращения", callback_data="admin:support", icon_index=6),
+        )
+        kb.row(
+            blue_inline_button("🌐 Серверы VPN", callback_data="admin:servers"),
         )
         if role in {"owner", "full"}:
             kb.row(
                 blue_inline_button("🎟 Промокоды", callback_data="admin:bonuses"),
                 blue_inline_button("⚙️ Система", callback_data="admin:system"),
-            )
-            kb.row(
-                blue_inline_button("🌐 Серверы VPN", callback_data="admin:servers"),
             )
             kb.row(
                 blue_inline_button("📣 Рассылка", callback_data="admin:broadcast:start"),
@@ -3522,6 +3603,78 @@ def build_router(
                 f"• {format_joined(item.get('created_at'))} — "
                 f"{html.escape(str(name))} · <code>{uid}</code>"
             )
+
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
+        )
+
+    async def show_admin_business(message: Message, actor) -> None:
+        role = await get_admin_role(actor.id)
+        if not role:
+            return
+
+        data = await db.business_analytics()
+        anonchat = await db.attribution_stats("anonchat_mgn")
+        pozor = await db.attribution_stats("pozor_mgn")
+        total_month = data["new_month"] + data["renew_month"]
+        renewal_share = (
+            data["renew_month"] * 100.0 / total_month
+            if total_month
+            else 0.0
+        )
+
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:business"))
+        kb.row(blue_inline_button("🌐 Серверы", callback_data="admin:servers"))
+        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
+
+        lines = [
+            "📈 <b>Бизнес MGN VPN</b>",
+            "",
+            "💰 <b>Выручка</b>",
+            f"├ 24 часа — <b>{data['rub_day']} ₽</b> · <b>{data['stars_day']} ⭐</b>",
+            f"├ 7 дней — <b>{data['rub_week']} ₽</b> · <b>{data['stars_week']} ⭐</b>",
+            f"└ 30 дней — <b>{data['rub_month']} ₽</b> · <b>{data['stars_month']} ⭐</b>",
+            "",
+            "🧾 <b>Покупки · 30 дней</b>",
+            f"├ Новые — <b>{data['new_month']}</b>",
+            f"├ Продления — <b>{data['renew_month']}</b>",
+            f"├ Доля продлений — <b>{renewal_share:.1f}%</b>",
+            f"├ Средний чек СБП — <b>{data['avg_rub_month']:.0f} ₽</b>",
+            f"└ Средний чек Stars — <b>{data['avg_stars_month']:.0f} ⭐</b>",
+            "",
+            "⏳ <b>Истекают подписки</b>",
+            f"├ В течение 1 дня — <b>{data['expires_1d']}</b>",
+            f"├ В течение 3 дней — <b>{data['expires_3d']}</b>",
+            f"└ В течение 7 дней — <b>{data['expires_7d']}</b>",
+            "",
+            "📣 <b>Источники</b>",
+            f"├ anonchat_mgn — <b>{anonchat['buyers']}/{anonchat['arrived']}</b> · {anonchat['conversion']:.1f}%",
+            f"└ pozor_mgn — <b>{pozor['buyers']}/{pozor['arrived']}</b> · {pozor['conversion']:.1f}%",
+            "",
+            "👥 <b>Рефералы</b>",
+            f"├ Приглашено — <b>{data['referrals_invited']}</b>",
+            f"├ Квалифицировано — <b>{data['referrals_qualified']}</b>",
+            f"└ Награждено — <b>{data['referrals_rewarded']}</b>",
+        ]
+
+        promos = list(data.get("promos") or [])
+        if promos:
+            lines += ["", "🎟 <b>Промокоды</b>"]
+            for item in promos:
+                lines.append(
+                    f"• <code>{html.escape(str(item['code']))}</code> — "
+                    f"<b>{int(item.get('used_count') or 0)}</b> активаций · "
+                    f"<b>{int(item.get('users') or 0)}</b> чел."
+                )
+
+        lines += [
+            "",
+            "<i>Рубли и Telegram Stars показаны отдельно, без искусственного пересчёта.</i>",
+        ]
 
         await send_screen(
             message,
@@ -3797,12 +3950,12 @@ def build_router(
         await send_screen(message, actor, text, reply_markup=kb.as_markup())
 
     async def show_admin_servers(message: Message, actor) -> None:
-        if not await has_full_admin_access(actor.id):
+        if not await has_admin_access(actor.id):
             return
 
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("🔄 Проверить ещё раз", callback_data="admin:servers"))
-        kb.row(blue_inline_button("⬅️ Система", callback_data="admin:system"))
+        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
 
         try:
             sample_users = await db.list_active_users_for_vpn_sync(limit=1)
@@ -4405,6 +4558,15 @@ def build_router(
         await safe_callback_answer(callback, )
         if callback.message:
             await show_admin_stats(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:business")
+    async def admin_business_callback(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_admin_business(callback.message, callback.from_user)
 
     @router.callback_query(F.data == "admin:giveaways")
     async def admin_giveaways_callback(callback: CallbackQuery) -> None:
