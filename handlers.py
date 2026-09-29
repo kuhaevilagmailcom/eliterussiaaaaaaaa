@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
 import html
 import json
 import logging
@@ -35,6 +36,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from PIL import Image
 
+from admin_notify import notify_all_admins, notify_purchase
 from catalog import (
     BASE_DEVICES,
     DEVICE_PRODUCT_CODE,
@@ -853,7 +855,9 @@ def build_router(
         return bool(await get_admin_role(user_id))
 
     async def has_full_admin_access(user_id: int) -> bool:
-        return (await get_admin_role(user_id)) in {"owner", "full"}
+        # Every granted admin receives the complete operational panel.
+        # Owner-only checks are kept separately for granting/removing admins.
+        return await has_admin_access(user_id)
 
     def is_owner(user_id: int) -> bool:
         return user_id in config.admin_ids
@@ -3252,7 +3256,7 @@ def build_router(
         return {
             "owner": "Владелец",
             "full": "Полная",
-            "limited": "Ограниченная",
+            "limited": "Администратор",
         }.get(role or "", "Нет")
 
     def format_joined(value: str | None) -> str:
