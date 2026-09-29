@@ -109,11 +109,13 @@ async def send_giveaway_post(
     bot,
     giveaway: dict[str, Any],
     chat_id: str | int,
+    *,
+    display_tz=None,
 ):
     text = render_giveaway_post(
         giveaway,
         participant_count=int(giveaway.get("participant_count") or 0),
-        display_tz=None,
+        display_tz=display_tz,
     )
     markup = giveaway_keyboard(int(giveaway["id"]))
     photo = str(giveaway.get("photo_file_id") or "").strip()
