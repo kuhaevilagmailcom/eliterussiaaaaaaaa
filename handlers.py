@@ -1574,6 +1574,40 @@ def build_router(
         if callback.message:
             await show_profile(callback.message, callback.from_user)
 
+    @router.callback_query(F.data == "profile:payments")
+    async def profile_payments_callback(callback: CallbackQuery) -> None:
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_user_payment_history(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "profile:access-history")
+    async def profile_access_history_callback(callback: CallbackQuery) -> None:
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_user_access_history(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "profile:servers")
+    async def profile_servers_callback(callback: CallbackQuery) -> None:
+        await safe_callback_answer(callback, "Проверяю серверы…")
+        if callback.message:
+            await show_user_server_status(callback.message, callback.from_user)
+
+    @router.callback_query(F.data.regexp(r"^profile:country:[a-z0-9]+$"))
+    async def profile_country_callback(callback: CallbackQuery) -> None:
+        country = callback.data.rsplit(":", 1)[-1]
+        try:
+            updated = await db.set_preferred_country(callback.from_user.id, country)
+        except ValueError:
+            await safe_callback_answer(callback, "Неизвестная страна", show_alert=True)
+            return
+        await safe_callback_answer(callback, "Сохранено")
+        try:
+            await asyncio.wait_for(provider.provision(updated), timeout=6.0)
+        except Exception:
+            pass
+        if callback.message:
+            await show_user_server_status(callback.message, callback.from_user)
+
     @router.callback_query(F.data == "menu:connect")
     async def menu_connect(callback: CallbackQuery) -> None:
         await safe_callback_answer(callback, )
@@ -5385,6 +5419,15 @@ def build_router(
         await safe_callback_answer(callback, )
         if callback.message:
             await show_admin_bonuses(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:analytics")
+    async def admin_analytics_callback(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_admin_analytics(callback.message, callback.from_user)
 
     @router.callback_query(F.data == "admin:system")
     async def admin_system_callback(callback: CallbackQuery) -> None:
