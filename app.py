@@ -312,6 +312,75 @@ def make_provider(config: Config) -> VpnProvider:
     )
 
 
+async def _admin_recipients(config: Config, db: Database) -> set[int]:
+    recipients = {int(value) for value in config.admin_ids}
+    try:
+        recipients.update(
+            int(item["telegram_id"])
+            for item in await db.list_admin_roles()
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("Could not load admin recipients")
+    return {value for value in recipients if value > 0}
+
+
+async def server_status_alert_loop(
+    bot: Bot,
+    config: Config,
+    db: Database,
+    provider: VpnProvider,
+) -> None:
+    """Notify every admin when a known VPN server changes state."""
+    logger = logging.getLogger(__name__)
+    previous: dict[str, bool] | None = None
+
+    while True:
+        try:
+            report = await asyncio.wait_for(
+                provider.server_diagnostics(),
+                timeout=15.0,
+            )
+            servers = list(report.get("servers") or [])
+            current: dict[str, bool] = {}
+            labels: dict[str, str] = {}
+            for index, item in enumerate(servers, start=1):
+                key = str(item.get("id") or item.get("host") or f"server-{index}")
+                current[key] = bool(item.get("available"))
+                labels[key] = str(item.get("name") or key)
+
+            if previous is not None:
+                changes = [
+                    key
+                    for key, state in current.items()
+                    if key in previous and previous[key] != state
+                ]
+                if changes:
+                    lines = ["🌐 <b>Изменение статуса серверов MGN VPN</b>", ""]
+                    for key in changes:
+                        state = current[key]
+                        lines.append(
+                            f"{'✅' if state else '❌'} <b>{labels[key]}</b> — "
+                            f"{'снова онлайн' if state else 'недоступен'}"
+                        )
+                    lines += ["", "<i>Уведомление получили все администраторы.</i>"]
+                    text = "\n".join(lines)
+                    for admin_id in sorted(await _admin_recipients(config, db)):
+                        try:
+                            await bot.send_message(admin_id, text)
+                        except Exception as exc:
+                            logger.warning(
+                                "Could not send server alert to admin %s: %s",
+                                admin_id,
+                                type(exc).__name__,
+                            )
+
+            previous = current
+        except Exception as exc:
+            logger.warning("Server status alert pass failed: %s", type(exc).__name__)
+
+        await asyncio.sleep(120)
+
+
 async def notify_admins_restarted(
     bot: Bot,
     config: Config,
@@ -410,6 +479,9 @@ async def main() -> None:
     miniapp = MiniAppServer(bot, config, db, provider)
     payment_task = asyncio.create_task(payment_reconciliation_loop(config, db, provider))
     expiry_task = asyncio.create_task(expiry_notification_loop(bot, db, config))
+    server_alert_task = asyncio.create_task(
+        server_status_alert_loop(bot, config, db, provider)
+    )
     giveaway_task = asyncio.create_task(
         giveaway_reconciliation_loop(bot, db, config, provider)
     )
@@ -452,6 +524,7 @@ async def main() -> None:
         backup_task.cancel()
         payment_task.cancel()
         expiry_task.cancel()
+        server_alert_task.cancel()
         giveaway_task.cancel()
         if federation_task:
             federation_task.cancel()
@@ -465,6 +538,10 @@ async def main() -> None:
             pass
         try:
             await expiry_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await server_alert_task
         except asyncio.CancelledError:
             pass
         try:
