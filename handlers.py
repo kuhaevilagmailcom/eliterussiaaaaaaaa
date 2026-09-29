@@ -5449,6 +5449,24 @@ def build_router(
         if callback.message:
             await show_admin_system(callback.message, callback.from_user)
 
+    @router.callback_query(F.data == "admin:maintenance:toggle")
+    async def admin_maintenance_toggle(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        enabled = await db.maintenance_enabled()
+        await db.set_setting(
+            "maintenance_mode",
+            "0" if enabled else "1",
+            updated_by=callback.from_user.id,
+        )
+        await safe_callback_answer(
+            callback,
+            "Продажи включены" if enabled else "Техработы включены",
+        )
+        if callback.message:
+            await show_admin_system(callback.message, callback.from_user)
+
     @router.callback_query(F.data == "admin:servers")
     async def admin_servers_callback(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
