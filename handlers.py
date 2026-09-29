@@ -3224,11 +3224,13 @@ def build_router(
                 logger.error("Rejected Stars payment intent %s", parts[1])
                 return
             charge_id = payment.telegram_payment_charge_id
+            intent_target_id = int(intent["target_telegram_id"])
+            before_purchase = await db.get_user(intent_target_id)
             try:
                 fresh_charge = await db.settle_star_payment(
                     telegram_payment_charge_id=charge_id,
                     buyer_telegram_id=message.from_user.id,
-                    target_telegram_id=int(intent["target_telegram_id"]),
+                    target_telegram_id=intent_target_id,
                     plan_code=str(intent["product_code"]),
                     stars=int(payment.total_amount),
                     intent_id=parts[1],
@@ -3238,11 +3240,27 @@ def build_router(
                 await message.answer("Платёж получен, но требует проверки. Напишите в поддержку.")
                 return
             if fresh_charge:
+                product_code = str(intent["product_code"])
                 await apply_paid_purchase(
                     message.from_user.id,
-                    int(intent["target_telegram_id"]),
-                    str(intent["product_code"]),
+                    intent_target_id,
+                    product_code,
                     f"stars:{charge_id}",
+                )
+                await notify_purchase(
+                    message.bot,
+                    db,
+                    config,
+                    buyer_id=message.from_user.id,
+                    target_id=intent_target_id,
+                    product_code=product_code,
+                    method="Telegram Stars",
+                    amount_text=f"{int(payment.total_amount)} ⭐",
+                    purchase_kind=(
+                        "Дополнительное устройство"
+                        if product_code == DEVICE_PRODUCT_CODE
+                        else "Продление" if is_active(before_purchase) else "Новая подписка"
+                    ),
                 )
             await show_home(message, message.from_user, force_new=True)
             await refresh_main_keyboard(message, message.from_user)
