@@ -191,7 +191,7 @@ async def payment_reconciliation_loop(config: Config, db: Database, provider: Vp
         await asyncio.sleep(60)
         if not config.rollypay_enabled:
             continue
-        for local in await db.list_sbp_for_reconciliation():
+        for local in await db.list_sbp_for_reconciliation(limit=100):
             payment_id = str(local["payment_id"])
             try:
                 remote = await get_payment(config, payment_id)
@@ -210,17 +210,54 @@ async def payment_reconciliation_loop(config: Config, db: Database, provider: Vp
                 if not valid:
                     logger.error("Payment reconciliation mismatch for local order %s", local["order_id"])
                     continue
+
                 if status == "paid" and str(local["status"]) != "paid":
                     if await db.settle_sbp_payment(payment_id):
-                        user = await db.get_user(int(local.get("target_telegram_id") or local["telegram_id"]))
+                        user = await db.get_user(
+                            int(local.get("target_telegram_id") or local["telegram_id"])
+                        )
                         try:
                             await asyncio.wait_for(provider.provision(user), 10.0)
                         except Exception as exc:
                             logger.warning("Payment provision deferred: %s", type(exc).__name__)
-                elif status in {"refunded", "chargeback", "canceled", "expired"}:
+
+                elif status in {"refunded", "chargeback"}:
+                    reversed_access = await db.reverse_sbp_access(payment_id, status)
+                    if reversed_access and reversed_access.get("changed"):
+                        target_id = int(reversed_access["target_telegram_id"])
+                        logger.warning(
+                            "SBP %s reversed for payment %s / user %s",
+                            status,
+                            payment_id,
+                            target_id,
+                        )
+                        try:
+                            user = await db.get_user(target_id)
+                            await asyncio.wait_for(provider.provision(user), 10.0)
+                        except Exception as exc:
+                            logger.warning(
+                                "Refund VPN sync deferred for %s: %s",
+                                target_id,
+                                type(exc).__name__,
+                            )
+
+                elif status in {"canceled", "expired"}:
                     await db.set_sbp_status(payment_id, status)
+
             except (RollyPayError, ValueError, KeyError) as exc:
-                logger.warning("Payment reconciliation failed for %s: %s", local["order_id"], type(exc).__name__)
+                logger.warning(
+                    "Payment reconciliation failed for %s: %s",
+                    local["order_id"],
+                    type(exc).__name__,
+                )
+            finally:
+                try:
+                    await db.mark_sbp_reconciled(payment_id)
+                except Exception:
+                    logger.exception(
+                        "Could not mark SBP reconciliation attempt for %s",
+                        payment_id,
+                    )
 
 
 async def sync_active_vpn_users_once(
