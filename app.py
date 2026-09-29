@@ -14,7 +14,8 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonCommands
 
 from config import Config
-from db import Database
+from db import Database, from_iso, utcnow
+from admin_notify import notify_all_admins, notify_purchase
 from emoji import EmojiBank, EmojiFallbackMiddleware
 from handlers import build_router
 from giveaway import giveaway_reconciliation_loop
@@ -185,7 +186,12 @@ async def expiry_notification_loop(bot: Bot, db: Database, config: Config) -> No
         await asyncio.sleep(60 * 60)
 
 
-async def payment_reconciliation_loop(config: Config, db: Database, provider: VpnProvider) -> None:
+async def payment_reconciliation_loop(
+    bot: Bot,
+    config: Config,
+    db: Database,
+    provider: VpnProvider,
+) -> None:
     logger = logging.getLogger(__name__)
     while True:
         await asyncio.sleep(60)
@@ -211,16 +217,113 @@ async def payment_reconciliation_loop(config: Config, db: Database, provider: Vp
                     logger.error("Payment reconciliation mismatch for local order %s", local["order_id"])
                     continue
                 if status == "paid" and str(local["status"]) != "paid":
+                    target_id = int(
+                        local.get("target_telegram_id") or local["telegram_id"]
+                    )
+                    before = await db.get_user(target_id)
                     if await db.settle_sbp_payment(payment_id):
-                        user = await db.get_user(int(local.get("target_telegram_id") or local["telegram_id"]))
+                        user = await db.get_user(target_id)
                         try:
                             await asyncio.wait_for(provider.provision(user), 10.0)
                         except Exception as exc:
                             logger.warning("Payment provision deferred: %s", type(exc).__name__)
+                        before_until = from_iso(before.get("subscription_until"))
+                        was_active = bool(before_until and before_until > utcnow())
+                        await notify_purchase(
+                            bot,
+                            db,
+                            config,
+                            buyer_id=int(local["telegram_id"]),
+                            target_id=target_id,
+                            product_code=str(local["plan_code"]),
+                            method="СБП",
+                            amount_text=f"{int(local['amount_rub'])} ₽",
+                            purchase_kind=(
+                                "Дополнительное устройство"
+                                if str(local["plan_code"]) == "device"
+                                else "Продление" if was_active else "Новая подписка"
+                            ),
+                            promo_code=str(local.get("promo_code") or "") or None,
+                        )
                 elif status in {"refunded", "chargeback", "canceled", "expired"}:
                     await db.set_sbp_status(payment_id, status)
             except (RollyPayError, ValueError, KeyError) as exc:
                 logger.warning("Payment reconciliation failed for %s: %s", local["order_id"], type(exc).__name__)
+
+
+async def server_status_alert_loop(
+    bot: Bot,
+    db: Database,
+    config: Config,
+    provider: VpnProvider,
+) -> None:
+    """Notify all admins only after a server state change is confirmed twice."""
+    logger = logging.getLogger(__name__)
+    stable: dict[str, bool] | None = None
+    pending: dict[str, tuple[bool, int]] = {}
+
+    while True:
+        try:
+            sample_users = await db.list_active_users_for_vpn_sync(limit=1)
+            sample = sample_users[0] if sample_users else None
+            report = await asyncio.wait_for(
+                provider.server_diagnostics(sample),
+                timeout=15.0,
+            )
+            current: dict[str, bool] = {}
+            labels: dict[str, str] = {}
+            for item in report.get("servers") or []:
+                key = str(
+                    item.get("catalog_id")
+                    or item.get("id")
+                    or item.get("name")
+                    or ""
+                ).strip()
+                if not key:
+                    continue
+                current[key] = bool(item.get("available"))
+                labels[key] = str(item.get("name") or key)
+
+            if stable is None:
+                stable = dict(current)
+            else:
+                for key, state in current.items():
+                    previous = stable.get(key)
+                    if previous is None:
+                        stable[key] = state
+                        continue
+                    if previous == state:
+                        pending.pop(key, None)
+                        continue
+                    pending_state, count = pending.get(key, (state, 0))
+                    count = count + 1 if pending_state == state else 1
+                    pending[key] = (state, count)
+                    if count < 2:
+                        continue
+
+                    stable[key] = state
+                    pending.pop(key, None)
+                    icon = "✅" if state else "❌"
+                    status = "снова доступен" if state else "стал недоступен"
+                    await notify_all_admins(
+                        bot,
+                        db,
+                        config,
+                        f"{icon} <b>Изменение VPN-сервера</b>\n\n"
+                        f"{labels.get(key, key)} — <b>{status}</b>.\n"
+                        "Пользовательские конфиги автоматически не удаляются.",
+                    )
+
+                for key in list(stable):
+                    if key not in current:
+                        # Missing discovery alone is not treated as an outage.
+                        pending.pop(key, None)
+        except Exception as exc:
+            logger.warning(
+                "Server status alert check failed: %s",
+                type(exc).__name__,
+            )
+        await asyncio.sleep(2 * 60)
 
 
 async def sync_active_vpn_users_once(
@@ -408,10 +511,15 @@ async def main() -> None:
     emoji = EmojiBank(config.emoji_packs)
     provider = make_provider(config)
     miniapp = MiniAppServer(bot, config, db, provider)
-    payment_task = asyncio.create_task(payment_reconciliation_loop(config, db, provider))
+    payment_task = asyncio.create_task(
+        payment_reconciliation_loop(bot, config, db, provider)
+    )
     expiry_task = asyncio.create_task(expiry_notification_loop(bot, db, config))
     giveaway_task = asyncio.create_task(
         giveaway_reconciliation_loop(bot, db, config, provider)
+    )
+    server_alert_task = asyncio.create_task(
+        server_status_alert_loop(bot, db, config, provider)
     )
     federation_task = (
         asyncio.create_task(vpn_federation_reconciliation_loop(db, provider, miniapp))
@@ -453,6 +561,7 @@ async def main() -> None:
         payment_task.cancel()
         expiry_task.cancel()
         giveaway_task.cancel()
+        server_alert_task.cancel()
         if federation_task:
             federation_task.cancel()
         try:
@@ -469,6 +578,10 @@ async def main() -> None:
             pass
         try:
             await giveaway_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await server_alert_task
         except asyncio.CancelledError:
             pass
         if federation_task:
