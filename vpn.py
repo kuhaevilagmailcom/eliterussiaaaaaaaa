@@ -1464,7 +1464,36 @@ class H1CloudVpnProvider(VpnProvider):
             len(links),
         )
         payload = ("\n".join(links) + "\n").encode("utf-8")
-        return base64.b64encode(payload), {}
+
+        # Happ reads traffic/expiry from subscription-userinfo. H1Cloud's
+        # client object already contains the canonical traffic counter, so
+        # expose it here without an extra state/devices request.
+        try:
+            used_gb = max(0.0, float((main or {}).get("traffic_used_gb") or 0))
+        except (TypeError, ValueError):
+            used_gb = 0.0
+        try:
+            limit_gb = max(
+                0.0,
+                float(
+                    (main or {}).get("traffic_limit_gb")
+                    or user.get("traffic_limit_gb")
+                    or 0
+                ),
+            )
+        except (TypeError, ValueError):
+            limit_gb = 0.0
+
+        used_bytes = int(used_gb * GB)
+        total_bytes = int(limit_gb * GB)
+        expire = max(0, self._desired_expiry(user))
+        metadata_headers = {
+            "subscription-userinfo": (
+                f"upload=0; download={used_bytes}; "
+                f"total={total_bytes}; expire={expire}"
+            ),
+        }
+        return base64.b64encode(payload), metadata_headers
 
     async def close(self) -> None:
         await self.session.close()
