@@ -23,4 +23,6 @@ def test_privacy_policy_covers_data_and_user_rights():
     assert "Какие данные обрабатываются" in policy
     assert "Права пользователя" in policy
     assert "не продаёт персональные данные" in policy
+    assert "розыгрыш" in policy.lower()
+    assert "Победитель #1" in policy
     assert "<script" not in policy.lower()

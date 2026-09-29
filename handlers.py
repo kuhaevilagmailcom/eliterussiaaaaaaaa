@@ -51,6 +51,7 @@ from config import Config
 from db import Database, from_iso, utcnow
 from emoji import EmojiBank
 from giveaway import (
+    cancel_giveaway,
     delete_giveaway,
     finish_giveaway,
     render_giveaway_post,
@@ -1429,6 +1430,7 @@ def build_router(
     @router.message(CommandStart())
     async def start(message: Message, command: CommandObject) -> None:
         user = await ensure_actor(message.from_user)
+        first_bot_start = await db.claim_first_bot_start(message.from_user.id)
         start_arg = str(command.args or "").strip().lower()
 
         campaign_source = (
@@ -1446,7 +1448,7 @@ def build_router(
 
         if start_arg.startswith("ref_"):
             raw = start_arg.removeprefix("ref_")
-            if raw.isdigit() and bool(user.get("_is_new")):
+            if raw.isdigit() and first_bot_start:
                 await db.set_referrer_once(
                     message.from_user.id,
                     int(raw),
@@ -1461,6 +1463,19 @@ def build_router(
                 "💳 <b>Продлить MGN VPN</b>\n\n"
                 "Выберите срок продления. Новый период прибавится к текущей подписке — оставшиеся дни не сгорят.",
                 reply_markup=plans_keyboard(config),
+                recover_on_edit_failure=True,
+                force_new=True,
+            )
+            return
+        if start_arg == "support":
+            e = emoji.icon(6, pack=PACK_NEWS)
+            await send_screen(
+                message,
+                message.from_user,
+                f"{e} <b>Поддержка</b>\n\n"
+                "Опишите проблему одним сообщением. Обращение получат администраторы; "
+                "в нём будут видны ваш username, Telegram ID, дата и время.",
+                reply_markup=support_keyboard(),
                 recover_on_edit_failure=True,
                 force_new=True,
             )
@@ -4022,8 +4037,7 @@ def build_router(
             lines += ["", "🏆 <b>Победители</b>"]
             for index, winner in enumerate(winners, start=1):
                 username = str(winner.get("username") or "").strip()
-                first_name = str(winner.get("first_name") or "").strip()
-                label = f"@{username}" if username else (first_name or f"Победитель #{index}")
+                label = f"@{username}" if username else f"Победитель #{index}"
                 lines.append(f"{index}. {html.escape(label)}")
         kb = InlineKeyboardBuilder()
         if str(item.get("status")) == "active":
@@ -4031,6 +4045,12 @@ def build_router(
                 blue_inline_button(
                     "🏁 Завершить сейчас",
                     callback_data=f"admin:giveaway:finish:{giveaway_id}",
+                )
+            )
+            kb.row(
+                blue_inline_button(
+                    "⚪ Отменить розыгрыш",
+                    callback_data=f"admin:giveaway:cancelrunconfirm:{giveaway_id}",
                 )
             )
         if str(item.get("status")) != "finishing":
@@ -4375,6 +4395,7 @@ def build_router(
                 end_mode=str(draft.get("end_mode") or ""),
                 ends_at=draft.get("ends_at"),
                 participant_limit=draft.get("participant_limit"),
+                activate=False,
             )
         except Exception as exc:
             logger.warning("Could not create giveaway: %s", type(exc).__name__)
@@ -4387,7 +4408,7 @@ def build_router(
             try:
                 sent = await send_giveaway_post(
                     callback.bot,
-                    giveaway,
+                    {**giveaway, "status": "active"},
                     channel,
                     display_tz=config.display_tz,
                 )
@@ -4403,9 +4424,19 @@ def build_router(
                 )
 
         if sent_count == 0:
-            await db.cancel_giveaway(int(giveaway["id"]))
+            await db.delete_giveaway(int(giveaway["id"]))
             await safe_callback_answer(callback, "Не удалось опубликовать ни в один канал.", show_alert=True)
             return
+
+        if not await db.activate_giveaway(int(giveaway["id"])):
+            await delete_giveaway(callback.bot, db, int(giveaway["id"]))
+            await safe_callback_answer(
+                callback,
+                "Публикация не активировалась. Посты удалены, подписки не затронуты.",
+                show_alert=True,
+            )
+            return
+        giveaway = await db.get_giveaway(int(giveaway["id"])) or giveaway
 
         await db.clear_support_session(callback.from_user.id)
         await safe_callback_answer(callback, "Розыгрыш запущен!")
@@ -4454,6 +4485,57 @@ def build_router(
             giveaway_id,
             force=True,
         )
+        await show_admin_giveaway(callback.message, callback.from_user, giveaway_id)
+
+    @router.callback_query(F.data.regexp(r"^admin:giveaway:cancelrunconfirm:\d+$"))
+    async def admin_giveaway_cancel_run_confirm(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        giveaway_id = int(callback.data.rsplit(":", 1)[-1])
+        item = await db.get_giveaway(giveaway_id)
+        if not item or str(item.get("status")) != "active":
+            await safe_callback_answer(callback, "Розыгрыш уже не активен.", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "Да, отменить",
+                callback_data=f"admin:giveaway:cancelrun:{giveaway_id}",
+            )
+        )
+        kb.row(
+            blue_inline_button(
+                "Назад",
+                callback_data=f"admin:giveaway:view:{giveaway_id}",
+                premium_icon=False,
+            )
+        )
+        await callback.message.answer(
+            f"⚪ <b>Отменить розыгрыш #{giveaway_id}?</b>\n\n"
+            "Пост останется в канале с пометкой «Розыгрыш отменён». "
+            "Победители не будут выбраны, подписки не будут выданы, история останется в базе.",
+            reply_markup=kb.as_markup(),
+        )
+
+    @router.callback_query(F.data.regexp(r"^admin:giveaway:cancelrun:\d+$"))
+    async def admin_giveaway_cancel_run(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        giveaway_id = int(callback.data.rsplit(":", 1)[-1])
+        await safe_callback_answer(callback, "Отменяю…")
+        changed = await cancel_giveaway(
+            callback.bot,
+            db,
+            config,
+            giveaway_id,
+        )
+        if changed:
+            await callback.message.answer(f"⚪ Розыгрыш #{giveaway_id} отменён.")
+        else:
+            await callback.message.answer("Розыгрыш уже не активен или не найден.")
         await show_admin_giveaway(callback.message, callback.from_user, giveaway_id)
 
     @router.callback_query(F.data.regexp(r"^admin:giveaway:deleteconfirm:\d+$"))
@@ -4702,6 +4784,22 @@ def build_router(
                 f"Завершение: {end_label}. Участников: {int(result.get('count') or 0)}."
             )
         await safe_callback_answer(callback, message_text, show_alert=True)
+        if state == "joined":
+            try:
+                await callback.bot.send_message(
+                    callback.from_user.id,
+                    message_text,
+                )
+            except (TelegramForbiddenError, TelegramBadRequest):
+                # A channel callback can arrive before the user has ever opened
+                # the bot privately. The callback alert still confirms entry.
+                pass
+            except Exception as exc:
+                logger.warning(
+                    "Could not send giveaway join confirmation to %s: %s",
+                    callback.from_user.id,
+                    type(exc).__name__,
+                )
         if result.get("due"):
             asyncio.create_task(
                 finish_giveaway(callback.bot, db, config, provider, giveaway_id)

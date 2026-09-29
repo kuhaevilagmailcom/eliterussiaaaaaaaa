@@ -13,6 +13,7 @@ import time
 from html import escape
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qsl, quote
 from uuid import uuid4
 
@@ -188,6 +189,10 @@ class MiniAppServer:
     ) -> None:
         try:
             self._subscription_cache_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                self._subscription_cache_dir.chmod(0o700)
+            except OSError:
+                pass
             path = self._subscription_cache_path(token)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(
@@ -201,7 +206,15 @@ class MiniAppServer:
                 ),
                 encoding="utf-8",
             )
+            try:
+                tmp.chmod(0o600)
+            except OSError:
+                pass
             tmp.replace(path)
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
         except Exception:
             logger.exception("Could not persist subscription cache")
 
@@ -479,7 +492,7 @@ class MiniAppServer:
             username = "mgnvpn_bot"
 
         renew_url = f"https://t.me/{username}?start=renew"
-        support_url = renew_url
+        support_url = f"https://t.me/{username}?start=support"
         announce_text = (
             "Если VPN не работает — нажмите 🔄. "
             f"Поддержка и продление подписки — в боте @{username}."
@@ -574,15 +587,47 @@ class MiniAppServer:
         return web.FileResponse(index, headers={"Cache-Control": "no-store"})
 
     async def health(self, request: web.Request) -> web.Response:
+        """Process liveness only. Do not restart a healthy bot during a provider outage."""
         return web.json_response(
             {
                 "ok": True,
                 "service": "MGN VPN Mini App",
                 "build": "mgn-vpn",
-                "vpn_mode": "ready" if getattr(self.provider, "service_ready", True) else "unavailable",
-                "vpn_ready": bool(getattr(self.provider, "service_ready", True)),
+                "provider_mode": str(getattr(self.provider, "mode_name", "vpn")),
+                "provider_configured": bool(getattr(self.provider, "service_ready", True)),
+                "readiness_url": "/api/miniapp/ready",
             }
         )
+
+    async def readiness(self, request: web.Request) -> web.Response:
+        """Real dependency readiness for diagnostics; Docker liveness does not use it."""
+        db_ok = await self.db.ping()
+
+        provider_ok = False
+        provider_detail: dict[str, Any] = {}
+        if getattr(self.provider, "service_ready", True):
+            try:
+                raw = await asyncio.wait_for(self.provider.health(), timeout=2.5)
+                provider_detail = dict(raw or {}) if isinstance(raw, dict) else {}
+                if "ok" in provider_detail:
+                    provider_ok = bool(provider_detail.get("ok"))
+                else:
+                    status = str(provider_detail.get("status") or "").strip().lower()
+                    provider_ok = status in {"ok", "healthy", "ready", "up"} or not status
+            except Exception as exc:
+                provider_detail = {"error": type(exc).__name__}
+                provider_ok = False
+
+        payload = {
+            "ok": bool(db_ok and provider_ok),
+            "database_ready": bool(db_ok),
+            "vpn_ready": bool(provider_ok),
+            "provider_mode": str(getattr(self.provider, "mode_name", "vpn")),
+            "sbp_configured": bool(self.config.rollypay_enabled),
+        }
+        if provider_detail:
+            payload["provider"] = provider_detail
+        return web.json_response(payload, status=200 if payload["ok"] else 503)
 
     async def public_catalog(self, request: web.Request) -> web.Response:
         return web.json_response(
@@ -795,20 +840,6 @@ class MiniAppServer:
                 load_payload(),
                 14.0,
             )
-            if persistent_cached and time.time() - float(persistent_cached["created_at"]) <= 86400.0:
-                extract = getattr(self.provider, "_subscription_vless_links", None)
-                if callable(extract):
-                    current_links = list(extract(body))
-                    previous_links = list(extract(persistent_cached["body"]))
-                    if len(previous_links) > len(current_links):
-                        merged = list(dict.fromkeys([*current_links, *previous_links]))
-                        body, count = prettify_subscription_payload(
-                            ("\n".join(merged) + "\n").encode("utf-8")
-                        )
-                        logger.warning(
-                            "Subscription rebuild returned fewer nodes for %s; preserved %s cached node(s)",
-                            user["telegram_id"], len(previous_links) - len(current_links),
-                        )
             if count < 1:
                 raise RuntimeError("H1Cloud subscription contains no VLESS nodes")
 
@@ -1555,6 +1586,7 @@ class MiniAppServer:
         app.router.add_get("/sub/{token}", self.subscription)
         app.router.add_get("/client/{client}/{token}", self.client_redirect)
         app.router.add_get("/api/miniapp/health", self.health)
+        app.router.add_get("/api/miniapp/ready", self.readiness)
         app.router.add_get("/api/public/catalog", self.public_catalog)
         app.router.add_post("/api/public/payment", self.public_payment_create)
         app.router.add_get(

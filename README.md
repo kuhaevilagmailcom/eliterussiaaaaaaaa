@@ -6,11 +6,10 @@ Telegram VPN-сервис с ботом, Mini App, персональными su
 
 | Период | Цена |
 |---|---:|
-| 7 дней | 59 ₽ |
-| 1 месяц | 100 ₽ |
-| 3 месяца | 349 ₽ |
-| 6 месяцев | 599 ₽ |
-| 1 год | 1200 ₽ |
+| 1 месяц | 99 ₽ |
+| 3 месяца | 249 ₽ |
+| 6 месяцев | 499 ₽ |
+| 1 год | 999 ₽ |
 
 В каждый тариф включено одно устройство. Дополнительный постоянный слот стоит 100 ₽, сохраняется при продлении и увеличивает лимит максимум до пяти устройств.
 
@@ -40,7 +39,7 @@ python main.py
 
 Скопируйте `.env.example` в локальный `.env` и заполните значения. `.env` не хранится в Git.
 
-Ключевые переменные: `BOT_TOKEN`, `ADMIN_IDS`, `DB_PATH`, `DOMAIN` или `MINIAPP_URL`, `VPN_MODE=h1cloud`, `H1_API_URL`, `H1_API_TOKEN`, `H1_SUBSCRIPTION_TEMPLATE`, параметры `ROLLYPAY_*` и `EMOJI_PACKS=NewsEmoji`.
+Ключевые переменные: `BOT_TOKEN`, `ADMIN_IDS`, `DB_PATH`, `VPN_MODE=h1cloud`, `H1_API_URL`, `H1_API_TOKEN`, `H1_SUBSCRIPTION_TEMPLATE`, параметры `ROLLYPAY_*` и `EMOJI_PACKS=NewsEmoji`. Публичные адреса Mini App и subscription закреплены за `mgnvpn.ru` и не берутся из окружения.
 
 Не включайте реальные токены в `.env.example`, логи или репозиторий.
 

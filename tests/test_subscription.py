@@ -353,3 +353,33 @@ def test_h1_subscription_revalidates_redirect_destination():
         assert provider._validate_subscription_url.await_count == 2
 
     asyncio.run(scenario())
+
+
+def test_h1_smart_selection_preserves_transient_probe_failures():
+    async def run():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider._endpoint_failure_streak = {
+            ("de.example", 443): 1,
+            ("nl.example", 443): 0,
+        }
+
+        async def probe(host, port):
+            return 25.0 if host == "nl.example" else None
+
+        provider._probe_vless_endpoint = probe
+        links = [
+            "vless://uuid@de.example:443#DE",
+            "vless://uuid@nl.example:443#NL",
+        ]
+        ranked = await provider._rank_live_vless_links(links)
+        assert len(ranked) == 2
+        assert "@nl.example:443" in ranked[0]
+        assert any("@de.example:443" in item for item in ranked)
+
+        provider._endpoint_failure_streak[("de.example", 443)] = 3
+        ranked = await provider._rank_live_vless_links(links)
+        assert len(ranked) == 2
+        assert "@nl.example:443" in ranked[0]
+        assert any("@de.example:443" in item for item in ranked)
+
+    asyncio.run(run())

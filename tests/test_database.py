@@ -604,3 +604,39 @@ def test_support_close_is_compatible_with_legacy_status_constraint(tmp_path):
         assert answered and answered["status"] == "answered"
 
     run(scenario())
+
+
+def test_first_bot_start_is_distinct_from_other_user_creation(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "first-start.sqlite3"))
+        await db.init()
+        await db.ensure_user(501, "giveaway_user", "User")
+        assert await db.claim_first_bot_start(501)
+        assert not await db.claim_first_bot_start(501)
+
+    run(scenario())
+
+
+def test_giveaway_can_be_staged_before_channel_publication(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "giveaway-stage.sqlite3"))
+        await db.init()
+        await db.ensure_user(1, "owner", "Owner")
+        item = await db.create_giveaway(
+            created_by=1,
+            text_html="Test",
+            text_plain="Test",
+            photo_file_id=None,
+            winners_count=1,
+            prize_days=30,
+            end_mode="participants",
+            participant_limit=5,
+            activate=False,
+        )
+        assert item["status"] == "cancelled"
+        assert not await db.activate_giveaway(int(item["id"]))
+        await db.add_giveaway_post(int(item["id"]), "@test_channel", 99)
+        assert await db.activate_giveaway(int(item["id"]))
+        assert (await db.get_giveaway(int(item["id"])))["status"] == "active"
+
+    run(scenario())

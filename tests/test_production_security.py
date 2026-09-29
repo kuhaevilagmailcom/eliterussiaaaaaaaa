@@ -132,6 +132,14 @@ def test_http_security_routes_and_subscription(tmp_path, monkeypatch):
             assert 'Политика конфиденциальности' in await privacy.text()
             assert all(f'{price} ₽' in root_html for price in (99,249,499,999))
             assert 'bottomNav' in await app.text()
+            health_response = await client.get('/api/miniapp/health')
+            assert health_response.status == 200
+            health_payload = await health_response.json()
+            assert health_payload["ok"] is True
+            assert health_payload["readiness_url"] == "/api/miniapp/ready"
+            ready_response = await client.get('/api/miniapp/ready')
+            assert ready_response.status == 503
+
             catalog_response = await client.get('/api/public/catalog')
             assert catalog_response.status == 200
             catalog = await catalog_response.json()
@@ -567,7 +575,10 @@ def test_restart_notice_is_sent_once_to_all_admins():
             admin_ids=(1, 2),
             display_tz=timezone.utc,
         )
-        provider = SimpleNamespace(service_ready=True)
+        provider = SimpleNamespace(
+            service_ready=True,
+            health=AsyncMock(return_value={"ok": True}),
+        )
 
         await notify_admins_restarted(bot, config, db, provider)
 

@@ -333,11 +333,21 @@ async def notify_admins_restarted(
         return
 
     started_at = datetime.now(config.display_tz).strftime("%d.%m.%Y · %H:%M:%S")
-    vpn_status = (
-        "работает"
-        if getattr(provider, "service_ready", True)
-        else "ожидает подключения"
-    )
+    vpn_status = "ожидает подключения"
+    if getattr(provider, "service_ready", True):
+        try:
+            health = await asyncio.wait_for(provider.health(), timeout=2.5)
+            if isinstance(health, dict) and "ok" in health:
+                provider_ok = bool(health.get("ok"))
+            else:
+                provider_ok = True
+            vpn_status = "работает" if provider_ok else "недоступен"
+        except Exception as exc:
+            vpn_status = "недоступен"
+            logger.warning(
+                "Provider readiness check failed during startup: %s",
+                type(exc).__name__,
+            )
     text = (
         "♻️ <b>MGN VPN перезапущен</b>\n\n"
         f"🕒 <b>Время:</b> {started_at}\n"
