@@ -17,6 +17,7 @@ from config import Config
 from db import Database
 from emoji import EmojiBank, EmojiFallbackMiddleware
 from handlers import build_router
+from giveaway import giveaway_reconciliation_loop
 from miniapp import MiniAppServer
 from payments import RollyPayError, get_payment
 from vpn import (
@@ -399,6 +400,9 @@ async def main() -> None:
     miniapp = MiniAppServer(bot, config, db, provider)
     payment_task = asyncio.create_task(payment_reconciliation_loop(config, db, provider))
     expiry_task = asyncio.create_task(expiry_notification_loop(bot, db, config))
+    giveaway_task = asyncio.create_task(
+        giveaway_reconciliation_loop(bot, db, config, provider)
+    )
     federation_task = (
         asyncio.create_task(vpn_federation_reconciliation_loop(db, provider, miniapp))
         if config.vpn_mode == "h1cloud"
@@ -438,6 +442,7 @@ async def main() -> None:
         backup_task.cancel()
         payment_task.cancel()
         expiry_task.cancel()
+        giveaway_task.cancel()
         if federation_task:
             federation_task.cancel()
         try:
@@ -450,6 +455,10 @@ async def main() -> None:
             pass
         try:
             await expiry_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await giveaway_task
         except asyncio.CancelledError:
             pass
         if federation_task:
