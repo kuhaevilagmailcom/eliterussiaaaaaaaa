@@ -103,10 +103,13 @@ def prettify_subscription_payload(payload: bytes) -> tuple[bytes, int]:
         if line.lower().startswith("vless://"):
             label = _location_label(line)
             if label:
-                used_labels[label] = used_labels.get(label, 0) + 1
-                suffix = used_labels[label]
+                base_label = label
+                used_labels[base_label] = used_labels.get(base_label, 0) + 1
+                suffix = used_labels[base_label]
                 if suffix > 1:
                     label = f"{label} · {suffix}"
+                if count == 0:
+                    label = f"⚡ Рекомендуемый · {label}"
                 line = line.split("#", 1)[0] + "#" + quote(label, safe="")
             count += 1
         output.append(line)
@@ -1297,6 +1300,105 @@ class H1CloudVpnProvider(VpnProvider):
         data = await self._request("GET", "/health")
         return dict(data or {})
 
+    async def _probe_vless_endpoint(self, host: str, port: int) -> float | None:
+        """Return TCP connect latency in ms, or None when the endpoint is unavailable."""
+        endpoint = (str(host).lower().rstrip("."), int(port))
+        loop = asyncio.get_running_loop()
+        cache = getattr(self, "_endpoint_health_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._endpoint_health_cache = cache
+
+        now = loop.time()
+        cached = cache.get(endpoint)
+        if cached and now - float(cached[0]) <= 20.0:
+            return cached[1]
+
+        latency: float | None = None
+        for timeout in (0.9, 1.4):
+            writer = None
+            try:
+                started = loop.time()
+                _reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(endpoint[0], endpoint[1]),
+                    timeout=timeout,
+                )
+                latency = max(0.1, (loop.time() - started) * 1000.0)
+                break
+            except (OSError, asyncio.TimeoutError):
+                continue
+            finally:
+                if writer is not None:
+                    writer.close()
+                    try:
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+
+        cache[endpoint] = (loop.time(), latency)
+        if len(cache) > 128:
+            cutoff = loop.time() - 120.0
+            self._endpoint_health_cache = {
+                key: value
+                for key, value in cache.items()
+                if float(value[0]) >= cutoff
+            }
+        return latency
+
+    async def _rank_live_vless_links(self, links: list[str]) -> list[str]:
+        """Drop unreachable VLESS endpoints and put the lowest-latency endpoint first."""
+        parsed_links: list[tuple[int, str, tuple[str, int] | None]] = []
+        endpoints: set[tuple[str, int]] = set()
+        for index, link in enumerate(links):
+            endpoint: tuple[str, int] | None = None
+            try:
+                parsed = urlsplit(link)
+                host = parsed.hostname
+                port = parsed.port
+                if host and port:
+                    endpoint = (host, int(port))
+                    endpoints.add(endpoint)
+            except (TypeError, ValueError):
+                endpoint = None
+            parsed_links.append((index, link, endpoint))
+
+        if not endpoints:
+            return links
+
+        endpoint_list = list(endpoints)
+        latencies = await asyncio.gather(
+            *(self._probe_vless_endpoint(host, port) for host, port in endpoint_list),
+            return_exceptions=False,
+        )
+        latency_by_endpoint = dict(zip(endpoint_list, latencies))
+
+        live: list[tuple[float, int, str]] = []
+        for index, link, endpoint in parsed_links:
+            if endpoint is None:
+                continue
+            latency = latency_by_endpoint.get(endpoint)
+            if latency is not None:
+                live.append((float(latency), index, link))
+
+        if not live:
+            # Do not return an empty subscription if the hosting network itself
+            # temporarily cannot probe outbound endpoints.
+            logger.warning(
+                "H1Cloud endpoint health probes all failed; preserving %s candidate link(s)",
+                len(links),
+            )
+            return links
+
+        live.sort(key=lambda item: (item[0], item[1]))
+        removed = len(links) - len(live)
+        logger.info(
+            "H1Cloud smart selection: %s live link(s), %s removed, best %.0f ms",
+            len(live),
+            removed,
+            live[0][0],
+        )
+        return [item[2] for item in live]
+
     async def fetch_subscription(
         self,
         user: dict[str, Any],
@@ -1454,6 +1556,9 @@ class H1CloudVpnProvider(VpnProvider):
                     add_many(task.result())
                 except Exception:
                     pass
+
+        if links:
+            links = await self._rank_live_vless_links(links)
 
         if not links:
             raise RuntimeError("H1Cloud returned no VLESS links")
