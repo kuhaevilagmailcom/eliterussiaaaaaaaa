@@ -3931,7 +3931,14 @@ def build_router(
         rolly_mode = "тест" if config.rollypay_test_mode else "боевой"
         vpn_ready = "✅" if getattr(provider, "service_ready", True) else "⚠️"
 
+        maintenance = await db.maintenance_enabled()
         kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "🟢 Продажи включены" if not maintenance else "🟠 Техработы включены",
+                callback_data="admin:maintenance:toggle",
+            )
+        )
         kb.row(blue_inline_button("🌐 Серверы VPN", callback_data="admin:servers"))
         kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:system"))
         kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
