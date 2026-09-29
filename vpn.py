@@ -1601,6 +1601,62 @@ class H1CloudVpnProvider(VpnProvider):
             ]
             discovery_error = ", ".join(dict.fromkeys(errors)) or "federation unavailable"
 
+        # Админка должна показывать полный каталог MGN VPN всегда, даже когда
+        # H1 federation временно не отдал узел или его проверка ушла в timeout.
+        # Доступность влияет только на статус, но никогда не скрывает сервер.
+        canonical: dict[str, dict[str, Any]] = {
+            code: {
+                "kind": "main" if code == "nl" else "federation",
+                "name": label,
+                "id": code,
+                "host": "",
+                "proxy_kind": "direct" if code == "nl" else "federation",
+                "available": False,
+                "latency_ms": None,
+                "check": "not_discovered",
+                "error": "not_discovered",
+            }
+            for code, label in CANONICAL_SERVERS
+        }
+
+        def server_code(item: dict[str, Any]) -> str:
+            identity = " ".join(
+                str(item.get(key) or "")
+                for key in ("name", "host", "id", "proxy_kind")
+            )
+            label = _location_label(identity)
+            if "США 2" in label:
+                return "us2"
+            if "США" in label:
+                return "us"
+            if "Нидерланды" in label:
+                return "nl"
+            if "Пакистан" in label:
+                return "pk"
+            if "Германия" in label:
+                return "de"
+            if "Польша" in label:
+                return "pl"
+            if "Финляндия" in label:
+                return "fi"
+            return ""
+
+        us_seen = 0
+        for item in servers:
+            code = server_code(item)
+            if code == "us":
+                us_seen += 1
+                if us_seen >= 2:
+                    code = "us2"
+            if not code:
+                continue
+            merged = dict(item)
+            merged["name"] = dict(CANONICAL_SERVERS)[code]
+            merged["catalog_id"] = code
+            canonical[code] = merged
+
+        servers = [canonical[code] for code, _label in CANONICAL_SERVERS]
+
         return {
             "provider": self.mode_name,
             "discovery_ok": discovery_ok,
