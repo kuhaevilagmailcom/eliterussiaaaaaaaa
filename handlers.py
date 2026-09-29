@@ -5301,6 +5301,92 @@ def build_router(
             reply_markup=kb.as_markup(),
         )
 
+    @router.callback_query(F.data.regexp(r"^admin:giveaway:export:\d+$"))
+    async def admin_giveaway_export(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        giveaway_id = int(callback.data.rsplit(":", 1)[-1])
+        item = await db.get_giveaway(giveaway_id)
+        if not item:
+            await safe_callback_answer(callback, "Розыгрыш не найден.", show_alert=True)
+            return
+        participants = await db.list_giveaway_participants(giveaway_id)
+        winners = {
+            int(row["telegram_id"]): int(row["position"])
+            for row in await db.get_giveaway_winners(giveaway_id)
+        }
+        output = StringIO()
+        writer = csv.writer(output, delimiter=";")
+        writer.writerow([
+            "telegram_id",
+            "username",
+            "first_name",
+            "joined_at",
+            "winner_position",
+        ])
+        for row in participants:
+            writer.writerow([
+                int(row["telegram_id"]),
+                str(row.get("username") or ""),
+                str(row.get("first_name") or ""),
+                str(row.get("joined_at") or ""),
+                winners.get(int(row["telegram_id"]), ""),
+            ])
+        payload = ("\ufeff" + output.getvalue()).encode("utf-8")
+        await safe_callback_answer(callback, "Формирую CSV…")
+        await callback.bot.send_document(
+            chat_id=callback.message.chat.id,
+            document=BufferedInputFile(
+                payload,
+                filename=f"giveaway_{giveaway_id}_participants.csv",
+            ),
+            caption=(
+                f"📥 Участники розыгрыша #{giveaway_id}\n"
+                f"Всего: <b>{len(participants)}</b>"
+            ),
+        )
+
+    @router.callback_query(F.data.regexp(r"^admin:giveaway:rerollundo:\d+$"))
+    async def admin_giveaway_reroll_undo(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        giveaway_id = int(callback.data.rsplit(":", 1)[-1])
+        await safe_callback_answer(callback, "Отменяю перевыбор…")
+        try:
+            result = await undo_giveaway_reroll(
+                callback.bot,
+                db,
+                config,
+                provider,
+                giveaway_id,
+                undone_by=callback.from_user.id,
+                max_age_seconds=600,
+            )
+        except ValueError as exc:
+            await callback.message.answer(
+                f"Не удалось отменить перевыбор: {html.escape(str(exc))}"
+            )
+            return
+        except Exception as exc:
+            logger.exception(
+                "Giveaway reroll undo failed for #%s: %s",
+                giveaway_id,
+                type(exc).__name__,
+            )
+            await callback.message.answer(
+                "Не удалось отменить перевыбор. Откройте розыгрыш и проверьте состояние."
+            )
+            return
+        await callback.message.answer(
+            "✅ <b>Перевыбор отменён</b>\n\n"
+            f"Исходный победитель <code>{int(result['restored_telegram_id'])}</code> восстановлен.\n"
+            f"Начисление пользователю <code>{int(result['removed_telegram_id'])}</code> отозвано.\n"
+            "Итоговый пост обновлён."
+        )
+        await show_admin_giveaway(callback.message, callback.from_user, giveaway_id)
+
     @router.callback_query(F.data.regexp(r"^admin:giveaway:reroll:\d+$"))
     async def admin_giveaway_reroll(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id) or not callback.message:
@@ -5322,9 +5408,10 @@ def build_router(
 
         participants = await db.list_giveaway_participants(giveaway_id)
         rerolls = await db.list_giveaway_rerolls(giveaway_id)
+        active_rerolls = [row for row in rerolls if not row.get("undone_at")]
         excluded = {int(winner["telegram_id"]) for winner in winners}
-        excluded.update(int(row["old_telegram_id"]) for row in rerolls)
-        excluded.update(int(row["new_telegram_id"]) for row in rerolls)
+        excluded.update(int(row["old_telegram_id"]) for row in active_rerolls)
+        excluded.update(int(row["new_telegram_id"]) for row in active_rerolls)
         eligible = [
             row for row in participants
             if int(row["telegram_id"]) not in excluded
@@ -5424,6 +5511,12 @@ def build_router(
             else (new_first_name or f"ID {int(result['new_telegram_id'])}")
         )
         kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "↩️ Отменить перевыбор · 10 мин",
+                callback_data=f"admin:giveaway:rerollundo:{giveaway_id}",
+            )
+        )
         kb.row(
             blue_inline_button(
                 "🔄 Ещё перевыбор",
