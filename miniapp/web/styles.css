@@ -1070,3 +1070,18 @@ button.pressing,
     transform:none!important;
   }
 }
+
+.traffic-card{margin-top:10px;border:1px solid var(--line);border-radius:var(--radius-4);background:var(--surface);padding:16px}
+.traffic-card-head{display:flex;align-items:end;justify-content:space-between;gap:12px}
+.traffic-card-head small,.traffic-hint{color:var(--muted);font-size:10px}
+.traffic-card-head h3{margin:2px 0 0;font-size:17px}
+.traffic-card-head>span{color:var(--muted);font-size:11px}
+.traffic-periods{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}
+.traffic-periods>div{min-width:0;border-radius:12px;background:var(--surface-elevated);padding:10px}
+.traffic-periods small{display:block;color:var(--muted);font-size:10px}
+.traffic-periods b{display:block;margin-top:3px;font-size:13px;overflow:hidden;text-overflow:ellipsis}
+.traffic-chart{height:74px;display:flex;align-items:flex-end;gap:3px;padding:6px 2px 2px}
+.traffic-bar{flex:1;min-width:2px;height:100%;display:flex;align-items:flex-end}
+.traffic-bar i{display:block;width:100%;min-height:2px;border-radius:4px 4px 2px 2px;background:var(--accent);opacity:.82}
+.traffic-bar.today i{opacity:1}
+.traffic-hint{display:block;margin-top:8px}
