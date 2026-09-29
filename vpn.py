@@ -1841,6 +1841,43 @@ class H1CloudVpnProvider(VpnProvider):
             }
         return latency
 
+    @staticmethod
+    def _apply_country_preference(
+        links: list[str],
+        preferred_country: str | None,
+    ) -> list[str]:
+        """Move a selected country to the front without removing any fallback."""
+        code = str(preferred_country or "auto").strip().lower()
+        if code in {"", "auto"}:
+            return links
+
+        wanted = {
+            "nl": "🇳🇱 Нидерланды",
+            "de": "🇩🇪 Германия",
+            "fi": "🇫🇮 Финляндия",
+            "pl": "🇵🇱 Польша",
+            "pk": "🇵🇰 Пакистан",
+            "us": "🇺🇸 США",
+            "us2": "🇺🇸 США 2",
+            "lt": "🇱🇹 Литва",
+        }.get(code)
+        if not wanted:
+            return links
+
+        preferred: list[str] = []
+        fallback: list[str] = []
+        for link in links:
+            label = _location_label(link)
+            exact = label == wanted
+            # "США" must not accidentally swallow "США 2".
+            if code == "us":
+                exact = label == "🇺🇸 США"
+            if exact:
+                preferred.append(link)
+            else:
+                fallback.append(link)
+        return preferred + fallback if preferred else links
+
     async def _rank_live_vless_links(self, links: list[str]) -> list[str]:
         """Put verified endpoints first without ever deleting a user's configured country."""
         parsed_links: list[tuple[int, str, tuple[str, int] | None]] = []
@@ -2072,6 +2109,10 @@ class H1CloudVpnProvider(VpnProvider):
 
         if links:
             links = await self._rank_live_vless_links(links)
+            links = self._apply_country_preference(
+                links,
+                user.get("preferred_country"),
+            )
 
         if not links:
             raise RuntimeError("H1Cloud returned no VLESS links")
