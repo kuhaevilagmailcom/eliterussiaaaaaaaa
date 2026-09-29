@@ -554,6 +554,16 @@ def payment_methods_keyboard(
 
 
 
+def format_traffic_gb(used_gb: float, limit_gb: float) -> str:
+    used = max(0.0, float(used_gb or 0))
+    limit = max(0.0, float(limit_gb or 0))
+    used_text = f"{used:.2f}".rstrip("0").rstrip(".")
+    if limit <= 0:
+        return f"{used_text} ГБ / ∞"
+    limit_text = f"{limit:.2f}".rstrip("0").rstrip(".")
+    return f"{used_text} ГБ / {limit_text} ГБ"
+
+
 def profile_text(
     user: dict[str, Any],
     state: VpnState,
@@ -584,7 +594,8 @@ def profile_text(
         lines += [
             f"├ Тариф: <b>{plan}</b>",
             f"├ Действует до: <b>{format_until(user, config)}</b>",
-            f"└ Осталось: <b>{remaining_text(user)}</b>",
+            f"├ Осталось: <b>{remaining_text(user)}</b>",
+            f"└ Трафик: <b>{format_traffic_gb(state.traffic_used_gb, state.traffic_limit_gb)}</b>",
             "",
             f"{e_devices} <b>Устройства — {devices_count}/{max_devices}</b>",
         ]
@@ -673,6 +684,7 @@ def connection_text(
         "🔐 <b>Моя подписка</b>\n\n"
         f"Тариф: <b>{plan}</b>\n"
         f"Осталось: <b>{remaining_text(user)}</b>\n"
+        f"Трафик: <b>{format_traffic_gb(state.traffic_used_gb, state.traffic_limit_gb)}</b>\n"
         f"Устройства: <b>{connected}/{max_devices}</b>\n\n"
         "Выберите VPN-клиент или скопируйте персональную ссылку.\n"
         "<i>Не передавайте ссылку другим людям.</i>"
@@ -1434,6 +1446,18 @@ def build_router(
                     int(raw),
                 )
         if not await require_channel_membership(message, message.from_user, user):
+            return
+        if start_arg in {"renew", "plans"}:
+            e = emoji.icon(0, pack=PACK_NEWS)
+            await send_screen(
+                message,
+                message.from_user,
+                "💳 <b>Продлить MGN VPN</b>\n\n"
+                "Выберите срок продления. Новый период прибавится к текущей подписке — оставшиеся дни не сгорят.",
+                reply_markup=plans_keyboard(config),
+                recover_on_edit_failure=True,
+                force_new=True,
+            )
             return
         try:
             await message.bot.send_chat_action(
