@@ -146,7 +146,7 @@ class MiniAppServer:
         # Version the on-disk cache so a deployment that fixes subscription
         # composition never keeps serving an older NL-only payload.
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        return self._subscription_cache_dir / f"v8-{digest}.json"
+        return self._subscription_cache_dir / f"v9-{digest}.json"
 
     async def invalidate_subscription_cache(self, token: str) -> None:
         """Drop every cached form of a user's subscription after H1 sync."""
@@ -478,7 +478,8 @@ class MiniAppServer:
             )
             username = "mgnvpn_bot"
 
-        support_url = f"https://t.me/{username}"
+        renew_url = f"https://t.me/{username}?start=renew"
+        support_url = renew_url
         announce_text = (
             "Если VPN не работает — нажмите 🔄. "
             f"Поддержка и продление подписки — в боте @{username}."
@@ -498,7 +499,7 @@ class MiniAppServer:
                 f"upload=0; download=0; total={total_bytes}; expire={max(0, expire)}"
             )
 
-        return {
+        headers = {
             "Content-Type": "text/plain; charset=utf-8",
             "Cache-Control": "private, no-store, max-age=0",
             "Pragma": "no-cache",
@@ -511,7 +512,19 @@ class MiniAppServer:
             "Support-Url": support_url,
             "Profile-Web-Page-Url": "https://mgnvpn.ru",
             "Announce": f"base64:{announce}",
+            # Happ advanced subscription card. With Provider ID configured this
+            # shows a dedicated renewal action and expiry reminders.
+            "Sub-Info-Text": "Управляйте подпиской MGN VPN прямо в Telegram.",
+            "Sub-Info-Button-Text": "Продлить",
+            "Sub-Info-Button-Link": renew_url,
+            "Sub-Expire": "1",
+            "Notification-Subs-Expire": "1",
+            "Sub-Expire-Button-Link": renew_url,
         }
+        provider_id = str(getattr(self.config, "happ_provider_id", "") or "").strip()
+        if provider_id:
+            headers["Providerid"] = provider_id
+        return headers
 
 
     async def _activate_paid(self, buyer_id: int, target_id: int, code: str, event_key: str) -> None:
