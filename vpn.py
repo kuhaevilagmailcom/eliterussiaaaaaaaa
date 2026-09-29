@@ -1346,7 +1346,10 @@ class H1CloudVpnProvider(VpnProvider):
                         pass
 
         cache[endpoint] = (loop.time(), latency)
-        streaks = self._endpoint_failure_streak
+        streaks = getattr(self, "_endpoint_failure_streak", None)
+        if not isinstance(streaks, dict):
+            streaks = {}
+            self._endpoint_failure_streak = streaks
         if latency is None:
             streaks[endpoint] = min(20, int(streaks.get(endpoint, 0)) + 1)
         else:
