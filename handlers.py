@@ -3796,21 +3796,19 @@ def build_router(
 
         kb = InlineKeyboardBuilder()
 
-        # Every admin role may issue a subscription. Advanced subscription
-        # management remains restricted to owner/full admins.
         kb.row(
             blue_inline_button("Выдать подписку", callback_data=f"admin:grantmenu:{telegram_id}"),
         )
-
-        if actor_role in {"owner", "full"}:
-            kb.row(
-                blue_inline_button("Добавить дни", callback_data=f"admin:daysmenu:{telegram_id}:add"),
-                blue_inline_button("Списать дни", callback_data=f"admin:daysmenu:{telegram_id}:sub"),
-            )
-            kb.row(
-                blue_inline_button("Устройства", callback_data=f"admin:devicemenu:{telegram_id}"),
-            )
-            kb.row(blue_inline_button("Отключить подписку", callback_data=f"admin:revokeconfirm:{telegram_id}"))
+        kb.row(
+            blue_inline_button("Добавить дни", callback_data=f"admin:daysmenu:{telegram_id}:add"),
+            blue_inline_button("Списать дни", callback_data=f"admin:daysmenu:{telegram_id}:sub"),
+        )
+        kb.row(
+            blue_inline_button("Устройства", callback_data=f"admin:devicemenu:{telegram_id}"),
+        )
+        kb.row(
+            blue_inline_button("Отключить подписку", callback_data=f"admin:revokeconfirm:{telegram_id}")
+        )
 
         if actor_role == "owner" and telegram_id not in config.admin_ids:
             kb.row(
@@ -4157,8 +4155,8 @@ def build_router(
             "<i>Выдать доступ можно из карточки пользователя: "
             "Пользователи → выбрать человека.</i>",
             "",
-            "Полная — управление подписками, бонусами и системой.",
-            "Ограниченная — просмотр сводки, пользователей и платежей + выдача подписок.",
+            "Все выданные админы имеют полный оперативный доступ к VPN, пользователям, оплатам, поддержке, промокодам, рассылкам, розыгрышам и аналитике.",
+            "Только владелец может выдавать или забирать админку.",
         ]
 
         kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:admins"))
