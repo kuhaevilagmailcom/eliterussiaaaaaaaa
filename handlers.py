@@ -4257,9 +4257,21 @@ def build_router(
         rolly = "✅ настроена" if config.rollypay_enabled else "❌ не настроена"
         rolly_mode = "тест" if config.rollypay_test_mode else "боевой"
         vpn_ready = "✅" if getattr(provider, "service_ready", True) else "⚠️"
+        maintenance = await db.maintenance_state()
+        maintenance_enabled = bool(maintenance.get("enabled"))
 
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("🌐 Серверы VPN", callback_data="admin:servers"))
+        kb.row(
+            blue_inline_button(
+                "🟢 Выключить техработы" if maintenance_enabled else "🟠 Включить техработы",
+                callback_data=(
+                    "admin:maintenance:off"
+                    if maintenance_enabled
+                    else "admin:maintenance:on"
+                ),
+            )
+        )
         kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:system"))
         kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
 
@@ -4269,10 +4281,11 @@ def build_router(
             f"🔗 Реальные подключения — <b>{'готовы' if getattr(provider, 'service_ready', True) else 'ожидают серверы'}</b>\n"
             f"🌐 Основной сервер — <b>{html.escape(config.vpn_server_name)}</b>\n"
             f"💳 RollyPay — <b>{rolly}</b>\n"
-            f"🧾 Режим оплаты — <b>{rolly_mode}</b>\n\n"
+            f"🧾 Режим оплаты — <b>{rolly_mode}</b>\n"
+            f"🛠 Техработы — <b>{'ВКЛЮЧЕНЫ' if maintenance_enabled else 'выключены'}</b>\n\n"
+            "<i>Техработы блокируют только новые покупки. Уже активные VPN-подписки и /sub продолжают работать.</i>\n\n"
             "<i>Основной сервер — это только базовая H1-нода. "
-            "Список стран федерации смотрите в «Серверы VPN».</i>\n\n"
-            "<i>Секретные ключи здесь не отображаются.</i>"
+            "Список стран федерации смотрите в «Серверы VPN».</i>"
         )
         await send_screen(message, actor, text, reply_markup=kb.as_markup())
 
