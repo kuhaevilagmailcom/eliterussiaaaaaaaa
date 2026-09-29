@@ -1364,7 +1364,7 @@ class H1CloudVpnProvider(VpnProvider):
         return latency
 
     async def _rank_live_vless_links(self, links: list[str]) -> list[str]:
-        """Rank verified endpoints, but remove one only after repeated fresh failures."""
+        """Put verified endpoints first without ever deleting a user's configured country."""
         parsed_links: list[tuple[int, str, tuple[str, int] | None]] = []
         endpoints: set[tuple[str, int]] = set()
         for index, link in enumerate(links):
@@ -1391,45 +1391,36 @@ class H1CloudVpnProvider(VpnProvider):
         latency_by_endpoint = dict(zip(endpoint_list, latencies))
 
         verified: list[tuple[float, int, str]] = []
-        preserved: list[tuple[int, str]] = []
-        removed = 0
+        uncertain: list[tuple[int, int, str]] = []
         for index, link, endpoint in parsed_links:
             if endpoint is None:
-                # Never remove a link just because its URI could not be probed.
-                preserved.append((index, link))
+                uncertain.append((0, index, link))
                 continue
             latency = latency_by_endpoint.get(endpoint)
             if latency is not None:
                 verified.append((float(latency), index, link))
                 continue
 
-            # A single failed TCP probe from BotHost is not evidence that the
-            # user's mobile network cannot use the country. Keep the node for
-            # the first two fresh failures. Probe results are cached for 20s,
-            # so the streak only advances on a new network check.
-            if int(self._endpoint_failure_streak.get(endpoint, 0)) < 3:
-                preserved.append((index, link))
-            else:
-                removed += 1
+            # BotHost cannot prove that a route is unusable from the subscriber's
+            # phone/network. Never delete it. Repeated server-side failures only
+            # demote it behind routes we have just verified.
+            failure_streak = int(self._endpoint_failure_streak.get(endpoint, 0))
+            uncertain.append((failure_streak, index, link))
 
         if not verified:
-            # If the hosting network cannot verify even one endpoint, preserve
-            # the entire subscription. Availability is more important than a
-            # server-side guess about the user's network.
             logger.warning(
-                "H1Cloud endpoint health probes found no verified endpoint; preserving %s candidate link(s)",
+                "H1Cloud endpoint health probes found no verified endpoint; preserving original order for %s link(s)",
                 len(links),
             )
             return links
 
         verified.sort(key=lambda item: (item[0], item[1]))
-        preserved.sort(key=lambda item: item[0])
-        ranked = [item[2] for item in verified] + [item[1] for item in preserved]
+        uncertain.sort(key=lambda item: (item[0], item[1]))
+        ranked = [item[2] for item in verified] + [item[2] for item in uncertain]
         logger.info(
-            "H1Cloud smart selection: %s verified, %s preserved, %s removed, best %.0f ms",
+            "H1Cloud smart selection: %s verified, %s preserved, best %.0f ms",
             len(verified),
-            len(preserved),
-            removed,
+            len(uncertain),
             verified[0][0],
         )
 
