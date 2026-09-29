@@ -2983,6 +2983,14 @@ def build_router(
             )
             if fresh:
                 updated = await grant_paid_device_slot(buyer_id)
+                await notify_purchase_admins(
+                    message.bot,
+                    buyer_id=buyer_id,
+                    target_id=buyer_id,
+                    code=DEVICE_PRODUCT_CODE,
+                    method="Stars",
+                    amount=int(payment.total_amount),
+                )
                 if updated is None:
                     await send_screen(
                         message,
@@ -3027,6 +3035,14 @@ def build_router(
                 target_telegram_id=target_id,
                 code=code,
                 payment_event_key=f"stars:{charge_id}",
+            )
+            await notify_purchase_admins(
+                message.bot,
+                buyer_id=buyer_id,
+                target_id=target_id,
+                code=code,
+                method="Stars",
+                amount=int(payment.total_amount),
             )
 
         if target_id == buyer_id:
