@@ -69,7 +69,8 @@ class Database:
                     vpn_client_id TEXT UNIQUE,
                     attribution_source TEXT,
                     attribution_at TEXT,
-                    channel_verified_at TEXT
+                    channel_verified_at TEXT,
+                    preferred_country TEXT NOT NULL DEFAULT 'auto'
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_users_subscription_until
@@ -102,6 +103,13 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_star_payments_buyer
                 ON star_payments(buyer_telegram_id, created_at);
+
+                CREATE TABLE IF NOT EXISTS service_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    updated_by INTEGER
+                );
 
                 CREATE TABLE IF NOT EXISTS admin_roles (
                     telegram_id INTEGER PRIMARY KEY,
@@ -371,6 +379,10 @@ class Database:
                 await db.execute(
                     "UPDATE users SET bot_started_at=created_at "
                     "WHERE bot_started_at IS NULL"
+                )
+            if "preferred_country" not in columns:
+                await db.execute(
+                    "ALTER TABLE users ADD COLUMN preferred_country TEXT NOT NULL DEFAULT 'auto'"
                 )
             await db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_vpn_client_id "
@@ -1690,6 +1702,367 @@ class Database:
                 )
             await db.commit()
             return True
+
+    async def get_setting(self, key: str, default: str = "") -> str:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            row = await (
+                await db.execute(
+                    "SELECT value FROM service_settings WHERE key=?",
+                    (str(key),),
+                )
+            ).fetchone()
+        return str(row[0]) if row else str(default)
+
+    async def set_setting(
+        self,
+        key: str,
+        value: str,
+        *,
+        updated_by: int | None = None,
+    ) -> None:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute(
+                """
+                INSERT INTO service_settings (key, value, updated_at, updated_by)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value,
+                    updated_at=excluded.updated_at,
+                    updated_by=excluded.updated_by
+                """,
+                (str(key), str(value), to_iso(utcnow()), updated_by),
+            )
+            await db.commit()
+
+    async def maintenance_enabled(self) -> bool:
+        return (await self.get_setting("maintenance_mode", "0")) == "1"
+
+    async def set_preferred_country(
+        self,
+        telegram_id: int,
+        country: str,
+    ) -> dict[str, Any]:
+        allowed = {"auto", "nl", "de", "fi", "pl", "pk", "us", "us2", "lt"}
+        normalized = str(country or "auto").strip().lower()
+        if normalized not in allowed:
+            raise ValueError("invalid country")
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute(
+                "UPDATE users SET preferred_country=? WHERE telegram_id=?",
+                (normalized, int(telegram_id)),
+            )
+            await db.commit()
+        return await self.get_user(int(telegram_id))
+
+    async def user_payment_history(
+        self,
+        telegram_id: int,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 50))
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT 'sbp' AS method,
+                           payment_id AS id,
+                           plan_code,
+                           amount_rub AS amount,
+                           'RUB' AS currency,
+                           status,
+                           COALESCE(paid_at, created_at) AS created_at,
+                           promo_code
+                    FROM sbp_payments
+                    WHERE telegram_id=?
+                    UNION ALL
+                    SELECT 'stars' AS method,
+                           telegram_payment_charge_id AS id,
+                           plan_code,
+                           stars AS amount,
+                           'XTR' AS currency,
+                           'paid' AS status,
+                           created_at,
+                           NULL AS promo_code
+                    FROM star_payments
+                    WHERE buyer_telegram_id=?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (int(telegram_id), int(telegram_id), limit),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def user_access_history(
+        self,
+        telegram_id: int,
+        *,
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 100))
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT 'admin' AS source,
+                           days AS days,
+                           granted_at AS created_at,
+                           'Админская выдача' AS label
+                    FROM admin_subscription_grants
+                    WHERE telegram_id=?
+                    UNION ALL
+                    SELECT 'giveaway' AS source,
+                           g.prize_days AS days,
+                           COALESCE(w.granted_at, g.finished_at, g.created_at) AS created_at,
+                           'Розыгрыш #' || g.id AS label
+                    FROM giveaway_winners w
+                    JOIN giveaways g ON g.id=w.giveaway_id
+                    WHERE w.telegram_id=? AND w.granted_at IS NOT NULL
+                    UNION ALL
+                    SELECT 'referral' AS source,
+                           1 AS days,
+                           r.rewarded_at AS created_at,
+                           'Реферальный бонус' AS label
+                    FROM referrals r
+                    WHERE r.referrer_id=? AND r.rewarded_at IS NOT NULL
+                    UNION ALL
+                    SELECT 'promo' AS source,
+                           p.value AS days,
+                           pu.used_at AS created_at,
+                           'Промокод ' || p.code AS label
+                    FROM promo_uses pu
+                    JOIN service_promo_codes p ON p.id=pu.promo_id
+                    WHERE pu.telegram_id=? AND p.type='free_days'
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (
+                        int(telegram_id),
+                        int(telegram_id),
+                        int(telegram_id),
+                        int(telegram_id),
+                        limit,
+                    ),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def business_analytics(self) -> dict[str, Any]:
+        now = utcnow()
+        day = to_iso(now - timedelta(days=1))
+        week = to_iso(now - timedelta(days=7))
+        month = to_iso(now - timedelta(days=30))
+        active_cutoff = to_iso(now - timedelta(days=7))
+
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+
+            async def scalar(query: str, params: tuple[Any, ...] = ()) -> float:
+                row = await (await db.execute(query, params)).fetchone()
+                return float((row[0] if row else 0) or 0)
+
+            revenue: dict[str, dict[str, int]] = {}
+            for label, cutoff in (("day", day), ("week", week), ("month", month)):
+                sbp = int(await scalar(
+                    """
+                    SELECT COALESCE(SUM(amount_rub),0)
+                    FROM sbp_payments
+                    WHERE status='paid' AND COALESCE(paid_at,created_at)>=?
+                    """,
+                    (cutoff,),
+                ))
+                stars = int(await scalar(
+                    """
+                    SELECT COALESCE(SUM(stars),0)
+                    FROM star_payments
+                    WHERE created_at>=?
+                    """,
+                    (cutoff,),
+                ))
+                purchases = int(await scalar(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM sbp_payments
+                         WHERE status='paid' AND plan_code!='device'
+                           AND COALESCE(paid_at,created_at)>=?)
+                      + (SELECT COUNT(*) FROM star_payments
+                         WHERE plan_code!='device' AND created_at>=?)
+                    """,
+                    (cutoff, cutoff),
+                ))
+                revenue[label] = {
+                    "sbp_rub": sbp,
+                    "stars": stars,
+                    "purchases": purchases,
+                }
+
+            payment_rows = await (
+                await db.execute(
+                    """
+                    SELECT target_id, paid_at
+                    FROM (
+                        SELECT COALESCE(target_telegram_id,telegram_id) AS target_id,
+                               COALESCE(paid_at,created_at) AS paid_at
+                        FROM sbp_payments
+                        WHERE status='paid' AND plan_code!='device'
+                        UNION ALL
+                        SELECT target_telegram_id AS target_id,
+                               created_at AS paid_at
+                        FROM star_payments
+                        WHERE plan_code!='device'
+                    )
+                    ORDER BY paid_at, target_id
+                    """
+                )
+            ).fetchall()
+            seen_targets: set[int] = set()
+            new_purchases = 0
+            renewals = 0
+            repeat_buyers: set[int] = set()
+            buyer_counts: dict[int, int] = {}
+            for row in payment_rows:
+                target = int(row["target_id"])
+                if target in seen_targets:
+                    renewals += 1
+                else:
+                    new_purchases += 1
+                    seen_targets.add(target)
+                buyer_counts[target] = buyer_counts.get(target, 0) + 1
+                if buyer_counts[target] >= 2:
+                    repeat_buyers.add(target)
+
+            total_buyers = len(seen_targets)
+            retention = (
+                len(repeat_buyers) / total_buyers * 100.0
+                if total_buyers
+                else 0.0
+            )
+
+            sbp_check = await scalar(
+                "SELECT COALESCE(AVG(amount_rub),0) FROM sbp_payments WHERE status='paid'"
+            )
+            stars_check = await scalar(
+                "SELECT COALESCE(AVG(stars),0) FROM star_payments"
+            )
+
+            expiries: dict[str, int] = {}
+            for days in (1, 3, 7):
+                expiries[str(days)] = int(await scalar(
+                    """
+                    SELECT COUNT(*) FROM users
+                    WHERE subscription_until>? AND subscription_until<=?
+                    """,
+                    (to_iso(now), to_iso(now + timedelta(days=days))),
+                ))
+
+            active_vpn_users = int(await scalar(
+                """
+                SELECT COUNT(DISTINCT t.telegram_id)
+                FROM traffic_daily t
+                JOIN users u ON u.telegram_id=t.telegram_id
+                WHERE t.updated_at>=?
+                  AND u.subscription_until>?
+                """,
+                (active_cutoff, to_iso(now)),
+            ))
+
+            promo_rows = await (
+                await db.execute(
+                    """
+                    SELECT p.code,
+                           p.type,
+                           p.value,
+                           p.used_count,
+                           COUNT(DISTINCT pu.telegram_id) AS unique_users
+                    FROM service_promo_codes p
+                    LEFT JOIN promo_uses pu ON pu.promo_id=p.id
+                    GROUP BY p.id
+                    ORDER BY p.used_count DESC, p.code
+                    LIMIT 12
+                    """
+                )
+            ).fetchall()
+
+            source_rows = await (
+                await db.execute(
+                    """
+                    SELECT attribution_source AS source,
+                           COUNT(*) AS arrived,
+                           SUM(CASE WHEN
+                               EXISTS (
+                                   SELECT 1 FROM sbp_payments s
+                                   WHERE s.telegram_id=users.telegram_id
+                                     AND s.status='paid'
+                               )
+                               OR EXISTS (
+                                   SELECT 1 FROM star_payments sp
+                                   WHERE sp.buyer_telegram_id=users.telegram_id
+                               )
+                           THEN 1 ELSE 0 END) AS buyers
+                    FROM users
+                    WHERE attribution_source IN ('anonchat_mgn','pozor_mgn')
+                    GROUP BY attribution_source
+                    """
+                )
+            ).fetchall()
+
+            preference_rows = await (
+                await db.execute(
+                    """
+                    SELECT preferred_country AS country, COUNT(*) AS users
+                    FROM users
+                    WHERE preferred_country IS NOT NULL
+                      AND preferred_country!='auto'
+                    GROUP BY preferred_country
+                    ORDER BY users DESC, country
+                    """
+                )
+            ).fetchall()
+
+            support_rows = await (
+                await db.execute(
+                    """
+                    SELECT
+                        SUM(CASE WHEN LOWER(COALESCE(message,'')) LIKE '%нидерланд%' THEN 1 ELSE 0 END) AS nl,
+                        SUM(CASE WHEN LOWER(COALESCE(message,'')) LIKE '%герман%' THEN 1 ELSE 0 END) AS de,
+                        SUM(CASE WHEN LOWER(COALESCE(message,'')) LIKE '%финлян%' THEN 1 ELSE 0 END) AS fi,
+                        SUM(CASE WHEN LOWER(COALESCE(message,'')) LIKE '%польш%' THEN 1 ELSE 0 END) AS pl,
+                        SUM(CASE WHEN LOWER(COALESCE(message,'')) LIKE '%пакистан%' THEN 1 ELSE 0 END) AS pk,
+                        SUM(CASE WHEN LOWER(COALESCE(message,'')) LIKE '%сша%' THEN 1 ELSE 0 END) AS us
+                    FROM support_tickets
+                    WHERE deleted_at IS NULL
+                    """
+                )
+            ).fetchone()
+
+        sources = []
+        for row in source_rows:
+            arrived = int(row["arrived"] or 0)
+            buyers = int(row["buyers"] or 0)
+            sources.append({
+                "source": str(row["source"]),
+                "arrived": arrived,
+                "buyers": buyers,
+                "conversion": (buyers / arrived * 100.0) if arrived else 0.0,
+            })
+
+        return {
+            "revenue": revenue,
+            "new_purchases": new_purchases,
+            "renewals": renewals,
+            "avg_check_rub": float(sbp_check),
+            "avg_check_stars": float(stars_check),
+            "retention": retention,
+            "expiring": expiries,
+            "active_vpn_users_7d": active_vpn_users,
+            "sources": sources,
+            "promos": [dict(row) for row in promo_rows],
+            "preferred_countries": [dict(row) for row in preference_rows],
+            "support_server_mentions": dict(support_rows) if support_rows else {},
+        }
 
     async def get_admin_role(self, telegram_id: int) -> str | None:
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
