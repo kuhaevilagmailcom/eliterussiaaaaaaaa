@@ -283,6 +283,26 @@
     }
   }
 
+  function renderTrafficHistory(){
+    const d=state.data;
+    const history=d.vpn?.traffic_history||{};
+    $('#trafficToday').textContent=fmtTraffic(Number(history.today_gb||0),0).replace(' / ∞','');
+    $('#trafficWeek').textContent=fmtTraffic(Number(history.week_gb||0),0).replace(' / ∞','');
+    $('#trafficMonth').textContent=fmtTraffic(Number(history.month_gb||0),0).replace(' / ∞','');
+
+    const root=$('#trafficChart');
+    if(!root)return;
+    const days=Array.isArray(history.days)?history.days.slice(-30):[];
+    const max=Math.max(0.001,...days.map(item=>Number(item.gb||0)));
+    root.innerHTML=days.map((item,index)=>{
+      const value=Math.max(0,Number(item.gb||0));
+      const height=Math.max(3,Math.round((value/max)*100));
+      const today=index===days.length-1;
+      const title=esc((item.date||'')+' · '+fmtTraffic(value,0).replace(' / ∞',''));
+      return '<span class="traffic-bar '+(today?'today':'')+'" title="'+title+'"><i style="height:'+height+'%"></i></span>';
+    }).join('');
+  }
+
   function renderProfile(){
     const d=state.data;
     setAvatar('profileAvatar',d.user);
@@ -363,6 +383,7 @@
     $('#pendingPaymentCheck').hidden=!state.sbpPayment;
     renderDevices();
     renderProfile();
+    renderTrafficHistory();
     renderReferrals();
     renderBonuses();
     renderClients();
