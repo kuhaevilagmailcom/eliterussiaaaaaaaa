@@ -777,6 +777,10 @@ class MiniAppServer:
             raise _json_error(409, "Данные платежа не совпали")
 
         if status == "paid":
+            target_id = int(
+                local.get("target_telegram_id") or local["telegram_id"]
+            )
+            before = await self.db.get_user(target_id)
             try:
                 fresh = await self.db.settle_sbp_payment(payment_id)
             except ValueError:
@@ -784,9 +788,6 @@ class MiniAppServer:
                     409,
                     "Оплата получена и требует проверки поддержки",
                 )
-            target_id = int(
-                local.get("target_telegram_id") or local["telegram_id"]
-            )
             if fresh:
                 updated = await self.db.get_user(target_id)
                 if getattr(self.provider, "service_ready", True):
@@ -802,6 +803,22 @@ class MiniAppServer:
                             type(exc).__name__,
                         )
                 await self._sync_bot_subscription_menu(updated)
+                await notify_purchase(
+                    self.bot,
+                    self.db,
+                    self.config,
+                    buyer_id=int(local["telegram_id"]),
+                    target_id=target_id,
+                    product_code=str(local["plan_code"]),
+                    method="СБП",
+                    amount_text=f"{int(local['amount_rub'])} ₽",
+                    purchase_kind=(
+                        "Дополнительное устройство"
+                        if str(local["plan_code"]) == "device"
+                        else "Продление" if _active(before) else "Новая подписка"
+                    ),
+                    promo_code=str(local.get("promo_code") or "") or None,
+                )
             return web.json_response({"status": "paid"})
 
         await self.db.set_sbp_status(payment_id, status or "processing")
@@ -1098,6 +1115,46 @@ class MiniAppServer:
             }
         )
 
+    async def server_status(self, request: web.Request) -> web.Response:
+        uid, _tg_user, row = await self._auth(request)
+        try:
+            report = await asyncio.wait_for(
+                self.provider.server_diagnostics(row),
+                timeout=12.0,
+            )
+        except Exception:
+            raise _json_error(503, "Не удалось проверить серверы")
+        servers = []
+        for item in report.get("servers") or []:
+            servers.append({
+                "id": str(item.get("catalog_id") or item.get("id") or ""),
+                "name": str(item.get("name") or "VPN-сервер"),
+                "available": bool(item.get("available")),
+                "configured": bool(item.get("configured") or item.get("available")),
+                "latency_ms": item.get("latency_ms"),
+            })
+        return web.json_response({
+            "preferred_country": str(row.get("preferred_country") or "auto"),
+            "servers": servers,
+            "checked_for": uid,
+        })
+
+    async def set_country_preference(self, request: web.Request) -> web.Response:
+        uid, _tg_user, row = await self._auth(request)
+        data = await self._json_body(request)
+        country = str(data.get("country") or "auto").strip().lower()
+        try:
+            updated = await self.db.set_preferred_country(uid, country)
+        except ValueError:
+            raise _json_error(400, "Эта страна сейчас не поддерживается")
+        token = str(updated.get("sub_token") or row.get("sub_token") or "")
+        if token:
+            await self.invalidate_subscription_cache(token)
+        return web.json_response({
+            "ok": True,
+            "preferred_country": str(updated.get("preferred_country") or "auto"),
+        })
+
     async def stars_invoice(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
         await self._ensure_purchases_available()
@@ -1276,6 +1333,8 @@ class MiniAppServer:
             raise _json_error(409, "Данные платежа не совпали")
 
         if status == "paid":
+            target_id = int(local.get("target_telegram_id") or uid)
+            before = await self.db.get_user(target_id)
             try:
                 fresh = await self.db.settle_sbp_payment(payment_id)
             except ValueError:
@@ -1290,10 +1349,26 @@ class MiniAppServer:
                 else:
                     await self._activate_paid(
                         buyer_id=uid,
-                        target_id=int(local.get("target_telegram_id") or uid),
+                        target_id=target_id,
                         code=str(local["plan_code"]),
                         event_key=f"sbp:{payment_id}",
                     )
+                await notify_purchase(
+                    self.bot,
+                    self.db,
+                    self.config,
+                    buyer_id=uid,
+                    target_id=target_id,
+                    product_code=str(local["plan_code"]),
+                    method="СБП",
+                    amount_text=f"{int(local['amount_rub'])} ₽",
+                    purchase_kind=(
+                        "Дополнительное устройство"
+                        if str(local["plan_code"]) == "device"
+                        else "Продление" if _active(before) else "Новая подписка"
+                    ),
+                    promo_code=str(local.get("promo_code") or "") or None,
+                )
             return web.json_response({"status": "paid"})
 
         await self.db.set_sbp_status(payment_id, status or "processing")
@@ -1426,6 +1501,7 @@ class MiniAppServer:
             first_name=tg_user.get("first_name"),
             message_type="text",
             text=message,
+            server_code=str(row.get("preferred_country") or "auto"),
         )
 
         username = (
@@ -1664,6 +1740,11 @@ class MiniAppServer:
             self.public_payment_check,
         )
         app.router.add_get("/api/miniapp/me", self.me)
+        app.router.add_get("/api/miniapp/servers", self.server_status)
+        app.router.add_post(
+            "/api/miniapp/preference/country",
+            self.set_country_preference,
+        )
         app.router.add_post("/api/miniapp/payment/stars", self.stars_invoice)
         app.router.add_post("/api/miniapp/payment/sbp", self.sbp_create)
         app.router.add_get("/api/miniapp/payment/sbp/{payment_id}", self.sbp_check)
