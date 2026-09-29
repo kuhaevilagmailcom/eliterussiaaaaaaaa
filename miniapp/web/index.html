@@ -8,7 +8,7 @@
   <title>MGN VPN</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="/static/assets/lucide.min.js?v=1"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=21">
+  <link rel="stylesheet" href="/static/styles.css?v=22">
 </head>
 <body>
   <section id="appError" class="app-error" hidden role="status">
@@ -142,6 +142,20 @@
           <article><i data-lucide="monitor-smartphone"></i><small>Устройства</small><b id="profileDevices">1</b></article>
           <article><i data-lucide="activity"></i><small>Трафик</small><b id="profileTraffic">—</b></article>
         </div>
+
+        <article class="traffic-card">
+          <div class="traffic-card-head">
+            <div><small>ИСПОЛЬЗОВАНИЕ</small><h3>Трафик</h3></div>
+            <span>последние 30 дней</span>
+          </div>
+          <div class="traffic-periods">
+            <div><small>Сегодня</small><b id="trafficToday">0 ГБ</b></div>
+            <div><small>7 дней</small><b id="trafficWeek">0 ГБ</b></div>
+            <div><small>30 дней</small><b id="trafficMonth">0 ГБ</b></div>
+          </div>
+          <div class="traffic-chart" id="trafficChart" aria-label="График трафика за 30 дней"></div>
+          <small class="traffic-hint">Статистика обновляется при синхронизации подписки.</small>
+        </article>
 
         <div class="page-section-head compact-head">
           <div><small>УСТРОЙСТВА</small><h3>Подключения</h3></div>
@@ -300,6 +314,6 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"><span><i></i></span></div>
 
-  <script src="/static/app.js?v=22"></script>
+  <script src="/static/app.js?v=23"></script>
 </body>
 </html>
