@@ -51,6 +51,7 @@ from config import Config
 from db import Database, from_iso, utcnow
 from emoji import EmojiBank
 from giveaway import (
+    delete_giveaway,
     finish_giveaway,
     render_giveaway_post,
     send_giveaway_post,
@@ -4032,6 +4033,13 @@ def build_router(
                     callback_data=f"admin:giveaway:finish:{giveaway_id}",
                 )
             )
+        if str(item.get("status")) != "finishing":
+            kb.row(
+                blue_inline_button(
+                    "🗑 Удалить розыгрыш",
+                    callback_data=f"admin:giveaway:deleteconfirm:{giveaway_id}",
+                )
+            )
         kb.row(blue_inline_button("⬅️ Розыгрыши", callback_data="admin:giveaways"))
         await send_screen(message, actor, "\n".join(lines), reply_markup=kb.as_markup())
 
@@ -4447,6 +4455,84 @@ def build_router(
             force=True,
         )
         await show_admin_giveaway(callback.message, callback.from_user, giveaway_id)
+
+    @router.callback_query(F.data.regexp(r"^admin:giveaway:deleteconfirm:\d+$"))
+    async def admin_giveaway_delete_confirm(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        giveaway_id = int(callback.data.rsplit(":", 1)[-1])
+        item = await db.get_giveaway(giveaway_id)
+        if not item:
+            await safe_callback_answer(callback, "Розыгрыш уже удалён.", show_alert=True)
+            return
+        if str(item.get("status")) == "finishing":
+            await safe_callback_answer(
+                callback,
+                "Сейчас подводятся итоги. Подождите завершения и удалите после.",
+                show_alert=True,
+            )
+            return
+
+        await safe_callback_answer(callback)
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "Да, удалить",
+                callback_data=f"admin:giveaway:delete:{giveaway_id}",
+            )
+        )
+        kb.row(
+            blue_inline_button(
+                "Отмена",
+                callback_data=f"admin:giveaway:view:{giveaway_id}",
+                premium_icon=False,
+            )
+        )
+        note = (
+            "Посты розыгрыша будут удалены из каналов, а участники и история розыгрыша — из базы.\n\n"
+            "<b>Уже выданные победителям подписки останутся</b> — удаление их не отзывает."
+        )
+        await callback.message.answer(
+            f"🗑 <b>Удалить розыгрыш #{giveaway_id}?</b>\n\n{note}",
+            reply_markup=kb.as_markup(),
+        )
+
+    @router.callback_query(F.data.regexp(r"^admin:giveaway:delete:\d+$"))
+    async def admin_giveaway_delete(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        giveaway_id = int(callback.data.rsplit(":", 1)[-1])
+        item = await db.get_giveaway(giveaway_id)
+        if not item:
+            await safe_callback_answer(callback, "Розыгрыш уже удалён.", show_alert=True)
+            return
+        if str(item.get("status")) == "finishing":
+            await safe_callback_answer(
+                callback,
+                "Сейчас подводятся итоги. Попробуйте удалить через несколько секунд.",
+                show_alert=True,
+            )
+            return
+
+        await safe_callback_answer(callback, "Удаляю…")
+        result = await delete_giveaway(callback.bot, db, giveaway_id)
+        if not result.get("deleted"):
+            await callback.message.answer("Розыгрыш уже удалён или не найден.")
+        else:
+            text = (
+                f"✅ <b>Розыгрыш #{giveaway_id} удалён</b>\n\n"
+                f"Постов удалено из каналов: <b>{int(result.get('posts_deleted') or 0)}</b>"
+            )
+            failed = int(result.get("posts_failed") or 0)
+            if failed:
+                text += (
+                    f"\nНе удалось удалить постов: <b>{failed}</b> "
+                    "(например, если у бота больше нет прав в канале)."
+                )
+            await callback.message.answer(text)
+        await show_admin_giveaways(callback.message, callback.from_user)
 
     @router.callback_query(F.data == "admin:broadcast:start")
     async def admin_broadcast_start(callback: CallbackQuery) -> None:
