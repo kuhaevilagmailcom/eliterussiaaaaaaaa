@@ -5420,6 +5420,42 @@ def build_router(
             page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
             await show_admin_support(callback.message, callback.from_user, status, page)
 
+    @router.callback_query(F.data == "admin:analytics")
+    async def admin_analytics_callback(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_admin_analytics(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:analytics:sources")
+    async def admin_analytics_sources_callback(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_admin_analytics_sources(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:analytics:promos")
+    async def admin_analytics_promos_callback(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_admin_analytics_promos(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:analytics:vpn")
+    async def admin_analytics_vpn_callback(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_admin_analytics_vpn(callback.message, callback.from_user)
+
     @router.callback_query(F.data == "admin:payments")
     async def admin_payments_callback(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
