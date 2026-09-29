@@ -63,6 +63,7 @@ svg{width:19px;height:19px;stroke-width:1.8}
 .hero-copy p{margin:0;color:var(--muted)}
 .hero-stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .hero-stats>div{display:flex;align-items:center;gap:10px}
+.hero-stats>.traffic-stat{grid-column:1/-1}
 .stat-icon,.icon-box,.link-icon,.device-symbol{display:grid;place-items:center;flex:0 0 42px;width:42px;height:42px;border-radius:14px;background:var(--surface-elevated);color:var(--accent)}
 .progress{height:5px;margin:16px 0;border-radius:99px;background:rgba(255,255,255,.07);overflow:hidden}
 .progress span{display:block;height:100%;border-radius:inherit;background:var(--accent);transition:width .25s ease}
