@@ -30,6 +30,18 @@ def test_poland_subscription_name_is_normalized_from_h1_inbound_label():
     assert "mgn_8464597898" not in decoded
 
 
+def test_duplicate_us_nodes_are_named_usa_and_usa_2():
+    payload = (
+        "vless://uuid@us3.h1cloud.net:443?security=reality#MGN-US\n"
+        "vless://uuid@us3.h1cloud.net:8443?security=reality#MGN-US\n"
+    ).encode()
+    rendered, count = prettify_subscription_payload(payload)
+    decoded = base64.b64decode(rendered).decode()
+    assert count == 2
+    assert "%D0%A1%D0%A8%D0%90" in decoded
+    assert "%D0%A1%D0%A8%D0%90%202" in decoded
+
+
 def test_h1_legacy_h1cloud_http_api_is_accepted_without_extra_env_flag():
     async def run():
         provider = H1CloudVpnProvider(
@@ -419,7 +431,16 @@ def test_h1_server_diagnostics_reports_main_and_federated_nodes():
         assert report["sources"]["/fed/registry"]["count"] == 1
 
         servers = report["servers"]
-        assert len(servers) == 3
+        assert len(servers) == 7
+        assert [item["name"] for item in servers] == [
+            "🇳🇱 Нидерланды",
+            "🇵🇰 Пакистан",
+            "🇩🇪 Германия",
+            "🇵🇱 Польша",
+            "🇫🇮 Финляндия",
+            "🇺🇸 США",
+            "🇺🇸 США 2",
+        ]
         assert servers[0]["name"] == "🇳🇱 Нидерланды"
         assert servers[0]["available"] is True
 
@@ -455,8 +476,13 @@ def test_h1_server_diagnostics_distinguishes_empty_federation_from_main_config()
 
         report = await provider.server_diagnostics()
         assert report["discovery_ok"] is True
-        assert len(report["servers"]) == 1
+        assert len(report["servers"]) == 7
         assert report["servers"][0]["kind"] == "main"
+        assert report["servers"][0]["name"] == "🇳🇱 Нидерланды"
+        assert all(
+            item["available"] is False
+            for item in report["servers"][1:]
+        )
         assert report["sources"]["/fed/link"]["count"] == 0
         assert report["sources"]["/fed/registry"]["count"] == 0
 
