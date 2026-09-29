@@ -13,6 +13,12 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonCommands
 
+from admin_notifications import (
+    notify_purchase_admins,
+    notify_refund_admins,
+    notify_restart_admins,
+    notify_server_changes,
+)
 from config import Config
 from db import Database
 from emoji import EmojiBank, EmojiFallbackMiddleware
@@ -194,7 +200,12 @@ async def expiry_notification_loop(bot: Bot, db: Database, config: Config) -> No
         await asyncio.sleep(60 * 60)
 
 
-async def payment_reconciliation_loop(config: Config, db: Database, provider: VpnProvider) -> None:
+async def payment_reconciliation_loop(
+    bot: Bot,
+    config: Config,
+    db: Database,
+    provider: VpnProvider,
+) -> None:
     logger = logging.getLogger(__name__)
     while True:
         await asyncio.sleep(60)
@@ -222,8 +233,20 @@ async def payment_reconciliation_loop(config: Config, db: Database, provider: Vp
 
                 if status == "paid" and str(local["status"]) != "paid":
                     if await db.settle_sbp_payment(payment_id):
-                        user = await db.get_user(
-                            int(local.get("target_telegram_id") or local["telegram_id"])
+                        target_id = int(
+                            local.get("target_telegram_id") or local["telegram_id"]
+                        )
+                        user = await db.get_user(target_id)
+                        await notify_purchase_admins(
+                            bot,
+                            config,
+                            db,
+                            buyer_id=int(local["telegram_id"]),
+                            target_id=target_id,
+                            code=str(local["plan_code"]),
+                            method="СБП",
+                            amount=int(local["amount_rub"]),
+                            payment_id=payment_id,
                         )
                         try:
                             await asyncio.wait_for(provider.provision(user), 10.0)
@@ -239,6 +262,14 @@ async def payment_reconciliation_loop(config: Config, db: Database, provider: Vp
                             status,
                             payment_id,
                             target_id,
+                        )
+                        await notify_refund_admins(
+                            bot,
+                            config,
+                            db,
+                            status=status,
+                            payment=local,
+                            target_id=target_id,
                         )
                         try:
                             user = await db.get_user(target_id)
@@ -358,25 +389,13 @@ def make_provider(config: Config) -> VpnProvider:
     )
 
 
-async def _admin_recipients(config: Config, db: Database) -> set[int]:
-    recipients = {int(value) for value in config.admin_ids}
-    try:
-        recipients.update(
-            int(item["telegram_id"])
-            for item in await db.list_admin_roles()
-        )
-    except Exception:
-        logging.getLogger(__name__).exception("Could not load admin recipients")
-    return {value for value in recipients if value > 0}
-
-
 async def server_status_alert_loop(
     bot: Bot,
     config: Config,
     db: Database,
     provider: VpnProvider,
 ) -> None:
-    """Notify every admin when a known VPN server changes state."""
+    """Notify all admins only when a known VPN server changes state."""
     logger = logging.getLogger(__name__)
     previous: dict[str, bool] | None = None
 
@@ -388,37 +407,32 @@ async def server_status_alert_loop(
             )
             servers = list(report.get("servers") or [])
             current: dict[str, bool] = {}
-            labels: dict[str, str] = {}
+            details: dict[str, dict] = {}
+
             for index, item in enumerate(servers, start=1):
                 key = str(item.get("id") or item.get("host") or f"server-{index}")
                 current[key] = bool(item.get("available"))
-                labels[key] = str(item.get("name") or key)
+                details[key] = {
+                    "name": str(item.get("name") or key),
+                    "available": bool(item.get("available")),
+                    "latency_ms": item.get("latency_ms"),
+                }
 
             if previous is not None:
-                changes = [
+                changed_keys = [
                     key
                     for key, state in current.items()
                     if key in previous and previous[key] != state
                 ]
-                if changes:
-                    lines = ["🌐 <b>Изменение статуса серверов MGN VPN</b>", ""]
-                    for key in changes:
-                        state = current[key]
-                        lines.append(
-                            f"{'✅' if state else '❌'} <b>{labels[key]}</b> — "
-                            f"{'снова онлайн' if state else 'недоступен'}"
-                        )
-                    lines += ["", "<i>Уведомление получили все администраторы.</i>"]
-                    text = "\n".join(lines)
-                    for admin_id in sorted(await _admin_recipients(config, db)):
-                        try:
-                            await bot.send_message(admin_id, text)
-                        except Exception as exc:
-                            logger.warning(
-                                "Could not send server alert to admin %s: %s",
-                                admin_id,
-                                type(exc).__name__,
-                            )
+                if changed_keys:
+                    await notify_server_changes(
+                        bot,
+                        config,
+                        db,
+                        changes=[details[key] for key in changed_keys],
+                        online=sum(1 for state in current.values() if state),
+                        total=len(current),
+                    )
 
             previous = current
         except Exception as exc:
@@ -433,21 +447,8 @@ async def notify_admins_restarted(
     db: Database,
     provider: VpnProvider,
 ) -> None:
-    """Notify every configured/stored admin after a successful startup."""
+    """Notify every admin after successful startup with useful controls."""
     logger = logging.getLogger(__name__)
-    recipients = {int(value) for value in config.admin_ids}
-    try:
-        recipients.update(
-            int(item["telegram_id"])
-            for item in await db.list_admin_roles()
-        )
-    except Exception:
-        logger.exception("Could not load admin recipients for restart notice")
-
-    if not recipients:
-        return
-
-    started_at = datetime.now(config.display_tz).strftime("%d.%m.%Y · %H:%M:%S")
     vpn_status = "ожидает подключения"
     if getattr(provider, "service_ready", True):
         try:
@@ -463,24 +464,13 @@ async def notify_admins_restarted(
                 "Provider readiness check failed during startup: %s",
                 type(exc).__name__,
             )
-    text = (
-        "♻️ <b>MGN VPN перезапущен</b>\n\n"
-        f"🕒 <b>Время:</b> {started_at}\n"
-        "✅ <b>Бот:</b> запущен\n"
-        "🌐 <b>Mini App:</b> запущен\n"
-        f"🔐 <b>VPN:</b> {vpn_status}\n\n"
-        "<i>Сервис снова принимает команды.</i>"
-    )
 
-    for admin_id in sorted(recipients):
-        try:
-            await bot.send_message(chat_id=admin_id, text=text)
-        except Exception as exc:
-            logger.warning(
-                "Could not send restart notice to admin %s: %s",
-                admin_id,
-                type(exc).__name__,
-            )
+    await notify_restart_admins(
+        bot,
+        config,
+        db,
+        vpn_status=vpn_status,
+    )
 
 
 async def main() -> None:
@@ -550,7 +540,9 @@ async def main() -> None:
     emoji = EmojiBank(config.emoji_packs)
     provider = make_provider(config)
     miniapp = MiniAppServer(bot, config, db, provider)
-    payment_task = asyncio.create_task(payment_reconciliation_loop(config, db, provider))
+    payment_task = asyncio.create_task(
+        payment_reconciliation_loop(bot, config, db, provider)
+    )
     expiry_task = asyncio.create_task(expiry_notification_loop(bot, db, config))
     server_alert_task = asyncio.create_task(
         server_status_alert_loop(bot, config, db, provider)
