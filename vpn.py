@@ -21,7 +21,19 @@ GB = 1024 ** 3
 logger = logging.getLogger(__name__)
 
 
+CANONICAL_SERVERS: tuple[tuple[str, str], ...] = (
+    ("nl", "🇳🇱 Нидерланды"),
+    ("pk", "🇵🇰 Пакистан"),
+    ("de", "🇩🇪 Германия"),
+    ("pl", "🇵🇱 Польша"),
+    ("fi", "🇫🇮 Финляндия"),
+    ("us", "🇺🇸 США"),
+    ("us2", "🇺🇸 США 2"),
+)
+
 LOCATION_LABELS = {
+    "MGN-US2": "🇺🇸 США 2",
+    "MGN-USA2": "🇺🇸 США 2",
     "MGN-NL": "🇳🇱 Нидерланды",
     "MGN-DE": "🇩🇪 Германия",
     "MGN-FI": "🇫🇮 Финляндия",
@@ -44,6 +56,8 @@ def _location_label(value: str) -> str:
         ("DE5.H1CLOUD.NET", "🇩🇪 Германия"),
         ("FI5.H1CLOUD.NET", "🇫🇮 Финляндия"),
         ("LT3.H1CLOUD.NET", "🇱🇹 Литва"),
+        ("US2.H1CLOUD.NET", "🇺🇸 США 2"),
+        ("USA2", "🇺🇸 США 2"),
         ("US3.H1CLOUD.NET", "🇺🇸 США"),
         ("PL-D1.H1CLOUD.NET", "🇵🇱 Польша"),
         ("PAKISTAN", "🇵🇰 Пакистан"),
@@ -108,7 +122,10 @@ def prettify_subscription_payload(payload: bytes) -> tuple[bytes, int]:
                 used_labels[base_label] = used_labels.get(base_label, 0) + 1
                 suffix = used_labels[base_label]
                 if suffix > 1:
-                    label = f"{label} · {suffix}"
+                    if base_label == "🇺🇸 США" and suffix == 2:
+                        label = "🇺🇸 США 2"
+                    else:
+                        label = f"{label} · {suffix}"
                 if smart_recommended:
                     label = f"⚡ Рекомендуемый · {label}"
                 line = line.split("#", 1)[0] + "#" + quote(label, safe="")
