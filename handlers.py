@@ -6,7 +6,7 @@ import html
 import json
 import logging
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -50,6 +50,11 @@ from catalog import (
 from config import Config
 from db import Database, from_iso, utcnow
 from emoji import EmojiBank
+from giveaway import (
+    finish_giveaway,
+    render_giveaway_post,
+    send_giveaway_post,
+)
 from payments import RollyPayError, create_payment, get_payment
 from legal import agreement_telegram
 from vpn import VpnProvider, VpnState
@@ -3260,6 +3265,9 @@ def build_router(
                 blue_inline_button("📣 Рассылка", callback_data="admin:broadcast:start"),
                 blue_inline_button("Публикация в канал", callback_data="admin:ad:start"),
             )
+            kb.row(
+                blue_inline_button("🎁 Розыгрыши", callback_data="admin:giveaways"),
+            )
         if role == "owner":
             kb.row(
                 blue_inline_button("🛡 Администраторы", callback_data="admin:admins"),
@@ -3914,6 +3922,218 @@ def build_router(
             return "@" + match.group(1)
         return None
 
+    def giveaway_draft(session: dict[str, Any]) -> dict[str, Any]:
+        try:
+            value = json.loads(str(session.get("payload") or "{}"))
+        except (TypeError, ValueError):
+            value = {}
+        return value if isinstance(value, dict) else {}
+
+    def parse_giveaway_channels(raw: str) -> list[int | str] | None:
+        parts = [part for part in re.split(r"[\s,;]+", str(raw or "").strip()) if part]
+        if not parts or len(parts) > 10:
+            return None
+        result: list[int | str] = []
+        seen: set[str] = set()
+        for part in parts:
+            channel = normalize_channel(part)
+            if channel is None:
+                return None
+            key = str(channel).lower()
+            if key not in seen:
+                seen.add(key)
+                result.append(channel)
+        return result or None
+
+    def giveaway_end_label(item: dict[str, Any]) -> str:
+        if item.get("end_mode") == "time":
+            ends = from_iso(item.get("ends_at"))
+            if ends:
+                return ends.astimezone(config.display_tz).strftime("%d.%m.%Y · %H:%M")
+            return "по времени"
+        return f"{int(item.get('participant_limit') or 0)} участников"
+
+    async def show_admin_giveaways(message: Message, actor) -> None:
+        if not await has_full_admin_access(actor.id):
+            return
+        items = await db.list_giveaways(12)
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("➕ Новый розыгрыш", callback_data="admin:giveaway:new"))
+        lines = [
+            "🎁 <b>Розыгрыши MGN VPN</b>",
+            "",
+            "Розыгрыши хранятся в базе и продолжают работать после перезапуска бота.",
+            "",
+        ]
+        if not items:
+            lines.append("Розыгрышей пока нет.")
+        else:
+            status_labels = {
+                "active": "🟢 идёт",
+                "finishing": "🟡 подводим итоги",
+                "finished": "✅ завершён",
+                "cancelled": "⚪ отменён",
+            }
+            for item in items:
+                giveaway_id = int(item["id"])
+                lines.append(
+                    f"<b>#{giveaway_id}</b> · {status_labels.get(str(item.get('status')), str(item.get('status')))}\n"
+                    f"Призов: <b>{int(item.get('winners_count') or 0)}</b> × "
+                    f"<b>{int(item.get('prize_days') or 0)} дн.</b> · "
+                    f"участников: <b>{int(item.get('participant_count') or 0)}</b>\n"
+                    f"Финиш: <b>{html.escape(giveaway_end_label(item))}</b>"
+                )
+                kb.row(
+                    blue_inline_button(
+                        f"Открыть #{giveaway_id}",
+                        callback_data=f"admin:giveaway:view:{giveaway_id}",
+                    )
+                )
+        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
+        await send_screen(message, actor, "\n\n".join(lines), reply_markup=kb.as_markup())
+
+    async def show_admin_giveaway(message: Message, actor, giveaway_id: int) -> None:
+        if not await has_full_admin_access(actor.id):
+            return
+        item = await db.get_giveaway(giveaway_id)
+        if not item:
+            await message.answer("Розыгрыш не найден.")
+            return
+        posts = await db.list_giveaway_posts(giveaway_id)
+        winners = await db.get_giveaway_winners(giveaway_id)
+        status_labels = {
+            "active": "🟢 Идёт",
+            "finishing": "🟡 Подводятся итоги",
+            "finished": "✅ Завершён",
+            "cancelled": "⚪ Отменён",
+        }
+        lines = [
+            f"🎁 <b>Розыгрыш #{giveaway_id}</b>",
+            "",
+            f"Статус: <b>{status_labels.get(str(item.get('status')), str(item.get('status')))}</b>",
+            f"Участников: <b>{int(item.get('participant_count') or 0)}</b>",
+            f"Победителей: <b>{int(item.get('winners_count') or 0)}</b>",
+            f"Приз: <b>{int(item.get('prize_days') or 0)} дней MGN VPN</b>",
+            f"Условие завершения: <b>{html.escape(giveaway_end_label(item))}</b>",
+            f"Публикаций: <b>{len(posts)}</b>",
+        ]
+        if winners:
+            lines += ["", "🏆 <b>Победители</b>"]
+            for index, winner in enumerate(winners, start=1):
+                username = str(winner.get("username") or "").strip()
+                label = f"@{username}" if username else f"Победитель #{index}"
+                lines.append(f"{index}. {html.escape(label)}")
+        kb = InlineKeyboardBuilder()
+        if str(item.get("status")) == "active":
+            kb.row(
+                blue_inline_button(
+                    "🏁 Завершить сейчас",
+                    callback_data=f"admin:giveaway:finish:{giveaway_id}",
+                )
+            )
+        kb.row(blue_inline_button("⬅️ Розыгрыши", callback_data="admin:giveaways"))
+        await send_screen(message, actor, "\n".join(lines), reply_markup=kb.as_markup())
+
+    async def ask_giveaway_winners(message: Message, actor_id: int, draft: dict[str, Any]) -> None:
+        await db.set_support_session(actor_id, "giveaway_winners", payload=json.dumps(draft))
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button("1", callback_data="admin:giveaway:winners:1"),
+            blue_inline_button("2", callback_data="admin:giveaway:winners:2"),
+            blue_inline_button("3", callback_data="admin:giveaway:winners:3"),
+            blue_inline_button("5", callback_data="admin:giveaway:winners:5"),
+        )
+        kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+        await message.answer(
+            "<b>Новый розыгрыш · 3/7</b>\n\n"
+            "Сколько подписок разыграть? Выберите кнопку или отправьте число от 1 до 10.",
+            reply_markup=kb.as_markup(),
+        )
+
+    async def ask_giveaway_days(message: Message, actor_id: int, draft: dict[str, Any]) -> None:
+        await db.set_support_session(actor_id, "giveaway_days", payload=json.dumps(draft))
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button("30 дней", callback_data="admin:giveaway:days:30"),
+            blue_inline_button("90 дней", callback_data="admin:giveaway:days:90"),
+        )
+        kb.row(
+            blue_inline_button("180 дней", callback_data="admin:giveaway:days:180"),
+            blue_inline_button("365 дней", callback_data="admin:giveaway:days:365"),
+        )
+        kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+        await message.answer(
+            "<b>Новый розыгрыш · 4/7</b>\n\n"
+            "На какой срок выдать подписку каждому победителю? Можно отправить своё количество дней.",
+            reply_markup=kb.as_markup(),
+        )
+
+    async def ask_giveaway_end_mode(message: Message, actor_id: int, draft: dict[str, Any]) -> None:
+        await db.set_support_session(actor_id, "giveaway_end_value", payload=json.dumps(draft))
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button("📅 По дате и времени", callback_data="admin:giveaway:end:time"),
+        )
+        kb.row(
+            blue_inline_button("👥 По числу участников", callback_data="admin:giveaway:end:participants"),
+        )
+        kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+        await message.answer(
+            "<b>Новый розыгрыш · 5/7</b>\n\nКогда завершить розыгрыш?",
+            reply_markup=kb.as_markup(),
+        )
+
+    async def ask_giveaway_channels(message: Message, actor_id: int, draft: dict[str, Any]) -> None:
+        await db.set_support_session(actor_id, "giveaway_channels", payload=json.dumps(draft))
+        kb = InlineKeyboardBuilder()
+        if normalize_channel(config.channel_url) is not None:
+            kb.row(
+                blue_inline_button(
+                    "Основной канал",
+                    callback_data="admin:giveaway:channel:main",
+                )
+            )
+        kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+        await message.answer(
+            "<b>Новый розыгрыш · 7/7</b>\n\n"
+            "Выберите основной канал или отправьте один/несколько каналов через пробел, запятую или с новой строки.\n"
+            "Поддерживаются <code>@username</code>, ссылка <code>t.me/...</code> и ID <code>-100…</code>.",
+            reply_markup=kb.as_markup(),
+        )
+
+    async def show_giveaway_preview(message: Message, actor_id: int, draft: dict[str, Any]) -> None:
+        await db.set_support_session(actor_id, "giveaway_confirm", payload=json.dumps(draft))
+        preview = {
+            **draft,
+            "id": 0,
+            "status": "active",
+            "participant_count": 0,
+        }
+        channels = ", ".join(html.escape(str(value)) for value in draft.get("channels") or [])
+        await message.answer(
+            "<b>Предпросмотр розыгрыша</b>\n\n"
+            f"Каналы: <code>{channels}</code>\n"
+            f"Призов: <b>{int(draft.get('winners_count') or 0)}</b>\n"
+            f"Срок каждой подписки: <b>{int(draft.get('prize_days') or 0)} дней</b>\n"
+            f"Завершение: <b>{html.escape(giveaway_end_label(preview))}</b>"
+        )
+        preview_text = render_giveaway_post(
+            preview,
+            participant_count=0,
+            display_tz=config.display_tz,
+        )
+        if draft.get("photo_file_id"):
+            await message.answer_photo(
+                str(draft["photo_file_id"]),
+                caption=preview_text,
+            )
+        else:
+            await message.answer(preview_text)
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("🚀 Запустить", callback_data="admin:giveaway:send"))
+        kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+        await message.answer("Всё готово. Запустить розыгрыш?", reply_markup=kb.as_markup())
+
     def first_custom_emoji_id(message: Message) -> str:
         for entity in message.entities or []:
             if str(entity.type) in {"custom_emoji", "MessageEntityType.CUSTOM_EMOJI"}:
@@ -3995,6 +4215,237 @@ def build_router(
         await safe_callback_answer(callback, )
         if callback.message:
             await show_admin_stats(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:giveaways")
+    async def admin_giveaways_callback(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нужна полная админка.", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_admin_giveaways(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:giveaway:new")
+    async def admin_giveaway_new(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нужна полная админка.", show_alert=True)
+            return
+        await db.set_support_session(callback.from_user.id, "giveaway_text", payload="{}")
+        await safe_callback_answer(callback)
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+        await callback.message.answer(
+            "<b>Новый розыгрыш · 1/7</b>\n\n"
+            "Отправьте текст поста. Форматирование сохраняется. Максимум 650 символов.",
+            reply_markup=kb.as_markup(),
+        )
+
+    @router.callback_query(F.data == "admin:giveaway:skip-photo")
+    async def admin_giveaway_skip_photo(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        session = await db.get_support_session(callback.from_user.id)
+        if not session or session.get("mode") != "giveaway_photo":
+            await safe_callback_answer(callback, "Черновик устарел", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        await ask_giveaway_winners(callback.message, callback.from_user.id, giveaway_draft(session))
+
+    @router.callback_query(F.data.regexp(r"^admin:giveaway:winners:\d+$"))
+    async def admin_giveaway_winners(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        session = await db.get_support_session(callback.from_user.id)
+        if not session or session.get("mode") != "giveaway_winners":
+            await safe_callback_answer(callback, "Черновик устарел", show_alert=True)
+            return
+        value = int(callback.data.rsplit(":", 1)[-1])
+        if not 1 <= value <= 10:
+            await safe_callback_answer(callback, "Допустимо от 1 до 10.", show_alert=True)
+            return
+        draft = giveaway_draft(session)
+        draft["winners_count"] = value
+        await safe_callback_answer(callback)
+        await ask_giveaway_days(callback.message, callback.from_user.id, draft)
+
+    @router.callback_query(F.data.regexp(r"^admin:giveaway:days:\d+$"))
+    async def admin_giveaway_days(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        session = await db.get_support_session(callback.from_user.id)
+        if not session or session.get("mode") != "giveaway_days":
+            await safe_callback_answer(callback, "Черновик устарел", show_alert=True)
+            return
+        value = int(callback.data.rsplit(":", 1)[-1])
+        if not 1 <= value <= 3650:
+            await safe_callback_answer(callback, "Некорректный срок.", show_alert=True)
+            return
+        draft = giveaway_draft(session)
+        draft["prize_days"] = value
+        await safe_callback_answer(callback)
+        await ask_giveaway_end_mode(callback.message, callback.from_user.id, draft)
+
+    @router.callback_query(F.data == "admin:giveaway:end:time")
+    async def admin_giveaway_end_time(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        session = await db.get_support_session(callback.from_user.id)
+        if not session or session.get("mode") != "giveaway_end_value":
+            await safe_callback_answer(callback, "Черновик устарел", show_alert=True)
+            return
+        draft = giveaway_draft(session)
+        draft["end_mode"] = "time"
+        await db.set_support_session(callback.from_user.id, "giveaway_end_value", payload=json.dumps(draft))
+        await safe_callback_answer(callback)
+        await callback.message.answer(
+            "<b>Новый розыгрыш · 6/7</b>\n\n"
+            "Отправьте дату и время окончания по времени сервиса в формате:\n"
+            "<code>30.09.2026 21:30</code>"
+        )
+
+    @router.callback_query(F.data == "admin:giveaway:end:participants")
+    async def admin_giveaway_end_participants(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        session = await db.get_support_session(callback.from_user.id)
+        if not session or session.get("mode") != "giveaway_end_value":
+            await safe_callback_answer(callback, "Черновик устарел", show_alert=True)
+            return
+        draft = giveaway_draft(session)
+        draft["end_mode"] = "participants"
+        await db.set_support_session(callback.from_user.id, "giveaway_end_value", payload=json.dumps(draft))
+        await safe_callback_answer(callback)
+        await callback.message.answer(
+            "<b>Новый розыгрыш · 6/7</b>\n\n"
+            "Отправьте количество участников, после которого розыгрыш завершится автоматически."
+        )
+
+    @router.callback_query(F.data == "admin:giveaway:channel:main")
+    async def admin_giveaway_main_channel(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        session = await db.get_support_session(callback.from_user.id)
+        channel = normalize_channel(config.channel_url)
+        if not session or session.get("mode") != "giveaway_channels" or channel is None:
+            await safe_callback_answer(callback, "Основной канал не настроен.", show_alert=True)
+            return
+        draft = giveaway_draft(session)
+        draft["channels"] = [channel]
+        await safe_callback_answer(callback)
+        await show_giveaway_preview(callback.message, callback.from_user.id, draft)
+
+    @router.callback_query(F.data == "admin:giveaway:send")
+    async def admin_giveaway_send(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        session = await db.get_support_session(callback.from_user.id)
+        if not session or session.get("mode") != "giveaway_confirm":
+            await safe_callback_answer(callback, "Черновик устарел", show_alert=True)
+            return
+        draft = giveaway_draft(session)
+        channels = list(draft.get("channels") or [])
+        if not channels:
+            await safe_callback_answer(callback, "Каналы не выбраны.", show_alert=True)
+            return
+
+        try:
+            giveaway = await db.create_giveaway(
+                created_by=callback.from_user.id,
+                text_html=str(draft.get("text_html") or ""),
+                text_plain=str(draft.get("text_plain") or ""),
+                photo_file_id=str(draft.get("photo_file_id") or "") or None,
+                winners_count=int(draft.get("winners_count") or 0),
+                prize_days=int(draft.get("prize_days") or 0),
+                end_mode=str(draft.get("end_mode") or ""),
+                ends_at=draft.get("ends_at"),
+                participant_limit=draft.get("participant_limit"),
+            )
+        except Exception as exc:
+            logger.warning("Could not create giveaway: %s", type(exc).__name__)
+            await safe_callback_answer(callback, "Не удалось создать розыгрыш.", show_alert=True)
+            return
+
+        sent_count = 0
+        failed: list[str] = []
+        for channel in channels:
+            try:
+                sent = await send_giveaway_post(
+                    callback.bot,
+                    giveaway,
+                    channel,
+                    display_tz=config.display_tz,
+                )
+                await db.add_giveaway_post(int(giveaway["id"]), channel, int(sent.message_id))
+                sent_count += 1
+            except Exception as exc:
+                failed.append(str(channel))
+                logger.warning(
+                    "Giveaway #%s publish failed for %s: %s",
+                    giveaway["id"],
+                    channel,
+                    type(exc).__name__,
+                )
+
+        if sent_count == 0:
+            await db.cancel_giveaway(int(giveaway["id"]))
+            await safe_callback_answer(callback, "Не удалось опубликовать ни в один канал.", show_alert=True)
+            return
+
+        await db.clear_support_session(callback.from_user.id)
+        await safe_callback_answer(callback, "Розыгрыш запущен!")
+        text = (
+            f"✅ <b>Розыгрыш #{int(giveaway['id'])} запущен</b>\n\n"
+            f"Опубликовано каналов: <b>{sent_count}</b>"
+        )
+        if failed:
+            text += "\nНе удалось: <code>" + html.escape(", ".join(failed)) + "</code>"
+        await callback.message.answer(
+            text,
+            reply_markup=admin_main_keyboard(await get_admin_role(callback.from_user.id) or "full"),
+        )
+
+    @router.callback_query(F.data == "admin:giveaway:cancel")
+    async def admin_giveaway_cancel(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await db.clear_support_session(callback.from_user.id)
+        await safe_callback_answer(callback, "Черновик розыгрыша удалён.")
+        if callback.message:
+            await show_admin_giveaways(callback.message, callback.from_user)
+
+    @router.callback_query(F.data.regexp(r"^admin:giveaway:view:\d+$"))
+    async def admin_giveaway_view(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        giveaway_id = int(callback.data.rsplit(":", 1)[-1])
+        await safe_callback_answer(callback)
+        await show_admin_giveaway(callback.message, callback.from_user, giveaway_id)
+
+    @router.callback_query(F.data.regexp(r"^admin:giveaway:finish:\d+$"))
+    async def admin_giveaway_finish(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        giveaway_id = int(callback.data.rsplit(":", 1)[-1])
+        await safe_callback_answer(callback, "Подвожу итоги…")
+        await finish_giveaway(
+            callback.bot,
+            db,
+            config,
+            provider,
+            giveaway_id,
+            force=True,
+        )
+        await show_admin_giveaway(callback.message, callback.from_user, giveaway_id)
 
     @router.callback_query(F.data == "admin:broadcast:start")
     async def admin_broadcast_start(callback: CallbackQuery) -> None:
@@ -4118,6 +4569,54 @@ def build_router(
         await safe_callback_answer(callback, "Черновик удалён")
         if callback.message:
             await show_admin(callback.message, callback.from_user)
+
+    @router.callback_query(F.data.regexp(r"^giveaway:join:\d+$"))
+    async def giveaway_join(callback: CallbackQuery) -> None:
+        giveaway_id = int(callback.data.rsplit(":", 1)[-1])
+        giveaway = await db.get_giveaway(giveaway_id)
+        if not giveaway:
+            await safe_callback_answer(callback, "Розыгрыш не найден.", show_alert=True)
+            return
+        if str(giveaway.get("status")) != "active":
+            await safe_callback_answer(callback, "Этот розыгрыш уже завершён.", show_alert=True)
+            return
+
+        await ensure_actor(callback.from_user)
+        result = await db.add_giveaway_participant(
+            giveaway_id=giveaway_id,
+            telegram_id=callback.from_user.id,
+            username=callback.from_user.username,
+            first_name=callback.from_user.first_name,
+        )
+        state = str(result.get("state") or "")
+        if state == "missing":
+            await safe_callback_answer(callback, "Розыгрыш не найден.", show_alert=True)
+            return
+        if state == "ended":
+            await safe_callback_answer(callback, "Приём участников уже завершён.", show_alert=True)
+            asyncio.create_task(
+                finish_giveaway(callback.bot, db, config, provider, giveaway_id)
+            )
+            return
+
+        winners_count = int(giveaway.get("winners_count") or 1)
+        prize_days = int(giveaway.get("prize_days") or 1)
+        if state == "already":
+            message_text = (
+                f"Вы уже участвуете в розыгрыше!\n"
+                f"Призов: {winners_count}, по {prize_days} дней MGN VPN."
+            )
+        else:
+            message_text = (
+                f"🎉 Вы участвуете в розыгрыше!\n"
+                f"Призов: {winners_count}, по {prize_days} дней MGN VPN.\n"
+                f"Сейчас участников: {int(result.get('count') or 0)}."
+            )
+        await safe_callback_answer(callback, message_text, show_alert=True)
+        if result.get("due"):
+            asyncio.create_task(
+                finish_giveaway(callback.bot, db, config, provider, giveaway_id)
+            )
 
     @router.callback_query(F.data.regexp(r"^admin:users(?::\d+)?$"))
     async def admin_users_callback(callback: CallbackQuery) -> None:
@@ -4788,6 +5287,118 @@ def build_router(
             if action == "grant":
                 await notify_subscription_granted(message.bot, updated, days)
             await show_admin_user(message, message.from_user, uid)
+            return True
+
+        if str(session["mode"]).startswith("giveaway_"):
+            if not await has_full_admin_access(user_id):
+                await db.clear_support_session(user_id)
+                return True
+            mode = str(session["mode"])
+            draft = giveaway_draft(session)
+
+            if mode == "giveaway_text":
+                text_html = str(message.html_text or "").strip() if message.text else ""
+                text_plain = str(message.text or "").strip()
+                if not text_html or not text_plain or len(text_plain) > 650:
+                    await message.answer("Отправьте текст длиной от 1 до 650 символов.")
+                    return True
+                draft["text_html"] = text_html
+                draft["text_plain"] = text_plain
+                await db.set_support_session(user_id, "giveaway_photo", payload=json.dumps(draft))
+                kb = InlineKeyboardBuilder()
+                kb.row(blue_inline_button("Без изображения", callback_data="admin:giveaway:skip-photo"))
+                kb.row(blue_inline_button("Отмена", callback_data="admin:giveaway:cancel", premium_icon=False))
+                await message.answer(
+                    "<b>Новый розыгрыш · 2/7</b>\n\n"
+                    "Отправьте изображение или продолжите без него.",
+                    reply_markup=kb.as_markup(),
+                )
+                return True
+
+            if mode == "giveaway_photo":
+                if not message.photo:
+                    await message.answer("Отправьте изображение или нажмите «Без изображения».")
+                    return True
+                if len(str(draft.get("text_plain") or "")) > 550:
+                    await message.answer(
+                        "Для поста с изображением текст должен быть короче 550 символов, "
+                        "чтобы после итогов поместились победители. Нажмите «Без изображения» "
+                        "или начните заново с более коротким текстом."
+                    )
+                    return True
+                draft["photo_file_id"] = message.photo[-1].file_id
+                await ask_giveaway_winners(message, user_id, draft)
+                return True
+
+            if mode == "giveaway_winners":
+                raw = str(message.text or "").strip()
+                if not raw.isdigit() or not 1 <= int(raw) <= 10:
+                    await message.answer("Отправьте число победителей от 1 до 10.")
+                    return True
+                draft["winners_count"] = int(raw)
+                await ask_giveaway_days(message, user_id, draft)
+                return True
+
+            if mode == "giveaway_days":
+                raw = str(message.text or "").strip()
+                if not raw.isdigit() or not 1 <= int(raw) <= 3650:
+                    await message.answer("Отправьте срок подписки от 1 до 3650 дней.")
+                    return True
+                draft["prize_days"] = int(raw)
+                await ask_giveaway_end_mode(message, user_id, draft)
+                return True
+
+            if mode == "giveaway_end_value":
+                end_mode = str(draft.get("end_mode") or "")
+                raw = str(message.text or "").strip()
+                if end_mode == "time":
+                    try:
+                        local_dt = datetime.strptime(raw, "%d.%m.%Y %H:%M").replace(
+                            tzinfo=config.display_tz
+                        )
+                    except ValueError:
+                        await message.answer(
+                            "Неверный формат. Пример: <code>30.09.2026 21:30</code>"
+                        )
+                        return True
+                    if local_dt <= datetime.now(config.display_tz):
+                        await message.answer("Дата окончания должна быть в будущем.")
+                        return True
+                    draft["ends_at"] = local_dt.astimezone(timezone.utc).isoformat()
+                    draft.pop("participant_limit", None)
+                    await ask_giveaway_channels(message, user_id, draft)
+                    return True
+                if end_mode == "participants":
+                    if not raw.isdigit():
+                        await message.answer("Отправьте количество участников числом.")
+                        return True
+                    limit = int(raw)
+                    winners_count = int(draft.get("winners_count") or 1)
+                    if limit < winners_count or limit > 100000:
+                        await message.answer(
+                            f"Количество участников должно быть от {winners_count} до 100000."
+                        )
+                        return True
+                    draft["participant_limit"] = limit
+                    draft.pop("ends_at", None)
+                    await ask_giveaway_channels(message, user_id, draft)
+                    return True
+                await message.answer("Сначала выберите способ завершения кнопкой.")
+                return True
+
+            if mode == "giveaway_channels":
+                channels = parse_giveaway_channels(str(message.text or ""))
+                if not channels:
+                    await message.answer(
+                        "Не удалось прочитать каналы. Отправьте @username, t.me-ссылку "
+                        "или ID -100… Можно несколько через пробел/запятую."
+                    )
+                    return True
+                draft["channels"] = channels
+                await show_giveaway_preview(message, user_id, draft)
+                return True
+
+            await message.answer("Используйте кнопки предпросмотра или отмены.")
             return True
 
         if str(session["mode"]).startswith("ad_"):
