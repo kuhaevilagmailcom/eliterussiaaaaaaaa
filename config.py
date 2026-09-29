@@ -83,7 +83,6 @@ class Config:
     rollypay_api_base: str
     rollypay_terminal_id: str
     rollypay_api_key: str
-    rollypay_signing_secret: str
     rollypay_test_mode: bool
 
     @property
@@ -210,10 +209,6 @@ class Config:
             ).rstrip("/"),
             rollypay_terminal_id=os.getenv("ROLLYPAY_TERMINAL_ID", "").strip(),
             rollypay_api_key=os.getenv("ROLLYPAY_API_KEY", "").strip(),
-            rollypay_signing_secret=os.getenv(
-                "ROLLYPAY_SIGNING_SECRET",
-                "",
-            ).strip(),
             rollypay_test_mode=_bool(
                 os.getenv("ROLLYPAY_TEST_MODE", "false"),
                 default=False,
