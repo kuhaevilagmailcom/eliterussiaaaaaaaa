@@ -267,9 +267,9 @@ async def notify_restart_admins(
         [
             "♻️ <b>MGN VPN перезапущен</b>",
             "",
-            "✅ Бот — <b>работает</b>",
-            "✅ Mini App — <b>работает</b>",
-            f"🌐 VPN — <b>{html.escape(vpn_status)}</b>",
+            "✅ <b>Бот:</b> запущен",
+            "✅ <b>Mini App:</b> запущен",
+            f"🌐 <b>VPN:</b> {html.escape(vpn_status)}",
             "",
             f"🕒 {_event_time(config)}",
         ]
