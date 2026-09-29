@@ -84,6 +84,67 @@ def _location_label(value: str) -> str:
     return ""
 
 
+def _country_code_from_label(label: str) -> str:
+    value = str(label or "")
+    if "США 2" in value:
+        return "us2"
+    if "США" in value:
+        return "us"
+    if "Нидерланды" in value:
+        return "nl"
+    if "Пакистан" in value:
+        return "pk"
+    if "Германия" in value:
+        return "de"
+    if "Польша" in value:
+        return "pl"
+    if "Финляндия" in value:
+        return "fi"
+    if "Литва" in value:
+        return "lt"
+    if "Латвия" in value:
+        return "lv"
+    return ""
+
+
+def prefer_subscription_country(payload: bytes, country_code: str) -> bytes:
+    """Move the selected country to the top without removing any fallback node."""
+    code = str(country_code or "auto").strip().lower()
+    if code in {"", "auto"}:
+        return payload
+
+    raw = payload.decode("utf-8", errors="ignore").strip()
+    decoded = raw
+    if "vless://" not in raw.lower():
+        compact = "".join(raw.split())
+        if compact:
+            padded = compact + "=" * (-len(compact) % 4)
+            for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+                try:
+                    candidate = decoder(padded.encode()).decode("utf-8")
+                except Exception:
+                    continue
+                if "vless://" in candidate.lower():
+                    decoded = candidate
+                    break
+
+    lines = [line.strip() for line in decoded.splitlines() if line.strip()]
+    if not lines:
+        return payload
+
+    preferred: list[str] = []
+    fallback: list[str] = []
+    for line in lines:
+        label = _location_label(line)
+        if _country_code_from_label(label) == code:
+            preferred.append(line)
+        else:
+            fallback.append(line)
+    if not preferred:
+        return payload
+    return base64.b64encode(("\n".join([*preferred, *fallback]) + "\n").encode("utf-8"))
+
+
 def prettify_subscription_payload(payload: bytes) -> tuple[bytes, int]:
     """Normalize H1 node names and return a standard base64 subscription."""
 
