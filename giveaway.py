@@ -240,6 +240,67 @@ async def _notify_winners(
         await db.mark_giveaway_winner_notified(int(giveaway["id"]), telegram_id)
 
 
+async def delete_giveaway(
+    bot,
+    db: Database,
+    giveaway_id: int,
+) -> dict[str, int | bool]:
+    """Delete channel posts and persistent giveaway data under the same finish lock."""
+    giveaway_id = int(giveaway_id)
+    lock = _finish_locks.setdefault(giveaway_id, asyncio.Lock())
+    async with lock:
+        giveaway = await db.get_giveaway(giveaway_id)
+        if not giveaway:
+            return {"deleted": False, "posts_deleted": 0, "posts_failed": 0}
+
+        posts = await db.list_giveaway_posts(giveaway_id)
+        posts_deleted = 0
+        posts_failed = 0
+
+        for post in posts:
+            try:
+                await bot.delete_message(
+                    chat_id=_chat_id(post["chat_id"]),
+                    message_id=int(post["message_id"]),
+                )
+                posts_deleted += 1
+            except TelegramBadRequest as exc:
+                message = str(exc).lower()
+                if "message to delete not found" in message:
+                    posts_deleted += 1
+                else:
+                    posts_failed += 1
+                    logger.warning(
+                        "Could not delete giveaway %s post in %s: %s",
+                        giveaway_id,
+                        post["chat_id"],
+                        type(exc).__name__,
+                    )
+            except TelegramForbiddenError:
+                posts_failed += 1
+                logger.warning(
+                    "Could not delete giveaway %s post in %s: bot has no access",
+                    giveaway_id,
+                    post["chat_id"],
+                )
+            except Exception as exc:
+                posts_failed += 1
+                logger.warning(
+                    "Could not delete giveaway %s post in %s: %s",
+                    giveaway_id,
+                    post["chat_id"],
+                    type(exc).__name__,
+                )
+
+        deleted = await db.delete_giveaway(giveaway_id)
+        _finish_locks.pop(giveaway_id, None)
+        return {
+            "deleted": bool(deleted),
+            "posts_deleted": posts_deleted,
+            "posts_failed": posts_failed,
+        }
+
+
 async def finish_giveaway(
     bot,
     db: Database,
