@@ -309,18 +309,39 @@ def blue_inline_button(
     web_app: WebAppInfo | None = None,
     icon_index: int | None = None,
     premium_icon: bool = True,
+    style: str | None = None,
 ) -> InlineKeyboardButton:
+    # The admin panel intentionally uses only regular Unicode emoji.
+    # No Premium/custom emoji IDs are ever attached to admin callbacks.
+    is_admin_button = str(callback_data or "").startswith("admin:")
     kwargs: dict[str, Any] = {
         "text": _clean_button_text(text),
         "callback_data": callback_data,
         "url": url,
         "web_app": web_app,
     }
-    if premium_icon:
+    if style in {"primary", "success", "danger"}:
+        kwargs["style"] = style
+    if premium_icon and not is_admin_button:
         custom_id = _button_icon_id(text, icon_index)
         if custom_id:
             kwargs["icon_custom_emoji_id"] = custom_id
     return InlineKeyboardButton(**kwargs)
+
+
+def admin_inline_button(
+    text: str,
+    *,
+    callback_data: str,
+    style: str | None = "primary",
+) -> InlineKeyboardButton:
+    """Admin-only button: standard emoji + Bot API native style, never custom emoji."""
+    return blue_inline_button(
+        text,
+        callback_data=callback_data,
+        premium_icon=False,
+        style=style,
+    )
 
 
 def copy_inline_button(
@@ -1618,15 +1639,32 @@ def build_router(
         kb = InlineKeyboardBuilder()
         kb.row(
             blue_inline_button(
-                "Ответить",
+                "💬 Ответить",
                 callback_data=f"support:reply:{int(ticket_id)}",
-                icon_index=6,
+                premium_icon=False,
+                style="primary",
             )
         )
-        kb.row(blue_inline_button("Открыть обращение", callback_data=f"support:view:{int(ticket_id)}"))
         kb.row(
-            blue_inline_button("Закрыть", callback_data=f"support:close:{int(ticket_id)}"),
-            blue_inline_button("Удалить", callback_data=f"support:deleteconfirm:{int(ticket_id)}"),
+            blue_inline_button(
+                "👁 Открыть обращение",
+                callback_data=f"support:view:{int(ticket_id)}",
+                premium_icon=False,
+            )
+        )
+        kb.row(
+            blue_inline_button(
+                "✅ Закрыть",
+                callback_data=f"support:close:{int(ticket_id)}",
+                premium_icon=False,
+                style="success",
+            ),
+            blue_inline_button(
+                "🗑 Удалить",
+                callback_data=f"support:deleteconfirm:{int(ticket_id)}",
+                premium_icon=False,
+                style="danger",
+            ),
         )
         return kb.as_markup()
 
@@ -1643,12 +1681,40 @@ def build_router(
         ticket_id = int(ticket["id"])
         kb = InlineKeyboardBuilder()
         if ticket.get("status") == "closed":
-            kb.row(blue_inline_button("Переоткрыть", callback_data=f"support:reopen:{ticket_id}"))
+            kb.row(
+                blue_inline_button(
+                    "♻️ Переоткрыть",
+                    callback_data=f"support:reopen:{ticket_id}",
+                    premium_icon=False,
+                    style="primary",
+                )
+            )
         else:
-            kb.row(blue_inline_button("Ответить", callback_data=f"support:reply:{ticket_id}"))
-            kb.row(blue_inline_button("Закрыть", callback_data=f"support:close:{ticket_id}"))
-        kb.row(blue_inline_button("Удалить", callback_data=f"support:deleteconfirm:{ticket_id}"))
-        kb.row(blue_inline_button("Назад", callback_data="admin:support", premium_icon=False))
+            kb.row(
+                blue_inline_button(
+                    "💬 Ответить",
+                    callback_data=f"support:reply:{ticket_id}",
+                    premium_icon=False,
+                    style="primary",
+                )
+            )
+            kb.row(
+                blue_inline_button(
+                    "✅ Закрыть",
+                    callback_data=f"support:close:{ticket_id}",
+                    premium_icon=False,
+                    style="success",
+                )
+            )
+        kb.row(
+            blue_inline_button(
+                "🗑 Удалить",
+                callback_data=f"support:deleteconfirm:{ticket_id}",
+                premium_icon=False,
+                style="danger",
+            )
+        )
+        kb.row(admin_inline_button("⬅️ Обращения", callback_data="admin:support", style=None))
         return kb.as_markup()
 
     async def show_support_ticket(message: Message, actor, ticket_id: int, *, admin: bool = False) -> None:
@@ -3337,39 +3403,42 @@ def build_router(
     def admin_main_keyboard(role: str) -> Any:
         kb = InlineKeyboardBuilder()
         kb.row(
-            blue_inline_button("📊 Сводка", callback_data="admin:stats"),
-            blue_inline_button("👥 Пользователи", callback_data="admin:users"),
+            admin_inline_button("📊 Сводка", callback_data="admin:stats"),
+            admin_inline_button("👥 Пользователи", callback_data="admin:users"),
         )
         kb.row(
-            blue_inline_button("💳 Платежи", callback_data="admin:payments"),
-            blue_inline_button("📈 Бизнес", callback_data="admin:business"),
+            admin_inline_button("💳 Платежи", callback_data="admin:payments"),
+            admin_inline_button("📈 Бизнес", callback_data="admin:business"),
         )
         kb.row(
-            blue_inline_button("Обращения", callback_data="admin:support", icon_index=6),
-        )
-        kb.row(
-            blue_inline_button("🌐 Серверы VPN", callback_data="admin:servers"),
+            admin_inline_button("🆘 Обращения", callback_data="admin:support"),
+            admin_inline_button("🌐 Серверы", callback_data="admin:servers"),
         )
         if role in {"owner", "full"}:
             kb.row(
-                blue_inline_button("🎟 Промокоды", callback_data="admin:bonuses"),
-                blue_inline_button("⚙️ Система", callback_data="admin:system"),
+                admin_inline_button("🎟 Промокоды", callback_data="admin:bonuses"),
+                admin_inline_button("⚙️ Система", callback_data="admin:system"),
             )
             kb.row(
-                blue_inline_button("📣 Рассылка", callback_data="admin:broadcast:start"),
-                blue_inline_button("Публикация в канал", callback_data="admin:ad:start"),
+                admin_inline_button("📣 Рассылка", callback_data="admin:broadcast:start"),
+                admin_inline_button("📢 В канал", callback_data="admin:ad:start"),
             )
             kb.row(
-                blue_inline_button("🎁 Розыгрыши", callback_data="admin:giveaways"),
+                admin_inline_button("🎁 Розыгрыши", callback_data="admin:giveaways"),
             )
         if role == "owner":
             kb.row(
-                blue_inline_button("🛡 Администраторы", callback_data="admin:admins"),
+                admin_inline_button("🛡 Администраторы", callback_data="admin:admins"),
             )
         kb.row(
-            blue_inline_button("🏠 Главное меню", callback_data="home"),
+            blue_inline_button(
+                "🏠 Главное меню",
+                callback_data="home",
+                premium_icon=False,
+            ),
         )
         return kb.as_markup()
+
 
     async def show_admin(message: Message, actor) -> None:
         role = await get_admin_role(actor.id)
@@ -3379,63 +3448,33 @@ def build_router(
         stats = await db.admin_overview()
         anonchat = await db.attribution_stats("anonchat_mgn")
         pozor = await db.attribution_stats("pozor_mgn")
-        recent = await db.recent_users(5)
-        pay_status = "работает" if config.rollypay_enabled else "не настроена"
+        pay_status = "✅ работает" if config.rollypay_enabled else "⚠️ не настроена"
         vpn_status = (
-            "готов"
+            "🟢 работает"
             if getattr(provider, "service_ready", True)
-            else "ожидает серверы"
+            else "🔴 недоступен"
         )
 
         lines = [
-            "🛡 <b>Админ-панель MGN VPN</b>",
+            "🛡 <b>MGN VPN · Админка</b>",
             f"Доступ: <b>{admin_role_label(role)}</b>",
             "",
-            "📊 <b>Сводка</b>",
-            f"├ Всего пользователей: <b>{stats['total']}</b>",
-            f"├ Активных подписок: <b>{stats['active']}</b>",
-            f"├ Платных всего: <b>{stats['paid_total']}</b>",
-            f"├ Платных активных: <b>{stats['active_paid']}</b>",
-            f"├ Активных без личной оплаты: <b>{stats['active_without_self_payment']}</b>",
-            f"├ Выдано админом: <b>{stats['admin_granted_total']}</b>",
-            f"├ Из них активны: <b>{stats['active_admin_granted']}</b>",
-            f"├ Новых за 24 часа: <b>+{stats['new_24h']}</b>",
-            f"├ Новых за 7 дней: <b>+{stats['new_7d']}</b>",
-            f"└ Новых за 30 дней: <b>+{stats['new_30d']}</b>",
+            "👥 <b>Пользователи</b>",
+            f"Всего: <b>{stats['total']}</b> · 🟢 активных: <b>{stats['active']}</b>",
+            f"Новые: <b>+{stats['new_24h']}</b> за 24ч · <b>+{stats['new_7d']}</b> за 7д",
             "",
             "💰 <b>Оплаты</b>",
-            f"├ СБП: <b>{pay_status}</b> · {stats['sbp_revenue']} ₽",
-            f"└ Stars: <b>{stats['star_revenue']} ⭐</b>",
+            f"СБП: <b>{stats['sbp_revenue']} ₽</b> · Stars: <b>{stats['star_revenue']} ⭐</b>",
+            f"RollyPay: <b>{pay_status}</b>",
             "",
-            "📣 <b>Anon Chat MGN</b>",
-            f"├ Пришло: <b>{anonchat['arrived']}</b>",
-            f"├ Купили VPN: <b>{anonchat['buyers']}</b>",
-            f"└ Конверсия: <b>{anonchat['conversion']:.1f}%</b>",
-            "",
-            "📣 <b>Позор МГН</b>",
-            f"├ Пришло: <b>{pozor['arrived']}</b>",
-            f"├ Купили VPN: <b>{pozor['buyers']}</b>",
-            f"└ Конверсия: <b>{pozor['conversion']:.1f}%</b>",
+            "📣 <b>Источники</b>",
+            f"Anon Chat: <b>{anonchat['buyers']}/{anonchat['arrived']}</b> · {anonchat['conversion']:.1f}%",
+            f"Позор МГН: <b>{pozor['buyers']}/{pozor['arrived']}</b> · {pozor['conversion']:.1f}%",
             "",
             f"🌐 VPN: <b>{vpn_status}</b>",
             "",
-            "🆕 <b>Последние пользователи</b>",
+            "<i>Выберите раздел ниже.</i>",
         ]
-
-        if recent:
-            for item in recent:
-                uid = int(item["telegram_id"])
-                name = (
-                    f'@{item["username"]}'
-                    if item.get("username")
-                    else item.get("first_name") or str(uid)
-                )
-                lines.append(
-                    f"• {html.escape(str(name))} · "
-                    f"<code>{uid}</code> · {format_joined(item.get('created_at'))}"
-                )
-        else:
-            lines.append("Пока никого.")
 
         await send_screen(
             message,
@@ -3443,6 +3482,7 @@ def build_router(
             "\n".join(lines),
             reply_markup=admin_main_keyboard(role),
         )
+
 
     async def show_admin_support(message: Message, actor, status: str = "all", page: int = 0) -> None:
         role = await get_admin_role(actor.id)
@@ -3686,56 +3726,76 @@ def build_router(
         page = min(max(0, page), pages - 1)
         if not users and total:
             users, total = await db.list_users_page(page, page_size)
-        kb = InlineKeyboardBuilder()
-        lines = [
-            "👥 <b>Пользователи</b>",
-            "",
-            f"Страница {page + 1} из {pages} · всего {total}",
-            "",
-        ]
 
-        if not users:
-            lines.append("Пользователей пока нет.")
-        else:
+        kb = InlineKeyboardBuilder()
+        active_on_page = 0
+
+        if users:
             for item in users:
                 uid = int(item["telegram_id"])
                 raw_username = str(item.get("username") or "").lstrip("@")
-                username = f"@{raw_username[:20]}" if raw_username else "без username"
-                first_name = str(item.get("first_name") or "Без имени")[:24]
+                first_name = str(item.get("first_name") or "Без имени").strip()
                 subscription_until = from_iso(item.get("subscription_until"))
                 active = bool(subscription_until and subscription_until > utcnow())
-                status_icon = "🟢" if active else "🔴"
-                status = (
-                    f"активна до {subscription_until.astimezone(config.display_tz).strftime('%d.%m.%Y')}"
-                    if active and subscription_until else "нет подписки"
+                if active:
+                    active_on_page += 1
+
+                label = (
+                    f"@{raw_username[:22]}"
+                    if raw_username
+                    else first_name[:22] or f"ID {uid}"
                 )
-                lines.append(
-                    f"{status_icon} <b>{html.escape(first_name)}</b> · {html.escape(username)}\n"
-                    f"<code>{uid}</code> · {status}"
-                )
+                if active and subscription_until:
+                    expires = subscription_until.astimezone(config.display_tz).strftime("%d.%m")
+                    button_text = f"🟢 {label} · до {expires}"
+                    button_style = "success"
+                else:
+                    button_text = f"🔴 {label}"
+                    button_style = "danger"
+
                 kb.row(
-                    blue_inline_button(
-                        f"{status_icon} {username[:22]}",
+                    admin_inline_button(
+                        button_text,
                         callback_data=f"admin:user:{uid}",
+                        style=button_style,
                     )
                 )
 
         nav = []
         if page > 0:
-            nav.append(blue_inline_button("←", callback_data=f"admin:users:{page - 1}"))
+            nav.append(admin_inline_button("⬅️", callback_data=f"admin:users:{page - 1}", style=None))
         if page + 1 < pages:
-            nav.append(blue_inline_button("→", callback_data=f"admin:users:{page + 1}"))
+            nav.append(admin_inline_button("➡️", callback_data=f"admin:users:{page + 1}", style=None))
         if nav:
             kb.row(*nav)
-        kb.row(blue_inline_button("Поиск", callback_data="admin:usersearch"))
-        kb.row(blue_inline_button("Обновить", callback_data=f"admin:users:{page}"))
-        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
+
+        kb.row(
+            admin_inline_button("🔎 Поиск", callback_data="admin:usersearch"),
+            admin_inline_button("🔄 Обновить", callback_data=f"admin:users:{page}"),
+        )
+        kb.row(admin_inline_button("⬅️ Админка", callback_data="admin:home", style=None))
+
+        lines = [
+            "👥 <b>Пользователи</b>",
+            f"Всего: <b>{total}</b> · страница <b>{page + 1}/{pages}</b>",
+            "",
+            "🟢 активная подписка · 🔴 нет активной подписки",
+        ]
+        if users:
+            lines.append(
+                f"На этой странице: 🟢 <b>{active_on_page}</b> · "
+                f"🔴 <b>{len(users) - active_on_page}</b>"
+            )
+        else:
+            lines += ["", "Пользователей пока нет."]
+
         await send_screen(
             message,
             actor,
             "\n".join(lines),
             reply_markup=kb.as_markup(),
         )
+
 
     async def show_admin_user(message: Message, actor, telegram_id: int) -> None:
         actor_role = await get_admin_role(actor.id)
@@ -3774,62 +3834,100 @@ def build_router(
 
         kb = InlineKeyboardBuilder()
 
-        # Every admin role may issue a subscription. Advanced subscription
-        # management remains restricted to owner/full admins.
         kb.row(
-            blue_inline_button("Выдать подписку", callback_data=f"admin:grantmenu:{telegram_id}"),
+            admin_inline_button(
+                "🎁 Выдать подписку",
+                callback_data=f"admin:grantmenu:{telegram_id}",
+                style="success",
+            ),
         )
 
         if actor_role in {"owner", "full"}:
             kb.row(
-                blue_inline_button("Добавить дни", callback_data=f"admin:daysmenu:{telegram_id}:add"),
-                blue_inline_button("Списать дни", callback_data=f"admin:daysmenu:{telegram_id}:sub"),
+                admin_inline_button(
+                    "➕ Добавить дни",
+                    callback_data=f"admin:daysmenu:{telegram_id}:add",
+                    style="success",
+                ),
+                admin_inline_button(
+                    "➖ Списать дни",
+                    callback_data=f"admin:daysmenu:{telegram_id}:sub",
+                    style="danger",
+                ),
             )
             kb.row(
-                blue_inline_button("Устройства", callback_data=f"admin:devicemenu:{telegram_id}"),
+                admin_inline_button(
+                    "📱 Устройства",
+                    callback_data=f"admin:devicemenu:{telegram_id}",
+                ),
             )
-            kb.row(blue_inline_button("Отключить подписку", callback_data=f"admin:revokeconfirm:{telegram_id}"))
+            if active:
+                kb.row(
+                    admin_inline_button(
+                        "🚫 Отключить подписку",
+                        callback_data=f"admin:revokeconfirm:{telegram_id}",
+                        style="danger",
+                    )
+                )
 
         if actor_role == "owner" and telegram_id not in config.admin_ids:
             kb.row(
-                blue_inline_button(
+                admin_inline_button(
                     "🛡 Полная админка",
                     callback_data=f"admin:role:{telegram_id}:full",
                 ),
-                blue_inline_button(
+                admin_inline_button(
                     "👁 Ограниченная",
                     callback_data=f"admin:role:{telegram_id}:limited",
+                    style=None,
                 ),
             )
             if target_role:
                 kb.row(
-                    blue_inline_button(
+                    admin_inline_button(
                         "❌ Забрать админку",
                         callback_data=f"admin:role:{telegram_id}:remove",
+                        style="danger",
                     )
                 )
 
-        kb.row(blue_inline_button("⬅️ Пользователи", callback_data="admin:users"))
-        kb.row(blue_inline_button("🏠 Админка", callback_data="admin:home"))
+        kb.row(
+            admin_inline_button("⬅️ Пользователи", callback_data="admin:users", style=None),
+            admin_inline_button("🏠 Админка", callback_data="admin:home", style=None),
+        )
 
+        source = str(user.get("attribution_source") or "прямой").strip()
+        subscription_status = "🟢 активна" if active else "🔴 нет активной"
         lines = [
             f"👤 <b>{html.escape(user.get('first_name') or 'Без имени')}</b>",
-            f"Username — <b>{username}</b>",
-            f"Telegram ID — <code>{telegram_id}</code>",
+            f"{username} · <code>{telegram_id}</code>",
             "",
-            f"Пришёл — <b>{format_joined(user.get('created_at'))}</b>",
-            f"Админ-доступ — <b>{admin_role_label(target_role)}</b>",
-            f"Подписка — <b>{'🟢 активна' if active else '🔴 нет активной'}</b>",
-            f"Тариф — <b>{html.escape(user.get('plan_name') or '—')}</b>",
-            f"До — <b>{format_until(user, config) if active else '—'}</b>",
-            f"Осталось — <b>{remaining_days} дней</b>",
-            f"Устройства — <b>{device_count} / {int(user.get('max_devices') or BASE_DEVICES)}</b>",
-            f"Лимит устройств — <b>{int(user.get('max_devices') or BASE_DEVICES)}</b>",
-            f"Trial — <b>{'Использован' if user.get('trial_used') else 'Не использован'}</b>",
-            f"Приглашено — <b>{referrals}</b>",
-            "Последний платёж — <b>нет</b>" if not last_payment else (
-                f"Последний платёж — <b>{int(last_payment['amount'])} {last_payment['currency']}</b>\n"
-                f"Способ — <b>{html.escape(last_payment['method'])}</b>"
+            f"📌 Подписка: <b>{subscription_status}</b>",
+            f"📦 Тариф: <b>{html.escape(user.get('plan_name') or '—')}</b>",
+        ]
+        if active:
+            lines += [
+                f"⏳ До: <b>{format_until(user, config)}</b> · осталось <b>{remaining_days} дн.</b>",
+                f"📱 Устройства: <b>{device_count}/{int(user.get('max_devices') or BASE_DEVICES)}</b>",
+            ]
+        else:
+            lines.append(
+                f"📱 Лимит устройств: <b>{int(user.get('max_devices') or BASE_DEVICES)}</b>"
+            )
+
+        lines += [
+            "",
+            "ℹ️ <b>Профиль</b>",
+            f"Регистрация: <b>{format_joined(user.get('created_at'))}</b>",
+            f"Источник: <b>{html.escape(source)}</b>",
+            f"Trial: <b>{'использован' if user.get('trial_used') else 'не использован'}</b>",
+            f"Рефералы: <b>{referrals}</b>",
+            f"Админ-доступ: <b>{admin_role_label(target_role)}</b>",
+            "",
+            "💳 <b>Последняя оплата</b>",
+            "Нет оплат." if not last_payment else (
+                f"<b>{int(last_payment['amount'])} {last_payment['currency']}</b> · "
+                f"{html.escape(last_payment['method'])}"
             ),
         ]
         await send_screen(
