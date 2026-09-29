@@ -20,6 +20,7 @@ from uuid import uuid4
 from aiohttp import web
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 
+from admin_notifications import notify_purchase_admins
 from catalog import (
     EXTRA_DEVICE_PRICE_RUB,
     MAX_DEVICES,
@@ -795,6 +796,17 @@ class MiniAppServer:
             )
             if fresh:
                 updated = await self.db.get_user(target_id)
+                await notify_purchase_admins(
+                    self.bot,
+                    self.config,
+                    self.db,
+                    buyer_id=int(local["telegram_id"]),
+                    target_id=target_id,
+                    code=str(local["plan_code"]),
+                    method="СБП",
+                    amount=int(local["amount_rub"]),
+                    payment_id=payment_id,
+                )
                 if getattr(self.provider, "service_ready", True):
                     try:
                         await asyncio.wait_for(
@@ -1311,6 +1323,17 @@ class MiniAppServer:
             except ValueError:
                 raise _json_error(409, "Оплата получена и требует проверки поддержки")
             if fresh:
+                await notify_purchase_admins(
+                    self.bot,
+                    self.config,
+                    self.db,
+                    buyer_id=uid,
+                    target_id=int(local.get("target_telegram_id") or uid),
+                    code=str(local["plan_code"]),
+                    method="СБП",
+                    amount=int(local["amount_rub"]),
+                    payment_id=payment_id,
+                )
                 if str(local["plan_code"]) == "device":
                     updated = await self.db.get_user(uid)
                     if updated and getattr(self.provider, "service_ready", True):
