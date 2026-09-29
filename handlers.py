@@ -55,6 +55,7 @@ from giveaway import (
     delete_giveaway,
     finish_giveaway,
     render_giveaway_post,
+    reroll_giveaway_winner,
     send_giveaway_post,
 )
 from payments import RollyPayError, create_payment, get_payment
@@ -4017,6 +4018,7 @@ def build_router(
             return
         posts = await db.list_giveaway_posts(giveaway_id)
         winners = await db.get_giveaway_winners(giveaway_id)
+        rerolls = await db.list_giveaway_rerolls(giveaway_id)
         status_labels = {
             "active": "🟢 Идёт",
             "finishing": "🟡 Подводятся итоги",
@@ -4032,6 +4034,7 @@ def build_router(
             f"Приз: <b>{int(item.get('prize_days') or 0)} дней MGN VPN</b>",
             f"Условие завершения: <b>{html.escape(giveaway_end_label(item))}</b>",
             f"Публикаций: <b>{len(posts)}</b>",
+            f"Перевыборов: <b>{len(rerolls)}</b>",
         ]
         if winners:
             lines += ["", "🏆 <b>Победители</b>"]
@@ -4040,6 +4043,23 @@ def build_router(
                 label = f"@{username}" if username else f"Победитель #{index}"
                 lines.append(f"{index}. {html.escape(label)}")
         kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                f"👥 Участники ({int(item.get('participant_count') or 0)})",
+                callback_data=f"admin:giveaway:participants:{giveaway_id}:0",
+            )
+        )
+        if (
+            str(item.get("status")) == "finished"
+            and winners
+            and int(item.get("participant_count") or 0) > len(winners)
+        ):
+            kb.row(
+                blue_inline_button(
+                    "🔄 Перевыбрать победителя",
+                    callback_data=f"admin:giveaway:reroll:{giveaway_id}",
+                )
+            )
         if str(item.get("status")) == "active":
             kb.row(
                 blue_inline_button(
@@ -4469,6 +4489,253 @@ def build_router(
         giveaway_id = int(callback.data.rsplit(":", 1)[-1])
         await safe_callback_answer(callback)
         await show_admin_giveaway(callback.message, callback.from_user, giveaway_id)
+
+    @router.callback_query(
+        F.data.regexp(r"^admin:giveaway:participants:\d+:\d+$")
+    )
+    async def admin_giveaway_participants(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        parts = callback.data.split(":")
+        giveaway_id = int(parts[-2])
+        requested_page = max(0, int(parts[-1]))
+        item = await db.get_giveaway(giveaway_id)
+        if not item:
+            await safe_callback_answer(callback, "Розыгрыш не найден.", show_alert=True)
+            return
+
+        page_size = 20
+        rows, total = await db.list_giveaway_participants_page(
+            giveaway_id,
+            page=requested_page,
+            page_size=page_size,
+        )
+        max_page = max(0, (total - 1) // page_size) if total else 0
+        page = min(requested_page, max_page)
+        if page != requested_page:
+            rows, total = await db.list_giveaway_participants_page(
+                giveaway_id,
+                page=page,
+                page_size=page_size,
+            )
+
+        lines = [
+            f"👥 <b>Участники розыгрыша #{giveaway_id}</b>",
+            "",
+            f"Всего: <b>{total}</b>",
+            f"Страница: <b>{page + 1}/{max_page + 1}</b>",
+            "",
+        ]
+        if not rows:
+            lines.append("Участников пока нет.")
+        else:
+            start = page * page_size
+            for offset, participant in enumerate(rows, start=1):
+                number = start + offset
+                username = str(participant.get("username") or "").strip()
+                first_name = str(participant.get("first_name") or "").strip()
+                if username:
+                    label = f"@{username}"
+                elif first_name:
+                    label = first_name
+                else:
+                    label = "Без username"
+                crown = " 🏆" if int(participant.get("is_winner") or 0) else ""
+                joined = from_iso(participant.get("joined_at"))
+                joined_text = (
+                    joined.astimezone(config.display_tz).strftime("%d.%m · %H:%M")
+                    if joined
+                    else "—"
+                )
+                lines.append(
+                    f"{number}. {html.escape(label)}{crown}\n"
+                    f"   <code>{int(participant['telegram_id'])}</code> · {joined_text}"
+                )
+
+        kb = InlineKeyboardBuilder()
+        nav = []
+        if page > 0:
+            nav.append(
+                blue_inline_button(
+                    "←",
+                    callback_data=f"admin:giveaway:participants:{giveaway_id}:{page - 1}",
+                    premium_icon=False,
+                )
+            )
+        if page < max_page:
+            nav.append(
+                blue_inline_button(
+                    "→",
+                    callback_data=f"admin:giveaway:participants:{giveaway_id}:{page + 1}",
+                    premium_icon=False,
+                )
+            )
+        if nav:
+            kb.row(*nav)
+        kb.row(
+            blue_inline_button(
+                "⬅️ К розыгрышу",
+                callback_data=f"admin:giveaway:view:{giveaway_id}",
+            )
+        )
+        await safe_callback_answer(callback)
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
+        )
+
+    @router.callback_query(F.data.regexp(r"^admin:giveaway:reroll:\d+$"))
+    async def admin_giveaway_reroll(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        giveaway_id = int(callback.data.rsplit(":", 1)[-1])
+        item = await db.get_giveaway(giveaway_id)
+        if not item or str(item.get("status")) != "finished":
+            await safe_callback_answer(
+                callback,
+                "Перевыбор доступен только после завершения розыгрыша.",
+                show_alert=True,
+            )
+            return
+        winners = await db.get_giveaway_winners(giveaway_id)
+        if not winners:
+            await safe_callback_answer(callback, "Победителей нет.", show_alert=True)
+            return
+
+        participants = await db.list_giveaway_participants(giveaway_id)
+        rerolls = await db.list_giveaway_rerolls(giveaway_id)
+        excluded = {int(winner["telegram_id"]) for winner in winners}
+        excluded.update(int(row["old_telegram_id"]) for row in rerolls)
+        excluded.update(int(row["new_telegram_id"]) for row in rerolls)
+        eligible = [
+            row for row in participants
+            if int(row["telegram_id"]) not in excluded
+        ]
+        if not eligible:
+            await safe_callback_answer(
+                callback,
+                "Других участников для перевыбора уже нет.",
+                show_alert=True,
+            )
+            return
+
+        kb = InlineKeyboardBuilder()
+        lines = [
+            f"🔄 <b>Перевыбор победителя · #{giveaway_id}</b>",
+            "",
+            "Выберите победителя, которого нужно заменить.",
+            "Его приз будет отозван, а случайному другому участнику сразу выдастся такой же срок.",
+            "",
+        ]
+        for index, winner in enumerate(winners, start=1):
+            username = str(winner.get("username") or "").strip()
+            label = f"@{username}" if username else f"Победитель #{index}"
+            lines.append(f"{index}. {html.escape(label)}")
+            kb.row(
+                blue_inline_button(
+                    f"🔄 {label[:38]}",
+                    callback_data=(
+                        f"admin:giveaway:rerollpick:{giveaway_id}:"
+                        f"{int(winner['telegram_id'])}"
+                    ),
+                )
+            )
+        kb.row(
+            blue_inline_button(
+                "Отмена",
+                callback_data=f"admin:giveaway:view:{giveaway_id}",
+                premium_icon=False,
+            )
+        )
+        await safe_callback_answer(callback)
+        await send_screen(
+            callback.message,
+            callback.from_user,
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
+        )
+
+    @router.callback_query(
+        F.data.regexp(r"^admin:giveaway:rerollpick:\d+:\d+$")
+    )
+    async def admin_giveaway_reroll_pick(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        parts = callback.data.split(":")
+        giveaway_id = int(parts[-2])
+        old_telegram_id = int(parts[-1])
+        await safe_callback_answer(callback, "Перевыбираю…")
+        try:
+            result = await reroll_giveaway_winner(
+                callback.bot,
+                db,
+                config,
+                provider,
+                giveaway_id,
+                old_telegram_id,
+                rerolled_by=callback.from_user.id,
+            )
+        except ValueError as exc:
+            await callback.message.answer(
+                f"Не удалось выполнить перевыбор: {html.escape(str(exc))}"
+            )
+            return
+        except Exception as exc:
+            logger.exception(
+                "Giveaway reroll failed for #%s: %s",
+                giveaway_id,
+                type(exc).__name__,
+            )
+            await callback.message.answer(
+                "Не удалось выполнить перевыбор. Данные сохранены; проверьте розыгрыш ещё раз."
+            )
+            return
+
+        old_username = str(result.get("old_username") or "").strip()
+        new_username = str(result.get("new_username") or "").strip()
+        new_first_name = str(result.get("new_first_name") or "").strip()
+        old_label = (
+            f"@{old_username}"
+            if old_username
+            else f"ID {int(result['old_telegram_id'])}"
+        )
+        new_label = (
+            f"@{new_username}"
+            if new_username
+            else (new_first_name or f"ID {int(result['new_telegram_id'])}")
+        )
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "🔄 Ещё перевыбор",
+                callback_data=f"admin:giveaway:reroll:{giveaway_id}",
+            )
+        )
+        kb.row(
+            blue_inline_button(
+                "👥 Участники",
+                callback_data=f"admin:giveaway:participants:{giveaway_id}:0",
+            )
+        )
+        kb.row(
+            blue_inline_button(
+                "Открыть розыгрыш",
+                callback_data=f"admin:giveaway:view:{giveaway_id}",
+            )
+        )
+        await callback.message.answer(
+            f"✅ <b>Победитель перевыбран</b>\n\n"
+            f"Был: <b>{html.escape(old_label)}</b>\n"
+            f"Стал: <b>{html.escape(new_label)}</b>\n\n"
+            f"Приз на <b>{int(result['prize_days'])} дней</b> перенесён новому победителю. "
+            "Итоговый пост в канале обновлён.",
+            reply_markup=kb.as_markup(),
+        )
 
     @router.callback_query(F.data.regexp(r"^admin:giveaway:finish:\d+$"))
     async def admin_giveaway_finish(callback: CallbackQuery) -> None:
