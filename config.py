@@ -47,6 +47,7 @@ class Config:
     bot_token: str
     admin_ids: tuple[int, ...]
     db_path: str
+    backup_dir: str
     display_tz: ZoneInfo
 
     miniapp_url: str
@@ -138,6 +139,7 @@ class Config:
             bot_token=token,
             admin_ids=_ints(os.getenv("ADMIN_IDS", "")),
             db_path=db_path,
+            backup_dir=os.getenv("BACKUP_DIR", "").strip(),
             display_tz=ZoneInfo(os.getenv("DISPLAY_TZ", "Asia/Yekaterinburg")),
             miniapp_url=miniapp_url,
             channel_url=os.getenv(
