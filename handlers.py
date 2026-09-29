@@ -4709,6 +4709,15 @@ def build_router(
         posts = await db.list_giveaway_posts(giveaway_id)
         winners = await db.get_giveaway_winners(giveaway_id)
         rerolls = await db.list_giveaway_rerolls(giveaway_id)
+        active_rerolls = [row for row in rerolls if not row.get("undone_at")]
+        latest_reroll = active_rerolls[-1] if active_rerolls else None
+        can_undo_reroll = False
+        if latest_reroll:
+            rerolled_at = from_iso(latest_reroll.get("created_at"))
+            can_undo_reroll = bool(
+                rerolled_at
+                and rerolled_at >= utcnow() - timedelta(minutes=10)
+            )
         status_labels = {
             "active": "🟢 Идёт",
             "finishing": "🟡 Подводятся итоги",
@@ -4724,7 +4733,8 @@ def build_router(
             f"Приз: <b>{int(item.get('prize_days') or 0)} дней MGN VPN</b>",
             f"Условие завершения: <b>{html.escape(giveaway_end_label(item))}</b>",
             f"Публикаций: <b>{len(posts)}</b>",
-            f"Перевыборов: <b>{len(rerolls)}</b>",
+            f"Перевыборов: <b>{len(active_rerolls)}</b>"
+            + (f" · отменено: <b>{len(rerolls) - len(active_rerolls)}</b>" if len(rerolls) != len(active_rerolls) else ""),
         ]
         if winners:
             lines += ["", "🏆 <b>Победители</b>"]
@@ -4739,6 +4749,13 @@ def build_router(
                 callback_data=f"admin:giveaway:participants:{giveaway_id}:0",
             )
         )
+        if int(item.get("participant_count") or 0) > 0:
+            kb.row(
+                blue_inline_button(
+                    "📥 CSV участников",
+                    callback_data=f"admin:giveaway:export:{giveaway_id}",
+                )
+            )
         if (
             str(item.get("status")) == "finished"
             and winners
@@ -4750,6 +4767,13 @@ def build_router(
                     callback_data=f"admin:giveaway:reroll:{giveaway_id}",
                 )
             )
+            if can_undo_reroll:
+                kb.row(
+                    blue_inline_button(
+                        "↩️ Отменить последний перевыбор · 10 мин",
+                        callback_data=f"admin:giveaway:rerollundo:{giveaway_id}",
+                    )
+                )
         if str(item.get("status")) == "active":
             kb.row(
                 blue_inline_button(
