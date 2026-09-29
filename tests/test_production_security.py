@@ -689,3 +689,52 @@ def test_forwarded_client_ip_is_used_only_for_trusted_proxy():
     assert server._client_identity(trusted) == "203.0.113.7"
     assert server._client_identity(untrusted) == "198.51.100.9"
     assert server._client_identity(malformed) == "10.0.0.10"
+
+
+def test_admin_buttons_never_use_premium_custom_emoji(monkeypatch):
+    import handlers
+
+    class FakeBank:
+        def raw_id(self, *_args, **_kwargs):
+            return "123456789"
+
+    old_bank = handlers._button_emoji_bank
+    handlers._button_emoji_bank = FakeBank()
+    try:
+        button = handlers.blue_inline_button(
+            "👥 Пользователи",
+            callback_data="admin:users",
+            icon_index=1,
+            style="primary",
+        )
+        assert button.icon_custom_emoji_id is None
+        assert button.style == "primary"
+
+        normal = handlers.blue_inline_button(
+            "Поддержка",
+            callback_data="menu:support",
+            icon_index=1,
+        )
+        assert normal.icon_custom_emoji_id == "123456789"
+    finally:
+        handlers._button_emoji_bank = old_bank
+
+
+def test_admin_user_status_buttons_support_native_styles():
+    import handlers
+
+    active = handlers.admin_inline_button(
+        "🟢 @active · до 10.10",
+        callback_data="admin:user:1",
+        style="success",
+    )
+    inactive = handlers.admin_inline_button(
+        "🔴 @inactive",
+        callback_data="admin:user:2",
+        style="danger",
+    )
+
+    assert active.style == "success"
+    assert inactive.style == "danger"
+    assert active.icon_custom_emoji_id is None
+    assert inactive.icon_custom_emoji_id is None
