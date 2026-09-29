@@ -524,6 +524,9 @@ class MiniAppServer:
         provider_id = str(getattr(self.config, "happ_provider_id", "") or "").strip()
         if provider_id:
             headers["Providerid"] = provider_id
+            # Let Happ measure delay on the user's own network as well. The
+            # backend already removes unreachable endpoints before this.
+            headers["Subscription-Ping-Onopen-Enabled"] = "1"
         return headers
 
 
@@ -817,6 +820,19 @@ class MiniAppServer:
                 upstream_headers,
             )
 
+            userinfo = str(headers.get("Subscription-Userinfo") or "")
+            upload_match = re.search(r"(?:^|;)\s*upload=(\d+)", userinfo, re.I)
+            download_match = re.search(r"(?:^|;)\s*download=(\d+)", userinfo, re.I)
+            if upload_match or download_match:
+                used_bytes = int(upload_match.group(1)) if upload_match else 0
+                used_bytes += int(download_match.group(1)) if download_match else 0
+                local_day = utcnow().astimezone(self.config.display_tz).date().isoformat()
+                await self.db.record_traffic_sample(
+                    int(user["telegram_id"]),
+                    used_bytes / float(1024 ** 3),
+                    day=local_day,
+                )
+
             if len(self._subscription_cache) >= 512:
                 self._subscription_cache.pop(next(iter(self._subscription_cache)))
             self._subscription_cache[token] = {
@@ -902,6 +918,18 @@ class MiniAppServer:
     async def me(self, request: web.Request) -> web.Response:
         uid, tg_user, row = await self._auth(request)
         state, vpn_ok = await self._load_state(row)
+        local_day = utcnow().astimezone(self.config.display_tz).date().isoformat()
+        if _active(row) and vpn_ok:
+            await self.db.record_traffic_sample(
+                uid,
+                float(state.traffic_used_gb or 0),
+                day=local_day,
+            )
+        traffic_history = await self.db.traffic_usage_history(
+            uid,
+            end_day=local_day,
+            days=30,
+        )
         referral_stats = await self.db.referral_stats(uid)
         username = await self._username()
         until = from_iso(row.get("subscription_until"))
@@ -936,6 +964,7 @@ class MiniAppServer:
                     "subscription_url": subscription_url,
                     "traffic_used_gb": round(float(state.traffic_used_gb or 0), 2),
                     "traffic_limit_gb": round(float(state.traffic_limit_gb or 0), 2),
+                    "traffic_history": traffic_history,
                     "devices": state.devices,
                 },
                 "plans": [
