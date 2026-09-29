@@ -96,7 +96,8 @@ def render_giveaway_post(
             if username:
                 label = "@" + html.escape(username)
             else:
-                label = f"Победитель #{index}"
+                first_name = str(item.get("first_name") or "").strip()
+                label = html.escape(first_name) if first_name else f"Победитель #{index}"
             lines.append(f"{index}. {label}")
         lines += [
             "",
@@ -279,7 +280,7 @@ async def finish_giveaway(
             granted = await db.grant_giveaway_prizes(giveaway_id)
             await db.mark_giveaway_finished(giveaway_id)
 
-            for telegram_id in granted:
+            async def sync_winner(telegram_id: int) -> None:
                 try:
                     user = await db.get_user(int(telegram_id))
                     if getattr(provider, "service_ready", True):
@@ -290,6 +291,9 @@ async def finish_giveaway(
                         telegram_id,
                         type(exc).__name__,
                     )
+
+            if granted:
+                await asyncio.gather(*(sync_winner(telegram_id) for telegram_id in granted))
 
         giveaway = await db.get_giveaway(giveaway_id)
         if not giveaway:
