@@ -123,6 +123,15 @@
     if(hours>0)return hours+' ч.';
     return Math.max(1,Math.floor(sec/60))+' мин.';
   }
+  function fmtTraffic(usedGb,limitGb){
+    const used=Math.max(0,Number(usedGb||0));
+    const limit=Math.max(0,Number(limitGb||0));
+    const format=value=>{
+      if(value>0&&value<0.1)return Math.max(1,Math.round(value*1024))+' МБ';
+      return value.toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' ГБ';
+    };
+    return format(used)+' / '+(limit>0?format(limit):'∞');
+  }
   function fmtHistoryDate(iso){
     if(!iso)return '';
     try{return new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit'}).format(new Date(iso))}
@@ -171,6 +180,9 @@
     $('#homePlanNote').textContent=subscriptionNote(d);
     $('#homeRemaining').textContent=active?fmtRemain(d.subscription.remaining_seconds):'—';
     $('#homeDeviceUsage').textContent=used+' из '+limit;
+    $('#homeTraffic').textContent=active
+      ? fmtTraffic(d.vpn.traffic_used_gb,d.vpn.traffic_limit_gb)
+      : '—';
     $('#deviceProgress').style.width=pct+'%';
     $('b',$('#homeSubscriptionAction')).textContent=active?'Продлить VPN':'Купить VPN';
 
@@ -281,6 +293,9 @@
     const used=(d.vpn.devices||[]).length;
     const limit=Math.max(1,Number(d.subscription.max_devices||1));
     $('#profileDevices').textContent=used+' / '+limit;
+    $('#profileTraffic').textContent=d.subscription.active
+      ? fmtTraffic(d.vpn.traffic_used_gb,d.vpn.traffic_limit_gb)
+      : '—';
     $('#profilePlan').textContent=d.subscription.active
       ? (d.subscription.plan+' · '+fmtRemain(d.subscription.remaining_seconds))
       : 'Нет активной подписки';
