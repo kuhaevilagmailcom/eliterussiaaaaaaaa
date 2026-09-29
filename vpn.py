@@ -184,7 +184,10 @@ class VpnProvider:
         """Provider readiness signal. Concrete providers may perform a real upstream check."""
         return {"ok": bool(self.service_ready), "mode": self.mode_name}
 
-    async def server_diagnostics(self) -> dict[str, Any]:
+    async def server_diagnostics(
+        self,
+        sample_user: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Read-only server inventory for the admin panel."""
         started = asyncio.get_running_loop().time()
         try:
@@ -1398,8 +1401,11 @@ class H1CloudVpnProvider(VpnProvider):
                 return cleaned
         return f"Узел {node_id}" if node_id else "Удалённый узел"
 
-    async def server_diagnostics(self) -> dict[str, Any]:
-        """Inspect H1 main panel and federation without changing any VPN client."""
+    async def server_diagnostics(
+        self,
+        sample_user: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Inspect H1 inventory without changing VPN clients."""
         loop = asyncio.get_running_loop()
 
         async def timed_request(
@@ -1601,6 +1607,64 @@ class H1CloudVpnProvider(VpnProvider):
             ]
             discovery_error = ", ".join(dict.fromkeys(errors)) or "federation unavailable"
 
+        # Federation API у H1 иногда пустой, хотя aggregate subscription реально
+        # содержит рабочие страны. Если есть активный пользователь, читаем его
+        # текущий main client + aggregate sub_url без provisioning/patch/create.
+        subscription_links: list[str] = []
+        if isinstance(sample_user, dict):
+            try:
+                sample_name = self._name(sample_user)
+                sample_client = await asyncio.wait_for(
+                    self._get_client(sample_name),
+                    timeout=2.0,
+                )
+                if sample_client is not None:
+                    subscription_links.extend(
+                        self._client_vless_links(sample_client)
+                    )
+                    aggregate_url = str(
+                        sample_client.get("sub_url")
+                        or sample_client.get("subscription_url")
+                        or sample_client.get("subscription")
+                        or ""
+                    ).strip()
+                    if aggregate_url.startswith(("http://", "https://")):
+                        try:
+                            aggregate_body = await asyncio.wait_for(
+                                self._fetch_public_subscription(aggregate_url),
+                                timeout=4.5,
+                            )
+                            subscription_links.extend(
+                                self._subscription_vless_links(aggregate_body)
+                            )
+                        except Exception as exc:
+                            source_rows["subscription"] = {
+                                "available": False,
+                                "count": len(subscription_links),
+                                "error": type(exc).__name__,
+                            }
+                    else:
+                        source_rows["subscription"] = {
+                            "available": bool(subscription_links),
+                            "count": len(subscription_links),
+                            "error": "sub_url_missing" if not subscription_links else "",
+                        }
+            except Exception as exc:
+                source_rows["subscription"] = {
+                    "available": False,
+                    "count": 0,
+                    "error": type(exc).__name__,
+                }
+
+        # Дедуплицируем реальные VLESS, но не отбрасываем медленные/неотвечающие.
+        subscription_links = list(dict.fromkeys(subscription_links))
+        if subscription_links:
+            source_rows["subscription"] = {
+                "available": True,
+                "count": len(subscription_links),
+                "error": "",
+            }
+
         # Админка должна показывать полный каталог MGN VPN всегда, даже когда
         # H1 federation временно не отдал узел или его проверка ушла в timeout.
         # Доступность влияет только на статус, но никогда не скрывает сервер.
@@ -1612,9 +1676,10 @@ class H1CloudVpnProvider(VpnProvider):
                 "host": "",
                 "proxy_kind": "direct" if code == "nl" else "federation",
                 "available": False,
+                "configured": False,
                 "latency_ms": None,
-                "check": "not_discovered",
-                "error": "not_discovered",
+                "check": "not_checked",
+                "error": "",
             }
             for code, label in CANONICAL_SERVERS
         }
@@ -1653,7 +1718,65 @@ class H1CloudVpnProvider(VpnProvider):
             merged = dict(item)
             merged["name"] = dict(CANONICAL_SERVERS)[code]
             merged["catalog_id"] = code
+            merged["configured"] = True
             canonical[code] = merged
+
+        # Реальная подписка важнее federation discovery: если VLESS присутствует,
+        # сервер точно настроен для пользователя, даже когда /fed/link пуст.
+        us_link_count = 0
+        for link in subscription_links:
+            label = _location_label(link)
+            code = ""
+            if "США 2" in label:
+                code = "us2"
+            elif "США" in label:
+                us_link_count += 1
+                code = "us2" if us_link_count >= 2 else "us"
+            elif "Нидерланды" in label:
+                code = "nl"
+            elif "Пакистан" in label:
+                code = "pk"
+            elif "Германия" in label:
+                code = "de"
+            elif "Польша" in label:
+                code = "pl"
+            elif "Финляндия" in label:
+                code = "fi"
+            if not code:
+                continue
+
+            host = ""
+            port = 0
+            try:
+                parsed = urlsplit(link)
+                host = str(parsed.hostname or "")
+                port = int(parsed.port or 0)
+            except (TypeError, ValueError):
+                pass
+
+            latency: float | None = None
+            if host and port:
+                try:
+                    latency = await self._probe_vless_endpoint(host, port)
+                except Exception:
+                    latency = None
+
+            current = dict(canonical[code])
+            current.update(
+                {
+                    "name": dict(CANONICAL_SERVERS)[code],
+                    "catalog_id": code,
+                    "configured": True,
+                    "host": host or current.get("host", ""),
+                    "available": latency is not None,
+                    "latency_ms": int(latency) if latency is not None else None,
+                    "check": "vless_tcp" if latency is not None else "subscription",
+                    # Конфиг существует; отсутствие TCP-ответа с BotHost не доказывает,
+                    # что он не работает у пользователя.
+                    "error": "" if latency is not None else "probe_unverified",
+                }
+            )
+            canonical[code] = current
 
         servers = [canonical[code] for code, _label in CANONICAL_SERVERS]
 
