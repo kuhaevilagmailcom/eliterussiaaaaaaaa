@@ -3533,13 +3533,16 @@ def build_router(
                 ]
                 kb.row(
                     blue_inline_button(
-                        f"Открыть #{ticket_id}",
+                        f"👁 Открыть #{ticket_id}",
                         callback_data=f"support:view:{ticket_id}",
-                        icon_index=6,
+                        premium_icon=False,
+                        style="primary",
                     ),
                     blue_inline_button(
-                        "Удалить",
+                        "🗑 Удалить",
                         callback_data=f"support:deleteconfirm:{ticket_id}",
+                        premium_icon=False,
+                        style="danger",
                     ),
                 )
         kb.row(
