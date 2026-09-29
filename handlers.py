@@ -3802,7 +3802,12 @@ def build_router(
         kb.row(blue_inline_button("⬅️ Система", callback_data="admin:system"))
 
         try:
-            report = await asyncio.wait_for(provider.server_diagnostics(), timeout=12.0)
+            sample_users = await db.list_active_users_for_vpn_sync(limit=1)
+            sample_user = sample_users[0] if sample_users else None
+            report = await asyncio.wait_for(
+                provider.server_diagnostics(sample_user),
+                timeout=12.0,
+            )
         except asyncio.TimeoutError:
             await send_screen(
                 message,
@@ -3828,7 +3833,8 @@ def build_router(
 
         servers = list(report.get("servers") or [])
         available = sum(1 for item in servers if item.get("available"))
-        unavailable = len(servers) - available
+        configured = sum(1 for item in servers if item.get("configured") or item.get("available"))
+        unknown = len(servers) - configured
         remote_count = sum(1 for item in servers if item.get("kind") == "federation")
 
         lines = [
@@ -3836,7 +3842,7 @@ def build_router(
             "",
             f"Провайдер: <b>{html.escape(str(report.get('provider') or 'VPN'))}</b>",
             f"Всего серверов: <b>{len(servers)}</b>",
-            f"Доступно: <b>{available}</b> · недоступно: <b>{unavailable}</b>",
+            f"Проверено онлайн: <b>{available}</b> · в подписке/настроено: <b>{configured}</b> · без данных: <b>{unknown}</b>",
             f"Федеративных H1-узлов: <b>{remote_count}</b>",
             "",
             "🖥 <b>Состояние серверов</b>",
@@ -3844,7 +3850,8 @@ def build_router(
 
         for index, item in enumerate(servers, start=1):
             ok = bool(item.get("available"))
-            icon = "✅" if ok else "❌"
+            configured = bool(item.get("configured"))
+            icon = "✅" if ok else ("⚠️" if configured else "➖")
             name = html.escape(str(item.get("name") or f"Сервер {index}"))
             kind = "основной" if item.get("kind") == "main" else "federation"
             latency = item.get("latency_ms")
@@ -3868,11 +3875,13 @@ def build_router(
             lines.append("   " + " · ".join(details))
 
             error = str(item.get("error") or "").strip()
-            if not ok and error:
-                if error == "not_discovered":
-                    lines.append("   ↳ H1 сейчас не отдал этот узел")
-                else:
-                    lines.append(f"   ↳ ошибка: <code>{html.escape(error)}</code>")
+            if not ok:
+                if configured and error == "probe_unverified":
+                    lines.append("   ↳ конфиг есть в подписке · ping с BotHost не подтверждён")
+                elif configured and error:
+                    lines.append(f"   ↳ конфиг есть · проверка: <code>{html.escape(error)}</code>")
+                elif not configured:
+                    lines.append("   ↳ нет данных для проверки, сервер не скрыт")
 
         sources = dict(report.get("sources") or {})
         if sources:
@@ -3896,13 +3905,6 @@ def build_router(
                 "Каталог MGN VPN всё равно показывает все серверы; "
                 "недоступность влияет только на статус, а не скрывает страну.",
             ]
-        elif unavailable:
-            lines += [
-                "",
-                "⚠️ Недоступные узлы показаны только для диагностики. "
-                "Эта проверка <b>не удаляет страны из подписок</b>.",
-            ]
-
         if not report.get("discovery_ok", True):
             error = str(report.get("discovery_error") or "federation unavailable")
             lines += [
