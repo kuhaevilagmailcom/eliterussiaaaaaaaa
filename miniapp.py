@@ -146,7 +146,7 @@ class MiniAppServer:
         # Version the on-disk cache so a deployment that fixes subscription
         # composition never keeps serving an older NL-only payload.
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        return self._subscription_cache_dir / f"v7-{digest}.json"
+        return self._subscription_cache_dir / f"v8-{digest}.json"
 
     async def invalidate_subscription_cache(self, token: str) -> None:
         """Drop every cached form of a user's subscription after H1 sync."""
@@ -455,6 +455,65 @@ class MiniAppServer:
         return (state.subscription_url if state else "") or ""
 
 
+    async def _subscription_profile_headers(
+        self,
+        user: dict,
+        upstream_headers: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        """Build stable Happ metadata for the public MGN subscription."""
+
+        normalized = {
+            str(key).strip().lower(): str(value).strip()
+            for key, value in (upstream_headers or {}).items()
+            if str(value).strip()
+        }
+
+        title = base64.b64encode("MGN VPN".encode("utf-8")).decode("ascii")
+        try:
+            username = (await self._username()).lstrip("@")
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve bot username for subscription metadata: %s",
+                type(exc).__name__,
+            )
+            username = "mgnvpn_bot"
+
+        support_url = f"https://t.me/{username}"
+        announce_text = (
+            "Если VPN не работает — нажмите 🔄. "
+            f"Поддержка и продление подписки — в боте @{username}."
+        )
+        announce = base64.b64encode(announce_text.encode("utf-8")).decode("ascii")
+
+        userinfo = normalized.get("subscription-userinfo", "")
+        if not userinfo:
+            until = from_iso(user.get("subscription_until"))
+            expire = int(until.timestamp()) if until else 0
+            try:
+                limit_gb = max(0.0, float(user.get("traffic_limit_gb") or 0))
+            except (TypeError, ValueError):
+                limit_gb = 0.0
+            total_bytes = int(limit_gb * (1024 ** 3))
+            userinfo = (
+                f"upload=0; download=0; total={total_bytes}; expire={max(0, expire)}"
+            )
+
+        return {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "private, no-store, max-age=0",
+            "Pragma": "no-cache",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": 'inline; filename="MGN-VPN.txt"',
+            "Profile-Title": f"base64:{title}",
+            "Profile-Update-Interval": "1",
+            "Subscription-Userinfo": userinfo,
+            "Support-Url": support_url,
+            "Profile-Web-Page-Url": "https://mgnvpn.ru",
+            "Announce": f"base64:{announce}",
+        }
+
+
     async def _activate_paid(self, buyer_id: int, target_id: int, code: str, event_key: str) -> None:
         target = await self.db.get_user(target_id)
         if getattr(self.provider, "service_ready", True):
@@ -740,25 +799,10 @@ class MiniAppServer:
             if count < 1:
                 raise RuntimeError("H1Cloud subscription contains no VLESS nodes")
 
-            title = base64.b64encode("MGN VPN".encode("utf-8")).decode("ascii")
-            headers = {
-                "Content-Type": "text/plain; charset=utf-8",
-                "Cache-Control": "private, no-store, max-age=0",
-                "Pragma": "no-cache",
-                "Referrer-Policy": "no-referrer",
-                "X-Content-Type-Options": "nosniff",
-                "Content-Disposition": 'inline; filename="MGN-VPN.txt"',
-                "Profile-Title": f"base64:{title}",
-                "Profile-Update-Interval": "1",
-            }
-            for key in (
-                "subscription-userinfo",
-                "support-url",
-                "profile-web-page-url",
-            ):
-                value = upstream_headers.get(key)
-                if value:
-                    headers[key.title()] = value
+            headers = await self._subscription_profile_headers(
+                user,
+                upstream_headers,
+            )
 
             if len(self._subscription_cache) >= 512:
                 self._subscription_cache.pop(next(iter(self._subscription_cache)))
