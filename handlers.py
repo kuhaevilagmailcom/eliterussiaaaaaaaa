@@ -3277,21 +3277,21 @@ def build_router(
         kb.row(
             blue_inline_button("Обращения", callback_data="admin:support", icon_index=6),
         )
-        if role in {"owner", "full"}:
-            kb.row(
-                blue_inline_button("🎟 Промокоды", callback_data="admin:bonuses"),
-                blue_inline_button("⚙️ Система", callback_data="admin:system"),
-            )
-            kb.row(
-                blue_inline_button("🌐 Серверы VPN", callback_data="admin:servers"),
-            )
-            kb.row(
-                blue_inline_button("📣 Рассылка", callback_data="admin:broadcast:start"),
-                blue_inline_button("Публикация в канал", callback_data="admin:ad:start"),
-            )
-            kb.row(
-                blue_inline_button("🎁 Розыгрыши", callback_data="admin:giveaways"),
-            )
+        kb.row(
+            blue_inline_button("📈 Аналитика", callback_data="admin:analytics"),
+            blue_inline_button("🎟 Промокоды", callback_data="admin:bonuses"),
+        )
+        kb.row(
+            blue_inline_button("⚙️ Система", callback_data="admin:system"),
+            blue_inline_button("🌐 Серверы VPN", callback_data="admin:servers"),
+        )
+        kb.row(
+            blue_inline_button("📣 Рассылка", callback_data="admin:broadcast:start"),
+            blue_inline_button("Публикация в канал", callback_data="admin:ad:start"),
+        )
+        kb.row(
+            blue_inline_button("🎁 Розыгрыши", callback_data="admin:giveaways"),
+        )
         if role == "owner":
             kb.row(
                 blue_inline_button("🛡 Администраторы", callback_data="admin:admins"),
