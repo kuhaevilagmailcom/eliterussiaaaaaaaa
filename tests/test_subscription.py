@@ -383,3 +383,81 @@ def test_h1_smart_selection_preserves_transient_probe_failures():
         assert any("@de.example:443" in item for item in ranked)
 
     asyncio.run(run())
+
+
+def test_h1_server_diagnostics_reports_main_and_federated_nodes():
+    async def run():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider.api_url = "https://nl1.h1cloud.net/api"
+        provider.server_name = "MGN VPN"
+
+        async def request(method, path, **kwargs):
+            assert method == "GET"
+            if path == "/health":
+                return {"ok": True}
+            if path == "/fed/link":
+                return {"links": ["MGN-DE"]}
+            if path == "/fed/registry":
+                return {"nodes": [{"id": "us-node", "name": "MGN-US"}]}
+            if path == "/fed/lproxy/MGN-DE/health":
+                raise RuntimeError("health endpoint unavailable")
+            if path == "/fed/lproxy/MGN-DE/inbounds":
+                return {"inbounds": [{"id": "11", "remark": "MGN-DE"}]}
+            if path in {
+                "/fed/proxy/us-node/health",
+                "/fed/proxy/us-node/inbounds",
+            }:
+                raise RuntimeError("node unavailable")
+            raise AssertionError(path)
+
+        provider._request = AsyncMock(side_effect=request)
+
+        report = await provider.server_diagnostics()
+        assert report["provider"] == "h1cloud"
+        assert report["discovery_ok"] is True
+        assert report["sources"]["/fed/link"]["count"] == 1
+        assert report["sources"]["/fed/registry"]["count"] == 1
+
+        servers = report["servers"]
+        assert len(servers) == 3
+        assert servers[0]["name"] == "🇳🇱 Нидерланды"
+        assert servers[0]["available"] is True
+
+        germany = next(item for item in servers if "Германия" in item["name"])
+        assert germany["available"] is True
+        assert germany["check"] == "inbounds"
+
+        usa = next(item for item in servers if "США" in item["name"])
+        assert usa["available"] is False
+
+    asyncio.run(run())
+
+
+def test_h1_server_diagnostics_distinguishes_empty_federation_from_main_config():
+    async def run():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider.api_url = "https://nl1.h1cloud.net/api"
+        provider.server_name = "Нидерланды"
+
+        async def request(method, path, **kwargs):
+            assert method == "GET"
+            if path == "/health":
+                return {"ok": True}
+            if path == "/fed/link":
+                return {"links": []}
+            if path == "/fed/registry":
+                return {"nodes": []}
+            if path == "/fed/lagg":
+                return None
+            raise AssertionError(path)
+
+        provider._request = AsyncMock(side_effect=request)
+
+        report = await provider.server_diagnostics()
+        assert report["discovery_ok"] is True
+        assert len(report["servers"]) == 1
+        assert report["servers"][0]["kind"] == "main"
+        assert report["sources"]["/fed/link"]["count"] == 0
+        assert report["sources"]["/fed/registry"]["count"] == 0
+
+    asyncio.run(run())

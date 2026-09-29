@@ -167,6 +167,35 @@ class VpnProvider:
         """Provider readiness signal. Concrete providers may perform a real upstream check."""
         return {"ok": bool(self.service_ready), "mode": self.mode_name}
 
+    async def server_diagnostics(self) -> dict[str, Any]:
+        """Read-only server inventory for the admin panel."""
+        started = asyncio.get_running_loop().time()
+        try:
+            health = await asyncio.wait_for(self.health(), timeout=3.0)
+            available = bool(health.get("ok", True)) if isinstance(health, dict) else True
+            error = ""
+        except Exception as exc:
+            available = False
+            error = type(exc).__name__
+        latency_ms = int(max(0.0, (asyncio.get_running_loop().time() - started) * 1000))
+        return {
+            "provider": self.mode_name,
+            "discovery_ok": True,
+            "discovery_error": "",
+            "sources": {},
+            "servers": [
+                {
+                    "kind": "main",
+                    "name": str(getattr(self, "server_name", "MGN VPN") or "MGN VPN"),
+                    "id": "main",
+                    "available": available,
+                    "latency_ms": latency_ms,
+                    "check": "health",
+                    "error": error,
+                }
+            ],
+        }
+
     async def close(self) -> None:
         return None
 
@@ -1309,6 +1338,259 @@ class H1CloudVpnProvider(VpnProvider):
     async def health(self) -> dict[str, Any]:
         data = await self._request("GET", "/health")
         return dict(data or {})
+
+    @staticmethod
+    def _diagnostic_node_label(
+        node: dict[str, Any],
+        *responses: dict[str, Any] | None,
+    ) -> str:
+        """Best-effort human label without exposing federation tokens."""
+        values: list[str] = []
+        for source in (node, *responses):
+            if not isinstance(source, dict):
+                continue
+            for key in (
+                "name",
+                "label",
+                "remark",
+                "country",
+                "country_code",
+                "location",
+                "region",
+                "host",
+                "hostname",
+                "domain",
+                "server",
+                "node_id",
+                "id",
+                "server_id",
+            ):
+                value = source.get(key)
+                if value is not None and str(value).strip():
+                    values.append(str(value).strip())
+
+        identity = " ".join(values)
+        location = _location_label(identity)
+        if location:
+            return location
+
+        node_id = H1CloudVpnProvider._node_id(node)
+        for value in values:
+            cleaned = str(value).strip()
+            if cleaned and cleaned != node_id and len(cleaned) <= 64:
+                return cleaned
+        return f"Узел {node_id}" if node_id else "Удалённый узел"
+
+    async def server_diagnostics(self) -> dict[str, Any]:
+        """Inspect H1 main panel and federation without changing any VPN client."""
+        loop = asyncio.get_running_loop()
+
+        async def timed_request(
+            path: str,
+            *,
+            timeout: float = 2.5,
+            allow_missing: bool = False,
+        ) -> tuple[dict[str, Any] | None, int, str]:
+            started = loop.time()
+            try:
+                value = await asyncio.wait_for(
+                    self._request("GET", path, allow_missing=allow_missing),
+                    timeout=timeout,
+                )
+                elapsed = int(max(0.0, (loop.time() - started) * 1000))
+                return (dict(value or {}) if value is not None else None), elapsed, ""
+            except Exception as exc:
+                elapsed = int(max(0.0, (loop.time() - started) * 1000))
+                return None, elapsed, type(exc).__name__
+
+        main_health, main_ms, main_error = await timed_request("/health")
+        main_host = (urlsplit(self.api_url).hostname or "").strip()
+        main_label = _location_label(self.api_url) or str(self.server_name or "").strip()
+        if not main_label:
+            main_label = main_host or "Основной сервер"
+
+        main_available = main_health is not None and not (
+            isinstance(main_health, dict) and main_health.get("ok") is False
+        )
+        servers: list[dict[str, Any]] = [
+            {
+                "kind": "main",
+                "name": main_label,
+                "id": "main",
+                "host": main_host,
+                "proxy_kind": "direct",
+                "available": bool(main_available),
+                "latency_ms": main_ms,
+                "check": "health",
+                "error": main_error,
+            }
+        ]
+
+        async def source(path: str, key: str) -> tuple[str, dict[str, Any] | None, int, str]:
+            data, elapsed, error = await timed_request(path, timeout=2.0)
+            count = 0
+            if isinstance(data, dict):
+                value = data.get(key)
+                if isinstance(value, list):
+                    count = len(value)
+            return path, data, count, error
+
+        linked_result, registry_result = await asyncio.gather(
+            source("/fed/link", "links"),
+            source("/fed/registry", "nodes"),
+        )
+
+        source_rows: dict[str, dict[str, Any]] = {}
+        nodes: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+
+        path, linked_data, linked_count, linked_error = linked_result
+        source_rows[path] = {
+            "available": linked_data is not None,
+            "count": linked_count,
+            "error": linked_error,
+        }
+        raw_links = linked_data.get("links") if isinstance(linked_data, dict) else None
+        if isinstance(raw_links, list):
+            for value in raw_links:
+                node_id = str(value or "").strip()
+                key = ("lproxy", node_id)
+                if node_id and key not in seen:
+                    seen.add(key)
+                    nodes.append({"id": node_id, "proxy_kind": "lproxy"})
+
+        path, registry_data, registry_count, registry_error = registry_result
+        source_rows[path] = {
+            "available": registry_data is not None,
+            "count": registry_count,
+            "error": registry_error,
+        }
+        raw_nodes = registry_data.get("nodes") if isinstance(registry_data, dict) else None
+        if isinstance(raw_nodes, list):
+            for item in raw_nodes:
+                if not isinstance(item, dict):
+                    continue
+                node_id = self._node_id(item)
+                key = ("proxy", node_id)
+                if node_id and key not in seen:
+                    seen.add(key)
+                    node = dict(item)
+                    node["proxy_kind"] = "proxy"
+                    nodes.append(node)
+
+        # Older H1 builds may expose only /fed/lagg. Probe it only when both
+        # modern federation stores produced no nodes.
+        if not nodes:
+            lagg_data, _lagg_ms, lagg_error = await timed_request(
+                "/fed/lagg",
+                timeout=2.5,
+                allow_missing=True,
+            )
+            raw_lagg = lagg_data.get("nodes") if isinstance(lagg_data, dict) else None
+            lagg_count = len(raw_lagg) if isinstance(raw_lagg, list) else 0
+            source_rows["/fed/lagg"] = {
+                "available": lagg_data is not None,
+                "count": lagg_count,
+                "error": lagg_error,
+            }
+            if isinstance(raw_lagg, list):
+                for item in raw_lagg:
+                    if not isinstance(item, dict):
+                        continue
+                    node_id = self._node_id(item)
+                    key = ("lproxy", node_id)
+                    if node_id and key not in seen:
+                        seen.add(key)
+                        node = dict(item)
+                        node["proxy_kind"] = "lproxy"
+                        nodes.append(node)
+
+        async def inspect_remote(node: dict[str, Any]) -> dict[str, Any]:
+            node_id = self._node_id(node)
+            prefix = self._node_prefix(node)
+            kind = str(node.get("proxy_kind") or "lproxy")
+
+            health_data, health_ms, health_error = await timed_request(
+                f"{prefix}/health",
+                timeout=2.2,
+                allow_missing=True,
+            )
+            if health_data is not None and health_data.get("ok") is not False:
+                return {
+                    "kind": "federation",
+                    "name": self._diagnostic_node_label(node, health_data),
+                    "id": node_id,
+                    "proxy_kind": kind,
+                    "available": True,
+                    "latency_ms": health_ms,
+                    "check": "health",
+                    "error": "",
+                }
+
+            # Some H1 nodes do not proxy /health but do proxy the panel. A
+            # successful read-only /inbounds call is enough to mark the panel
+            # path as reachable for diagnostics.
+            started = loop.time()
+            try:
+                await asyncio.wait_for(
+                    self._inbound_ids(prefix=prefix),
+                    timeout=2.8,
+                )
+                inbound_ms = int(max(0.0, (loop.time() - started) * 1000))
+                return {
+                    "kind": "federation",
+                    "name": self._diagnostic_node_label(node, health_data),
+                    "id": node_id,
+                    "proxy_kind": kind,
+                    "available": True,
+                    "latency_ms": inbound_ms,
+                    "check": "inbounds",
+                    "error": "",
+                }
+            except Exception as exc:
+                inbound_ms = int(max(0.0, (loop.time() - started) * 1000))
+                error = type(exc).__name__ or health_error
+                return {
+                    "kind": "federation",
+                    "name": self._diagnostic_node_label(node, health_data),
+                    "id": node_id,
+                    "proxy_kind": kind,
+                    "available": False,
+                    "latency_ms": max(health_ms, inbound_ms),
+                    "check": "health+inbounds",
+                    "error": error or health_error or "unavailable",
+                }
+
+        if nodes:
+            servers.extend(
+                await asyncio.gather(
+                    *(inspect_remote(node) for node in nodes),
+                    return_exceptions=False,
+                )
+            )
+
+        modern_sources_ok = bool(
+            source_rows.get("/fed/link", {}).get("available")
+            or source_rows.get("/fed/registry", {}).get("available")
+        )
+        fallback_ok = bool(source_rows.get("/fed/lagg", {}).get("available"))
+        discovery_ok = modern_sources_ok or fallback_ok
+        discovery_error = ""
+        if not discovery_ok:
+            errors = [
+                str(item.get("error") or "")
+                for item in source_rows.values()
+                if item.get("error")
+            ]
+            discovery_error = ", ".join(dict.fromkeys(errors)) or "federation unavailable"
+
+        return {
+            "provider": self.mode_name,
+            "discovery_ok": discovery_ok,
+            "discovery_error": discovery_error,
+            "sources": source_rows,
+            "servers": servers,
+        }
 
     async def _probe_vless_endpoint(self, host: str, port: int) -> float | None:
         """Return TCP connect latency in ms, or None when the endpoint is unavailable."""
