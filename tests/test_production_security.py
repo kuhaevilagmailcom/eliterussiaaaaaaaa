@@ -331,7 +331,16 @@ def test_admin_users_screen_fits_telegram_caption_and_search_does_not_collide(tm
         caption = bot.send_photo.await_args.kwargs['caption']
         assert len(caption) <= 1000
         assert 'Пользователи' in caption
-        assert 'user_1' in caption
+        markup = bot.send_photo.await_args.kwargs['reply_markup']
+        user_buttons = [
+            button
+            for row in markup.inline_keyboard
+            for button in row
+            if str(button.callback_data or '').startswith('admin:user:')
+        ]
+        assert any('user_1' in button.text for button in user_buttons)
+        assert all(button.icon_custom_emoji_id is None for button in user_buttons)
+        assert all(button.style == 'danger' for button in user_buttons)
 
     asyncio.run(run())
 
