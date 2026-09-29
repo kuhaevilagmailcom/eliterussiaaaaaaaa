@@ -1319,6 +1319,9 @@ def build_router(
                     icon_index=1,
                 )
             )
+            kb.row(
+                blue_inline_button("🌐 Статус серверов", callback_data="profile:servers"),
+            )
         else:
             kb.row(
                 blue_inline_button(
@@ -1327,6 +1330,10 @@ def build_router(
                     icon_index=1,
                 )
             )
+        kb.row(
+            blue_inline_button("💳 История платежей", callback_data="profile:payments"),
+            blue_inline_button("📜 Начисления", callback_data="profile:access-history"),
+        )
         add_nav_buttons(kb, back_data="home")
         await send_screen(
             message,
