@@ -46,7 +46,7 @@ class Database:
         if path.parent != Path("."):
             path.parent.mkdir(parents=True, exist_ok=True)
 
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute("PRAGMA journal_mode=WAL")
             await db.execute("PRAGMA synchronous=NORMAL")
             await db.executescript(
@@ -56,6 +56,7 @@ class Database:
                     username TEXT,
                     first_name TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
+                    bot_started_at TEXT,
                     trial_used INTEGER NOT NULL DEFAULT 0,
                     subscription_until TEXT,
                     plan_name TEXT NOT NULL DEFAULT '',
@@ -346,6 +347,14 @@ class Database:
                     "UPDATE users SET channel_verified_at=created_at "
                     "WHERE channel_verified_at IS NULL"
                 )
+            if "bot_started_at" not in columns:
+                await db.execute("ALTER TABLE users ADD COLUMN bot_started_at TEXT")
+                # Existing accounts predate this marker and must never become
+                # eligible for a fresh referral merely because of the migration.
+                await db.execute(
+                    "UPDATE users SET bot_started_at=created_at "
+                    "WHERE bot_started_at IS NULL"
+                )
             await db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_vpn_client_id "
                 "ON users(vpn_client_id) WHERE vpn_client_id IS NOT NULL"
@@ -491,7 +500,7 @@ class Database:
         now = to_iso(utcnow())
         token = secrets.token_urlsafe(24)
         vpn_client_id = secrets.token_hex(16)
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             existed = await (
                 await db.execute(
                     "SELECT 1 FROM users WHERE telegram_id=?",
@@ -515,6 +524,29 @@ class Database:
         result["_is_new"] = existed is None
         return result
 
+    async def ping(self) -> bool:
+        """Cheap SQLite readiness check used by the non-liveness diagnostics endpoint."""
+        try:
+            async with aiosqlite.connect(self.path, timeout=3.0) as db:
+                await (await db.execute("SELECT 1")).fetchone()
+            return True
+        except Exception:
+            return False
+
+    async def claim_first_bot_start(self, telegram_id: int) -> bool:
+        """Atomically mark the first private /start without confusing channel callbacks for starts."""
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            cursor = await db.execute(
+                """
+                UPDATE users
+                SET bot_started_at=?
+                WHERE telegram_id=? AND bot_started_at IS NULL
+                """,
+                (to_iso(utcnow()), int(telegram_id)),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
     async def set_attribution_source_once(
         self,
         telegram_id: int,
@@ -523,7 +555,7 @@ class Database:
         source = str(source or "").strip().lower()
         if not re.fullmatch(r"[a-z0-9_-]{1,64}", source):
             raise ValueError("invalid attribution source")
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 """
                 UPDATE users
@@ -537,7 +569,7 @@ class Database:
             return cursor.rowcount == 1
 
     async def mark_channel_verified(self, telegram_id: int) -> dict[str, Any]:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute(
                 "UPDATE users SET channel_verified_at=? WHERE telegram_id=?",
                 (to_iso(utcnow()), int(telegram_id)),
@@ -549,7 +581,7 @@ class Database:
         source = str(source or "").strip().lower()
         if not re.fullmatch(r"[a-z0-9_-]{1,64}", source):
             raise ValueError("invalid attribution source")
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             arrived = int(
                 (
                     await (
@@ -606,7 +638,7 @@ class Database:
         if not re.fullmatch(r"[a-z0-9_-]{1,63}", prefix):
             raise ValueError("invalid attribution prefix")
         limit = max(1, min(int(limit), 100))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (
                 await db.execute(
@@ -643,7 +675,7 @@ class Database:
         return result
 
     async def get_user(self, telegram_id: int) -> dict[str, Any]:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             row = await (
                 await db.execute(
@@ -663,7 +695,7 @@ class Database:
         token = str(sub_token or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", token):
             return None
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             row = await (
                 await db.execute(
@@ -681,7 +713,7 @@ class Database:
         username = username.strip().lstrip("@")
         if not username:
             return None
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             row = await (
                 await db.execute(
@@ -699,7 +731,7 @@ class Database:
     async def list_users_page(self, page: int = 0, page_size: int = 12) -> tuple[list[dict[str, Any]], int]:
         page_size = max(1, min(int(page_size), 20))
         page = max(0, int(page))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             total = int((await (await db.execute("SELECT COUNT(*) FROM users")).fetchone())[0])
             rows = await (
@@ -711,7 +743,7 @@ class Database:
         return [dict(row) for row in rows], total
 
     async def get_last_payment(self, telegram_id: int) -> dict[str, Any] | None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             row = await (
                 await db.execute(
@@ -732,7 +764,7 @@ class Database:
     async def adjust_subscription_days(self, telegram_id: int, days_delta: int) -> dict[str, Any]:
         if not isinstance(days_delta, int) or days_delta == 0 or abs(days_delta) > 3650:
             raise ValueError("invalid days delta")
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             row = await (await db.execute(
@@ -759,7 +791,7 @@ class Database:
     async def set_device_limit(self, telegram_id: int, limit: int) -> dict[str, Any]:
         if type(limit) is not int or not 1 <= limit <= MAX_DEVICES:
             raise ValueError("device limit must be 1..5")
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 "UPDATE users SET max_devices=?, bonus_devices=? WHERE telegram_id=?",
                 (limit, limit - 1, telegram_id),
@@ -776,7 +808,7 @@ class Database:
     ) -> bool:
         if telegram_id == referrer_id:
             return False
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
                 """
@@ -830,7 +862,7 @@ class Database:
             return cursor.rowcount == 1
 
     async def referral_count(self, telegram_id: int) -> int:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             row = await (
                 await db.execute(
                     "SELECT COUNT(*) FROM users WHERE referrer_id=?",
@@ -840,7 +872,7 @@ class Database:
         return int(row[0])
 
     async def referral_stats(self, telegram_id: int) -> dict[str, int]:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             row = await (
                 await db.execute(
                     """
@@ -860,7 +892,7 @@ class Database:
         telegram_id: int,
         message_id: int | None,
     ) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute(
                 "UPDATE users SET last_menu_message_id=? WHERE telegram_id=?",
                 (message_id, telegram_id),
@@ -874,7 +906,7 @@ class Database:
         plan_name: str,
         max_devices: int,
     ) -> dict[str, Any]:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             row = await (await db.execute(
@@ -905,7 +937,7 @@ class Database:
         days = int(days)
         if days < 1 or action not in {"grant", "add"}:
             raise ValueError("Invalid administrative subscription grant")
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             row = await (await db.execute(
@@ -940,7 +972,7 @@ class Database:
         delta = int(delta)
         max_total_devices = min(5, max(1, int(max_total_devices)))
 
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             row = await (
@@ -1026,7 +1058,7 @@ class Database:
             if not selected or any(part not in allowed for part in selected):
                 raise ValueError("invalid applicable plans")
             plans = ",".join(dict.fromkeys(selected))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """
@@ -1057,7 +1089,7 @@ class Database:
         return dict(row)
 
     async def list_service_promos(self, limit: int = 30) -> list[dict[str, Any]]:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (
                 await db.execute(
@@ -1078,7 +1110,7 @@ class Database:
         normalized = code.strip().upper()
         if not normalized:
             return None
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             row = await (
                 await db.execute(
@@ -1120,7 +1152,7 @@ class Database:
         telegram_id: int,
         payment_id: str | None,
     ) -> bool:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute("BEGIN IMMEDIATE")
             row = await (
                 await db.execute(
@@ -1174,7 +1206,7 @@ class Database:
         promo_code: str | None = None,
     ) -> None:
         created_at = utcnow()
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute(
                 """
                 INSERT INTO payment_intents (
@@ -1194,7 +1226,7 @@ class Database:
             await db.commit()
 
     async def get_payment_intent(self, intent_id: str) -> dict[str, Any] | None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             row = await (
                 await db.execute(
@@ -1205,7 +1237,7 @@ class Database:
         return dict(row) if row else None
 
     async def mark_payment_intent_paid(self, intent_id: str) -> bool:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 "UPDATE payment_intents SET status='paid', paid_at=? "
                 "WHERE intent_id=? AND status='created' AND expires_at>?",
@@ -1215,7 +1247,7 @@ class Database:
             return cursor.rowcount == 1
 
     async def redeem_free_days_promo(self, code: str, telegram_id: int) -> dict[str, Any] | None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             promo = await (
@@ -1289,7 +1321,7 @@ class Database:
         promo_id: int | None = None,
         promo_code: str | None = None,
     ) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute(
                 """
                 INSERT INTO sbp_payments (
@@ -1335,7 +1367,7 @@ class Database:
     async def attach_sbp_provider_payment(
         self, local_id: str, provider_payment_id: str, pay_url: str,
     ) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 "UPDATE sbp_payments SET payment_id=?, pay_url=?, status='awaiting_payment' "
                 "WHERE payment_id=? AND status='creating'",
@@ -1346,7 +1378,7 @@ class Database:
             await db.commit()
 
     async def get_sbp_payment(self, payment_id: str) -> dict[str, Any] | None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             row = await (
                 await db.execute(
@@ -1358,7 +1390,7 @@ class Database:
 
     async def list_sbp_for_reconciliation(self, limit: int = 50) -> list[dict[str, Any]]:
         since = to_iso(utcnow() - timedelta(days=7))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (await db.execute(
                 "SELECT * FROM sbp_payments WHERE created_at>=? AND status IN "
@@ -1368,7 +1400,7 @@ class Database:
         return [dict(row) for row in rows]
 
     async def set_sbp_status(self, payment_id: str, status: str) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             normalized = status[:32]
             if normalized in {"refunded", "chargeback"}:
                 await db.execute(
@@ -1383,7 +1415,7 @@ class Database:
             await db.commit()
 
     async def mark_sbp_paid(self, payment_id: str) -> bool:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 """
                 UPDATE sbp_payments
@@ -1403,7 +1435,7 @@ class Database:
         plan_code: str,
         stars: int,
     ) -> bool:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 """
                 INSERT OR IGNORE INTO star_payments (
@@ -1510,7 +1542,7 @@ class Database:
         self, *, promo_id: int, buyer_id: int, target_id: int, product_code: str,
     ) -> dict[str, Any]:
         original = self._product_price(product_code)
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             promo = await (await db.execute(
@@ -1535,7 +1567,7 @@ class Database:
 
     async def settle_sbp_payment(self, payment_id: str) -> bool:
         """Commit verified payment and access together; replay is a no-op."""
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             row = await (await db.execute(
@@ -1574,7 +1606,7 @@ class Database:
         target_telegram_id: int, plan_code: str, stars: int,
         intent_id: str | None = None,
     ) -> bool:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             existing = await (await db.execute(
@@ -1632,7 +1664,7 @@ class Database:
             return True
 
     async def get_admin_role(self, telegram_id: int) -> str | None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             row = await (
                 await db.execute(
                     "SELECT role FROM admin_roles WHERE telegram_id=?",
@@ -1650,7 +1682,7 @@ class Database:
         role = role.strip().lower()
         if role not in {"full", "limited"}:
             raise ValueError("role must be full or limited")
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute(
                 """
                 INSERT INTO admin_roles (
@@ -1671,7 +1703,7 @@ class Database:
             await db.commit()
 
     async def remove_admin_role(self, telegram_id: int) -> bool:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 "DELETE FROM admin_roles WHERE telegram_id=?",
                 (telegram_id,),
@@ -1680,7 +1712,7 @@ class Database:
             return cursor.rowcount == 1
 
     async def list_admin_roles(self) -> list[dict[str, Any]]:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (
                 await db.execute(
@@ -1730,7 +1762,7 @@ class Database:
             clauses.extend(["closed_at IS NULL", "status=?"])
             params.append(status)
         where = "WHERE " + " AND ".join(clauses)
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             total = int((await (await db.execute(
                 f"SELECT COUNT(*) FROM support_tickets {where}", tuple(params)
@@ -1778,7 +1810,7 @@ class Database:
         }:
             raise ValueError("invalid support session")
         now = utcnow()
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute(
                 """
                 INSERT INTO interaction_sessions (
@@ -1800,7 +1832,7 @@ class Database:
         return result
 
     async def get_support_session(self, telegram_id: int) -> dict[str, Any] | None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             row = await (await db.execute(
                 "SELECT * FROM interaction_sessions "
@@ -1810,7 +1842,7 @@ class Database:
         return dict(row) if row else None
 
     async def clear_support_session(self, telegram_id: int) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute("DELETE FROM interaction_sessions WHERE telegram_id=?", (telegram_id,))
             await db.execute("DELETE FROM support_sessions WHERE telegram_id=?", (telegram_id,))
             await db.commit()
@@ -1822,7 +1854,7 @@ class Database:
     ) -> dict[str, Any]:
         created = to_iso(utcnow())
         preview = (text or caption or {"photo": "Фото", "video": "Видео"}.get(message_type, "Обращение")).strip()
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
@@ -1873,7 +1905,7 @@ class Database:
         owner_id: int | None = None, is_admin: bool = False,
     ) -> dict[str, Any] | None:
         now = to_iso(utcnow())
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             ticket = await (await db.execute(
@@ -1912,7 +1944,7 @@ class Database:
             else:
                 clauses.append("telegram_id=?")
                 params.append(int(owner_id))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             row = await (await db.execute(
                 f"SELECT * FROM support_tickets WHERE {' AND '.join(clauses)}", tuple(params)
@@ -1925,7 +1957,7 @@ class Database:
         ticket = await self.get_support_ticket(ticket_id, owner_id=owner_id, is_admin=is_admin)
         if not ticket:
             return []
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (await db.execute(
                 "SELECT * FROM support_messages WHERE ticket_id=? ORDER BY created_at, id", (ticket_id,)
@@ -1934,7 +1966,7 @@ class Database:
 
     async def list_user_support_tickets(self, telegram_id: int, page: int = 0, page_size: int = 10) -> tuple[list[dict[str, Any]], int]:
         page, page_size = max(0, int(page)), max(1, min(int(page_size), 20))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             total = int((await (await db.execute(
                 "SELECT COUNT(*) FROM support_tickets WHERE telegram_id=? AND deleted_at IS NULL", (telegram_id,)
@@ -1948,7 +1980,7 @@ class Database:
 
     async def recent_support_ticket_count(self, telegram_id: int, minutes: int = 10) -> int:
         since = to_iso(utcnow() - timedelta(minutes=max(1, int(minutes))))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             row = await (await db.execute(
                 "SELECT COUNT(*) FROM support_tickets "
                 "WHERE telegram_id=? AND created_at>=? AND deleted_at IS NULL",
@@ -1961,7 +1993,7 @@ class Database:
     ) -> dict[str, Any] | None:
         if status not in {"open", "closed"}:
             raise ValueError("invalid status")
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             ticket = await (await db.execute(
                 "SELECT * FROM support_tickets WHERE id=? AND deleted_at IS NULL", (ticket_id,)
@@ -1985,7 +2017,7 @@ class Database:
         return await self.get_support_ticket(ticket_id, owner_id=actor_id, is_admin=is_admin)
 
     async def soft_delete_support_ticket(self, ticket_id: int, admin_id: int) -> bool:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 "UPDATE support_tickets SET deleted_at=?, deleted_by=? WHERE id=? AND deleted_at IS NULL",
                 (to_iso(utcnow()), admin_id, ticket_id),
@@ -2010,7 +2042,7 @@ class Database:
         week_ago = to_iso(utcnow() - timedelta(days=7))
         month_ago = to_iso(utcnow() - timedelta(days=30))
 
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             total = (await (await db.execute(
                 "SELECT COUNT(*) FROM users"
             )).fetchone())[0]
@@ -2136,7 +2168,7 @@ class Database:
         current = (now or utcnow()).astimezone(timezone.utc)
         horizon = current + timedelta(days=3)
         limit = max(1, min(int(limit), 1000))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (
                 await db.execute(
@@ -2196,7 +2228,7 @@ class Database:
         days_before: int,
     ) -> bool:
         """Atomically reserve a reminder so parallel loops cannot send duplicates."""
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 """
                 INSERT OR IGNORE INTO subscription_expiry_notifications
@@ -2215,7 +2247,7 @@ class Database:
         days_before: int,
     ) -> None:
         """Release a failed delivery claim so a later pass can retry it."""
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute(
                 """
                 DELETE FROM subscription_expiry_notifications
@@ -2234,7 +2266,7 @@ class Database:
         """Return active subscriptions in stable batches for provider repair."""
         limit = max(1, min(int(limit), 500))
         offset = max(0, int(offset))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (
                 await db.execute(
@@ -2252,7 +2284,7 @@ class Database:
 
     async def recent_users(self, limit: int = 10) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 20))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (
                 await db.execute(
@@ -2270,7 +2302,7 @@ class Database:
 
     async def recent_sbp_payments(self, limit: int = 10) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 20))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (
                 await db.execute(
@@ -2287,7 +2319,7 @@ class Database:
         return [dict(row) for row in rows]
 
     async def revoke_subscription(self, telegram_id: int) -> bool:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 """
                 UPDATE users
@@ -2313,6 +2345,7 @@ class Database:
         end_mode: str,
         ends_at: str | None = None,
         participant_limit: int | None = None,
+        activate: bool = True,
     ) -> dict[str, Any]:
         winners_count = int(winners_count)
         prize_days = int(prize_days)
@@ -2338,7 +2371,7 @@ class Database:
                 raise ValueError("participant limit is invalid")
 
         now = to_iso(utcnow())
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """
@@ -2346,7 +2379,7 @@ class Database:
                     created_by, text_html, text_plain, photo_file_id,
                     winners_count, prize_days, end_mode, ends_at,
                     participant_limit, status, created_at, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(created_by),
@@ -2358,6 +2391,7 @@ class Database:
                     end_mode,
                     normalized_ends_at,
                     normalized_limit,
+                    "active" if activate else "cancelled",
                     now,
                     now,
                 ),
@@ -2369,13 +2403,31 @@ class Database:
             raise RuntimeError("giveaway was not created")
         return result
 
+    async def activate_giveaway(self, giveaway_id: int) -> bool:
+        """Activate a staged giveaway only after at least one channel post exists."""
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            cursor = await db.execute(
+                """
+                UPDATE giveaways
+                SET status='active', started_at=?
+                WHERE id=? AND status='cancelled'
+                  AND EXISTS (
+                      SELECT 1 FROM giveaway_posts gp
+                      WHERE gp.giveaway_id=giveaways.id
+                  )
+                """,
+                (to_iso(utcnow()), int(giveaway_id)),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
     async def add_giveaway_post(
         self,
         giveaway_id: int,
         chat_id: int | str,
         message_id: int,
     ) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO giveaway_posts
@@ -2387,7 +2439,7 @@ class Database:
             await db.commit()
 
     async def get_giveaway(self, giveaway_id: int) -> dict[str, Any] | None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             row = await (
                 await db.execute(
@@ -2405,7 +2457,7 @@ class Database:
 
     async def list_giveaways(self, limit: int = 12) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 50))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (
                 await db.execute(
@@ -2423,7 +2475,7 @@ class Database:
         return [dict(row) for row in rows]
 
     async def list_giveaway_posts(self, giveaway_id: int) -> list[dict[str, Any]]:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (
                 await db.execute(
@@ -2439,7 +2491,7 @@ class Database:
         return [dict(row) for row in rows]
 
     async def list_giveaway_participants(self, giveaway_id: int) -> list[dict[str, Any]]:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (
                 await db.execute(
@@ -2464,7 +2516,7 @@ class Database:
     ) -> dict[str, Any]:
         now_dt = utcnow()
         now = to_iso(now_dt)
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             giveaway = await (
@@ -2585,7 +2637,7 @@ class Database:
         return int(item.get("participant_count") or 0) >= int(item.get("participant_limit") or 0)
 
     async def mark_giveaway_finishing(self, giveaway_id: int) -> bool:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 """
                 UPDATE giveaways
@@ -2602,7 +2654,7 @@ class Database:
         giveaway_id: int,
         winners: list[dict[str, Any]],
     ) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute("BEGIN IMMEDIATE")
             existing = int(
                 (
@@ -2635,7 +2687,7 @@ class Database:
             await db.commit()
 
     async def get_giveaway_winners(self, giveaway_id: int) -> list[dict[str, Any]]:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (
                 await db.execute(
@@ -2655,7 +2707,7 @@ class Database:
         now_dt = utcnow()
         now = to_iso(now_dt)
         granted_ids: list[int] = []
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             giveaway = await (
@@ -2733,7 +2785,7 @@ class Database:
 
     async def mark_giveaway_finished(self, giveaway_id: int) -> None:
         now = to_iso(utcnow())
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute(
                 """
                 UPDATE giveaways
@@ -2749,7 +2801,7 @@ class Database:
         giveaway_id: int,
         chat_id: int | str,
     ) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute(
                 """
                 UPDATE giveaway_posts
@@ -2765,7 +2817,7 @@ class Database:
         giveaway_id: int,
         telegram_id: int,
     ) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute(
                 """
                 UPDATE giveaway_winners
@@ -2778,7 +2830,7 @@ class Database:
 
     async def list_giveaways_needing_work(self, limit: int = 100) -> list[int]:
         now = to_iso(utcnow())
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             rows = await (
                 await db.execute(
                     """
@@ -2822,7 +2874,7 @@ class Database:
         return [int(row[0]) for row in rows]
 
     async def cancel_giveaway(self, giveaway_id: int) -> bool:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 """
                 UPDATE giveaways
@@ -2837,7 +2889,7 @@ class Database:
     async def delete_giveaway(self, giveaway_id: int) -> bool:
         """Permanently remove giveaway metadata without touching granted subscriptions."""
         giveaway_id = int(giveaway_id)
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute("BEGIN IMMEDIATE")
             exists = await (
                 await db.execute(
@@ -2886,7 +2938,7 @@ class Database:
         cutoff = (current_day - timedelta(days=45)).isoformat()
         now = to_iso(utcnow())
 
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             row = await (
                 await db.execute(
                     """
@@ -2945,7 +2997,7 @@ class Database:
         start = end - timedelta(days=days - 1)
         baseline = start - timedelta(days=1)
 
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             rows = await (
                 await db.execute(
                     """
@@ -2989,7 +3041,7 @@ class Database:
 
     async def stats(self) -> tuple[int, int]:
         now = to_iso(utcnow())
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
             total = (await (await db.execute("SELECT COUNT(*) FROM users")).fetchone())[0]
             active = (
                 await (
