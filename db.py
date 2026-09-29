@@ -144,6 +144,62 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_traffic_daily_user_day
                 ON traffic_daily(telegram_id, day);
 
+                CREATE TABLE IF NOT EXISTS giveaways (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_by INTEGER NOT NULL,
+                    text_html TEXT NOT NULL,
+                    text_plain TEXT NOT NULL DEFAULT '',
+                    photo_file_id TEXT,
+                    winners_count INTEGER NOT NULL,
+                    prize_days INTEGER NOT NULL,
+                    end_mode TEXT NOT NULL CHECK(end_mode IN ('time', 'participants')),
+                    ends_at TEXT,
+                    participant_limit INTEGER,
+                    status TEXT NOT NULL DEFAULT 'active'
+                        CHECK(status IN ('active', 'finishing', 'finished', 'cancelled')),
+                    created_at TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_giveaways_status_end
+                ON giveaways(status, ends_at);
+
+                CREATE TABLE IF NOT EXISTS giveaway_posts (
+                    giveaway_id INTEGER NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    finalized_at TEXT,
+                    PRIMARY KEY (giveaway_id, chat_id),
+                    FOREIGN KEY(giveaway_id) REFERENCES giveaways(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS giveaway_participants (
+                    giveaway_id INTEGER NOT NULL,
+                    telegram_id INTEGER NOT NULL,
+                    username TEXT,
+                    first_name TEXT NOT NULL DEFAULT '',
+                    joined_at TEXT NOT NULL,
+                    PRIMARY KEY (giveaway_id, telegram_id),
+                    FOREIGN KEY(giveaway_id) REFERENCES giveaways(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_giveaway_participants_joined
+                ON giveaway_participants(giveaway_id, joined_at);
+
+                CREATE TABLE IF NOT EXISTS giveaway_winners (
+                    giveaway_id INTEGER NOT NULL,
+                    telegram_id INTEGER NOT NULL,
+                    username TEXT,
+                    first_name TEXT NOT NULL DEFAULT '',
+                    position INTEGER NOT NULL,
+                    granted_at TEXT,
+                    notified_at TEXT,
+                    PRIMARY KEY (giveaway_id, telegram_id),
+                    UNIQUE (giveaway_id, position),
+                    FOREIGN KEY(giveaway_id) REFERENCES giveaways(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS referrals (
                     referrer_id INTEGER NOT NULL,
                     referred_id INTEGER NOT NULL UNIQUE,
@@ -1717,6 +1773,8 @@ class Database:
         if mode not in {
             "new", "user_reply", "admin_reply", "admin_search", "admin_days", "gift",
             "ad_text", "ad_photo", "ad_url", "ad_button", "ad_channel", "ad_confirm",
+            "giveaway_text", "giveaway_photo", "giveaway_winners", "giveaway_days",
+            "giveaway_end_value", "giveaway_channels", "giveaway_confirm",
         }:
             raise ValueError("invalid support session")
         now = utcnow()
@@ -2242,6 +2300,539 @@ class Database:
             )
             await db.commit()
             return cursor.rowcount == 1
+
+    async def create_giveaway(
+        self,
+        *,
+        created_by: int,
+        text_html: str,
+        text_plain: str,
+        photo_file_id: str | None,
+        winners_count: int,
+        prize_days: int,
+        end_mode: str,
+        ends_at: str | None = None,
+        participant_limit: int | None = None,
+    ) -> dict[str, Any]:
+        winners_count = int(winners_count)
+        prize_days = int(prize_days)
+        if not 1 <= winners_count <= 10:
+            raise ValueError("winners_count must be 1..10")
+        if not 1 <= prize_days <= 3650:
+            raise ValueError("prize_days must be 1..3650")
+        if end_mode not in {"time", "participants"}:
+            raise ValueError("invalid giveaway end mode")
+        if not str(text_html or "").strip() or len(str(text_plain or "")) > 650:
+            raise ValueError("invalid giveaway text")
+
+        normalized_ends_at: str | None = None
+        normalized_limit: int | None = None
+        if end_mode == "time":
+            dt = from_iso(ends_at)
+            if not dt or dt <= utcnow():
+                raise ValueError("giveaway end time must be in the future")
+            normalized_ends_at = to_iso(dt)
+        else:
+            normalized_limit = int(participant_limit or 0)
+            if normalized_limit < winners_count or normalized_limit > 100000:
+                raise ValueError("participant limit is invalid")
+
+        now = to_iso(utcnow())
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                INSERT INTO giveaways (
+                    created_by, text_html, text_plain, photo_file_id,
+                    winners_count, prize_days, end_mode, ends_at,
+                    participant_limit, status, created_at, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                """,
+                (
+                    int(created_by),
+                    str(text_html).strip(),
+                    str(text_plain or "").strip(),
+                    str(photo_file_id or "").strip() or None,
+                    winners_count,
+                    prize_days,
+                    end_mode,
+                    normalized_ends_at,
+                    normalized_limit,
+                    now,
+                    now,
+                ),
+            )
+            giveaway_id = int(cursor.lastrowid)
+            await db.commit()
+        result = await self.get_giveaway(giveaway_id)
+        if result is None:
+            raise RuntimeError("giveaway was not created")
+        return result
+
+    async def add_giveaway_post(
+        self,
+        giveaway_id: int,
+        chat_id: int | str,
+        message_id: int,
+    ) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO giveaway_posts
+                    (giveaway_id, chat_id, message_id, finalized_at)
+                VALUES (?, ?, ?, NULL)
+                """,
+                (int(giveaway_id), str(chat_id), int(message_id)),
+            )
+            await db.commit()
+
+    async def get_giveaway(self, giveaway_id: int) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (
+                await db.execute(
+                    """
+                    SELECT g.*,
+                           (SELECT COUNT(*) FROM giveaway_participants p
+                            WHERE p.giveaway_id=g.id) AS participant_count
+                    FROM giveaways g
+                    WHERE g.id=?
+                    """,
+                    (int(giveaway_id),),
+                )
+            ).fetchone()
+        return dict(row) if row else None
+
+    async def list_giveaways(self, limit: int = 12) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 50))
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT g.*,
+                           (SELECT COUNT(*) FROM giveaway_participants p
+                            WHERE p.giveaway_id=g.id) AS participant_count
+                    FROM giveaways g
+                    ORDER BY g.id DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def list_giveaway_posts(self, giveaway_id: int) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT *
+                    FROM giveaway_posts
+                    WHERE giveaway_id=?
+                    ORDER BY chat_id
+                    """,
+                    (int(giveaway_id),),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def list_giveaway_participants(self, giveaway_id: int) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT *
+                    FROM giveaway_participants
+                    WHERE giveaway_id=?
+                    ORDER BY joined_at, telegram_id
+                    """,
+                    (int(giveaway_id),),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def add_giveaway_participant(
+        self,
+        *,
+        giveaway_id: int,
+        telegram_id: int,
+        username: str | None,
+        first_name: str | None,
+    ) -> dict[str, Any]:
+        now_dt = utcnow()
+        now = to_iso(now_dt)
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            giveaway = await (
+                await db.execute(
+                    "SELECT * FROM giveaways WHERE id=?",
+                    (int(giveaway_id),),
+                )
+            ).fetchone()
+            if giveaway is None:
+                await db.rollback()
+                return {"state": "missing", "count": 0, "due": False}
+            if str(giveaway["status"]) != "active":
+                count = int(
+                    (
+                        await (
+                            await db.execute(
+                                "SELECT COUNT(*) FROM giveaway_participants WHERE giveaway_id=?",
+                                (int(giveaway_id),),
+                            )
+                        ).fetchone()
+                    )[0]
+                )
+                await db.rollback()
+                return {"state": "ended", "count": count, "due": True}
+
+            if giveaway["end_mode"] == "time":
+                ends = from_iso(giveaway["ends_at"])
+                if not ends or ends <= now_dt:
+                    count = int(
+                        (
+                            await (
+                                await db.execute(
+                                    "SELECT COUNT(*) FROM giveaway_participants WHERE giveaway_id=?",
+                                    (int(giveaway_id),),
+                                )
+                            ).fetchone()
+                        )[0]
+                    )
+                    await db.rollback()
+                    return {"state": "ended", "count": count, "due": True}
+
+            existing = await (
+                await db.execute(
+                    """
+                    SELECT 1 FROM giveaway_participants
+                    WHERE giveaway_id=? AND telegram_id=?
+                    """,
+                    (int(giveaway_id), int(telegram_id)),
+                )
+            ).fetchone()
+
+            if existing is None:
+                await db.execute(
+                    """
+                    INSERT INTO giveaway_participants (
+                        giveaway_id, telegram_id, username, first_name, joined_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(giveaway_id),
+                        int(telegram_id),
+                        str(username or "").strip() or None,
+                        str(first_name or "").strip(),
+                        now,
+                    ),
+                )
+                state = "joined"
+            else:
+                await db.execute(
+                    """
+                    UPDATE giveaway_participants
+                    SET username=?, first_name=?
+                    WHERE giveaway_id=? AND telegram_id=?
+                    """,
+                    (
+                        str(username or "").strip() or None,
+                        str(first_name or "").strip(),
+                        int(giveaway_id),
+                        int(telegram_id),
+                    ),
+                )
+                state = "already"
+
+            count = int(
+                (
+                    await (
+                        await db.execute(
+                            "SELECT COUNT(*) FROM giveaway_participants WHERE giveaway_id=?",
+                            (int(giveaway_id),),
+                        )
+                    ).fetchone()
+                )[0]
+            )
+            due = (
+                giveaway["end_mode"] == "participants"
+                and count >= int(giveaway["participant_limit"] or 0)
+            )
+            await db.commit()
+        return {
+            "state": state,
+            "count": count,
+            "due": bool(due),
+            "participant_limit": giveaway["participant_limit"],
+        }
+
+    async def giveaway_is_due(self, giveaway_id: int) -> bool:
+        item = await self.get_giveaway(giveaway_id)
+        if not item:
+            return False
+        status = str(item.get("status") or "")
+        if status in {"finishing", "finished"}:
+            return True
+        if status != "active":
+            return False
+        if item.get("end_mode") == "time":
+            ends = from_iso(item.get("ends_at"))
+            return bool(ends and ends <= utcnow())
+        return int(item.get("participant_count") or 0) >= int(item.get("participant_limit") or 0)
+
+    async def mark_giveaway_finishing(self, giveaway_id: int) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE giveaways
+                SET status='finishing'
+                WHERE id=? AND status='active'
+                """,
+                (int(giveaway_id),),
+            )
+            await db.commit()
+        return cursor.rowcount == 1
+
+    async def save_giveaway_winners(
+        self,
+        giveaway_id: int,
+        winners: list[dict[str, Any]],
+    ) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            existing = int(
+                (
+                    await (
+                        await db.execute(
+                            "SELECT COUNT(*) FROM giveaway_winners WHERE giveaway_id=?",
+                            (int(giveaway_id),),
+                        )
+                    ).fetchone()
+                )[0]
+            )
+            if existing:
+                await db.rollback()
+                return
+            for position, item in enumerate(winners, start=1):
+                await db.execute(
+                    """
+                    INSERT INTO giveaway_winners (
+                        giveaway_id, telegram_id, username, first_name, position
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(giveaway_id),
+                        int(item["telegram_id"]),
+                        str(item.get("username") or "").strip() or None,
+                        str(item.get("first_name") or "").strip(),
+                        position,
+                    ),
+                )
+            await db.commit()
+
+    async def get_giveaway_winners(self, giveaway_id: int) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT *
+                    FROM giveaway_winners
+                    WHERE giveaway_id=?
+                    ORDER BY position
+                    """,
+                    (int(giveaway_id),),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def grant_giveaway_prizes(self, giveaway_id: int) -> list[int]:
+        """Grant every selected prize exactly once in one SQLite transaction."""
+        now_dt = utcnow()
+        now = to_iso(now_dt)
+        granted_ids: list[int] = []
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            giveaway = await (
+                await db.execute(
+                    "SELECT prize_days, created_by FROM giveaways WHERE id=?",
+                    (int(giveaway_id),),
+                )
+            ).fetchone()
+            if giveaway is None:
+                await db.rollback()
+                return []
+            days = int(giveaway["prize_days"])
+            creator = int(giveaway["created_by"])
+            winners = await (
+                await db.execute(
+                    """
+                    SELECT telegram_id
+                    FROM giveaway_winners
+                    WHERE giveaway_id=? AND granted_at IS NULL
+                    ORDER BY position
+                    """,
+                    (int(giveaway_id),),
+                )
+            ).fetchall()
+
+            for winner in winners:
+                telegram_id = int(winner["telegram_id"])
+                user = await (
+                    await db.execute(
+                        """
+                        SELECT subscription_until, plan_name
+                        FROM users
+                        WHERE telegram_id=?
+                        """,
+                        (telegram_id,),
+                    )
+                ).fetchone()
+                if user is None:
+                    continue
+                current = from_iso(user["subscription_until"])
+                active = bool(current and current > now_dt)
+                until = max(now_dt, current or now_dt) + timedelta(days=days)
+                plan_name = (
+                    str(user["plan_name"] or "")
+                    if active and str(user["plan_name"] or "").strip()
+                    else "Розыгрыш MGN VPN"
+                )
+                await db.execute(
+                    """
+                    UPDATE users
+                    SET subscription_until=?, plan_name=?, traffic_limit_gb=0
+                    WHERE telegram_id=?
+                    """,
+                    (to_iso(until), plan_name, telegram_id),
+                )
+                await db.execute(
+                    """
+                    INSERT INTO admin_subscription_grants
+                        (telegram_id, granted_by, days, action, granted_at)
+                    VALUES (?, ?, ?, 'grant', ?)
+                    """,
+                    (telegram_id, creator, days, now),
+                )
+                await db.execute(
+                    """
+                    UPDATE giveaway_winners
+                    SET granted_at=?
+                    WHERE giveaway_id=? AND telegram_id=? AND granted_at IS NULL
+                    """,
+                    (now, int(giveaway_id), telegram_id),
+                )
+                granted_ids.append(telegram_id)
+            await db.commit()
+        return granted_ids
+
+    async def mark_giveaway_finished(self, giveaway_id: int) -> None:
+        now = to_iso(utcnow())
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                UPDATE giveaways
+                SET status='finished', finished_at=COALESCE(finished_at, ?)
+                WHERE id=? AND status IN ('active', 'finishing', 'finished')
+                """,
+                (now, int(giveaway_id)),
+            )
+            await db.commit()
+
+    async def mark_giveaway_post_finalized(
+        self,
+        giveaway_id: int,
+        chat_id: int | str,
+    ) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                UPDATE giveaway_posts
+                SET finalized_at=COALESCE(finalized_at, ?)
+                WHERE giveaway_id=? AND chat_id=?
+                """,
+                (to_iso(utcnow()), int(giveaway_id), str(chat_id)),
+            )
+            await db.commit()
+
+    async def mark_giveaway_winner_notified(
+        self,
+        giveaway_id: int,
+        telegram_id: int,
+    ) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                UPDATE giveaway_winners
+                SET notified_at=COALESCE(notified_at, ?)
+                WHERE giveaway_id=? AND telegram_id=?
+                """,
+                (to_iso(utcnow()), int(giveaway_id), int(telegram_id)),
+            )
+            await db.commit()
+
+    async def list_giveaways_needing_work(self, limit: int = 100) -> list[int]:
+        now = to_iso(utcnow())
+        async with aiosqlite.connect(self.path) as db:
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT DISTINCT g.id
+                    FROM giveaways g
+                    WHERE
+                        g.status='finishing'
+                        OR (
+                            g.status='active'
+                            AND (
+                                (g.end_mode='time' AND g.ends_at IS NOT NULL AND g.ends_at<=?)
+                                OR (
+                                    g.end_mode='participants'
+                                    AND (
+                                        SELECT COUNT(*)
+                                        FROM giveaway_participants p
+                                        WHERE p.giveaway_id=g.id
+                                    ) >= COALESCE(g.participant_limit, 0)
+                                )
+                            )
+                        )
+                        OR (
+                            g.status='finished'
+                            AND (
+                                EXISTS (
+                                    SELECT 1 FROM giveaway_posts gp
+                                    WHERE gp.giveaway_id=g.id AND gp.finalized_at IS NULL
+                                )
+                                OR EXISTS (
+                                    SELECT 1 FROM giveaway_winners gw
+                                    WHERE gw.giveaway_id=g.id AND gw.notified_at IS NULL
+                                )
+                            )
+                        )
+                    ORDER BY g.id
+                    LIMIT ?
+                    """,
+                    (now, max(1, min(int(limit), 500))),
+                )
+            ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    async def cancel_giveaway(self, giveaway_id: int) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE giveaways
+                SET status='cancelled', finished_at=?
+                WHERE id=? AND status='active'
+                """,
+                (to_iso(utcnow()), int(giveaway_id)),
+            )
+            await db.commit()
+        return cursor.rowcount == 1
 
     async def record_traffic_sample(
         self,
