@@ -1404,7 +1404,9 @@ class H1CloudVpnProvider(VpnProvider):
                 return None, elapsed, type(exc).__name__
 
         main_health, main_ms, main_error = await timed_request("/health")
-        main_host = (urlsplit(self.api_url).hostname or "").strip()
+        parsed_main_api = urlsplit(self.api_url)
+        main_host = (parsed_main_api.hostname or "").strip()
+        main_port = int(parsed_main_api.port or (443 if parsed_main_api.scheme == "https" else 80))
         main_label = _location_label(self.api_url) or str(self.server_name or "").strip()
         if not main_label:
             main_label = main_host or "Основной сервер"
@@ -1418,6 +1420,7 @@ class H1CloudVpnProvider(VpnProvider):
                 "name": main_label,
                 "id": "main",
                 "host": main_host,
+                "port": main_port,
                 "proxy_kind": "direct",
                 "available": bool(main_available),
                 "latency_ms": main_ms,
@@ -1644,6 +1647,7 @@ class H1CloudVpnProvider(VpnProvider):
                 "name": label,
                 "id": code,
                 "host": "",
+                "port": 0,
                 "proxy_kind": "direct" if code == "nl" else "federation",
                 "available": False,
                 "configured": False,
@@ -1738,6 +1742,7 @@ class H1CloudVpnProvider(VpnProvider):
                     "catalog_id": code,
                     "configured": True,
                     "host": host or current.get("host", ""),
+                    "port": port or int(current.get("port") or 0),
                     "available": latency is not None,
                     "latency_ms": int(latency) if latency is not None else None,
                     "check": "vless_tcp" if latency is not None else "subscription",
