@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from vpn import H1CloudVpnProvider, prettify_subscription_payload
+from vpn import H1CloudVpnProvider, prefer_subscription_country, prettify_subscription_payload
 
 
 VLESS = "vless://uuid@de5.h1cloud.net:443?security=tls#old-name"
@@ -553,3 +553,21 @@ def test_h1_server_diagnostics_distinguishes_empty_federation_from_main_config()
         assert report["sources"]["/fed/registry"]["count"] == 0
 
     asyncio.run(run())
+
+def test_preferred_country_moves_only_that_country_first_and_keeps_fallbacks():
+    payload = (
+        "vless://uuid@nl1.h1cloud.net:443?security=reality#MGN-NL\n"
+        "vless://uuid@de5.h1cloud.net:443?security=reality#MGN-DE\n"
+        "vless://uuid@us3.h1cloud.net:443?security=reality#MGN-US\n"
+    ).encode()
+    rendered = prefer_subscription_country(payload, "de")
+    decoded = base64.b64decode(rendered).decode().splitlines()
+    assert len(decoded) == 3
+    assert "de5.h1cloud.net" in decoded[0]
+    assert any("nl1.h1cloud.net" in line for line in decoded)
+    assert any("us3.h1cloud.net" in line for line in decoded)
+
+
+def test_auto_country_does_not_rewrite_subscription():
+    payload = b"vless://uuid@nl1.h1cloud.net:443#MGN-NL\n"
+    assert prefer_subscription_country(payload, "auto") == payload

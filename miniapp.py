@@ -30,6 +30,7 @@ from catalog import (
     rub_to_stars,
 )
 from db import Database, from_iso, utcnow
+from admin_notify import notify_purchase
 from payments import RollyPayError, create_payment, get_payment
 from legal import (
     AGREEMENT_SECTIONS,
@@ -38,7 +39,12 @@ from legal import (
     agreement_html,
     privacy_html,
 )
-from vpn import VpnProvider, VpnState, prettify_subscription_payload
+from vpn import (
+    VpnProvider,
+    VpnState,
+    prefer_subscription_country,
+    prettify_subscription_payload,
+)
 from vpn_clients import client_registry, get_client
 
 
@@ -449,6 +455,14 @@ class MiniAppServer:
                 raise _json_error(400, "Некорректное поле запроса")
         return data
 
+    async def _ensure_purchases_available(self) -> None:
+        state = await self.db.maintenance_state()
+        if state.get("enabled"):
+            raise _json_error(
+                503,
+                str(state.get("message") or "Покупки временно приостановлены"),
+            )
+
     def _public_subscription_url(
         self,
         user: dict,
@@ -630,6 +644,7 @@ class MiniAppServer:
         return web.json_response(payload, status=200 if payload["ok"] else 503)
 
     async def public_catalog(self, request: web.Request) -> web.Response:
+        maintenance = await self.db.maintenance_state()
         return web.json_response(
             {
                 "plans": [
@@ -649,12 +664,14 @@ class MiniAppServer:
                 "max_devices": MAX_DEVICES,
                 "extra_device_price_rub": EXTRA_DEVICE_PRICE_RUB,
                 "extra_device_price_stars": rub_to_stars(EXTRA_DEVICE_PRICE_RUB),
+                "maintenance": maintenance,
             },
             headers={"Cache-Control": "public, max-age=300"},
         )
 
 
     async def public_payment_create(self, request: web.Request) -> web.Response:
+        await self._ensure_purchases_available()
         self._rate_limit(
             f"public-payment-create:{self._client_identity(request)}",
             limit=8,
@@ -760,6 +777,10 @@ class MiniAppServer:
             raise _json_error(409, "Данные платежа не совпали")
 
         if status == "paid":
+            target_id = int(
+                local.get("target_telegram_id") or local["telegram_id"]
+            )
+            before = await self.db.get_user(target_id)
             try:
                 fresh = await self.db.settle_sbp_payment(payment_id)
             except ValueError:
@@ -767,9 +788,6 @@ class MiniAppServer:
                     409,
                     "Оплата получена и требует проверки поддержки",
                 )
-            target_id = int(
-                local.get("target_telegram_id") or local["telegram_id"]
-            )
             if fresh:
                 updated = await self.db.get_user(target_id)
                 if getattr(self.provider, "service_ready", True):
@@ -785,6 +803,22 @@ class MiniAppServer:
                             type(exc).__name__,
                         )
                 await self._sync_bot_subscription_menu(updated)
+                await notify_purchase(
+                    self.bot,
+                    self.db,
+                    self.config,
+                    buyer_id=int(local["telegram_id"]),
+                    target_id=target_id,
+                    product_code=str(local["plan_code"]),
+                    method="СБП",
+                    amount_text=f"{int(local['amount_rub'])} ₽",
+                    purchase_kind=(
+                        "Дополнительное устройство"
+                        if str(local["plan_code"]) == "device"
+                        else "Продление" if _active(before) else "Новая подписка"
+                    ),
+                    promo_code=str(local.get("promo_code") or "") or None,
+                )
             return web.json_response({"status": "paid"})
 
         await self.db.set_sbp_status(payment_id, status or "processing")
@@ -839,6 +873,10 @@ class MiniAppServer:
             body, upstream_headers, count = await asyncio.wait_for(
                 load_payload(),
                 14.0,
+            )
+            body = prefer_subscription_country(
+                body,
+                str(user.get("preferred_country") or "auto"),
             )
             if count < 1:
                 raise RuntimeError("H1Cloud subscription contains no VLESS nodes")
@@ -994,6 +1032,10 @@ class MiniAppServer:
             days=30,
         )
         referral_stats = await self.db.referral_stats(uid)
+        promo_stats = await self.db.user_promo_stats(uid)
+        payment_history = await self.db.list_user_payment_history(uid, limit=10)
+        subscription_events = await self.db.list_subscription_events(uid, limit=12)
+        maintenance = await self.db.maintenance_state()
         username = await self._username()
         until = from_iso(row.get("subscription_until"))
         until_text = ""
@@ -1019,6 +1061,7 @@ class MiniAppServer:
                     "remaining_seconds": _remaining_seconds(row),
                     "max_devices": int(row.get("max_devices") or 1),
                     "trial_used": bool(row.get("trial_used")),
+                    "preferred_country": str(row.get("preferred_country") or "auto"),
                 },
                 "vpn": {
                     "ready": bool(getattr(self.provider, "service_ready", True)),
@@ -1043,7 +1086,13 @@ class MiniAppServer:
                     }
                     for code, plan in PLANS.items()
                 ],
-                "payments": {"sbp_enabled": bool(self.config.rollypay_enabled)},
+                "payments": {
+                    "sbp_enabled": bool(self.config.rollypay_enabled),
+                    "history": payment_history,
+                },
+                "subscription_events": subscription_events,
+                "promo_stats": promo_stats,
+                "maintenance": maintenance,
                 "capabilities": {
                     "device_list": bool(self.provider.capabilities.supports_device_list),
                     "device_removal": bool(self.provider.capabilities.supports_device_removal),
@@ -1066,8 +1115,49 @@ class MiniAppServer:
             }
         )
 
+    async def server_status(self, request: web.Request) -> web.Response:
+        uid, _tg_user, row = await self._auth(request)
+        try:
+            report = await asyncio.wait_for(
+                self.provider.server_diagnostics(row),
+                timeout=12.0,
+            )
+        except Exception:
+            raise _json_error(503, "Не удалось проверить серверы")
+        servers = []
+        for item in report.get("servers") or []:
+            servers.append({
+                "id": str(item.get("catalog_id") or item.get("id") or ""),
+                "name": str(item.get("name") or "VPN-сервер"),
+                "available": bool(item.get("available")),
+                "configured": bool(item.get("configured") or item.get("available")),
+                "latency_ms": item.get("latency_ms"),
+            })
+        return web.json_response({
+            "preferred_country": str(row.get("preferred_country") or "auto"),
+            "servers": servers,
+            "checked_for": uid,
+        })
+
+    async def set_country_preference(self, request: web.Request) -> web.Response:
+        uid, _tg_user, row = await self._auth(request)
+        data = await self._json_body(request)
+        country = str(data.get("country") or "auto").strip().lower()
+        try:
+            updated = await self.db.set_preferred_country(uid, country)
+        except ValueError:
+            raise _json_error(400, "Эта страна сейчас не поддерживается")
+        token = str(updated.get("sub_token") or row.get("sub_token") or "")
+        if token:
+            await self.invalidate_subscription_cache(token)
+        return web.json_response({
+            "ok": True,
+            "preferred_country": str(updated.get("preferred_country") or "auto"),
+        })
+
     async def stars_invoice(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
+        await self._ensure_purchases_available()
         data = await self._json_body(request)
         code = str(data.get("plan_code") or "")
         plan = PLANS.get(code)
@@ -1137,6 +1227,7 @@ class MiniAppServer:
 
     async def sbp_create(self, request: web.Request) -> web.Response:
         uid, _tg_user, _row = await self._auth(request)
+        await self._ensure_purchases_available()
         if not self.config.rollypay_enabled:
             raise _json_error(503, "СБП пока не настроена")
 
@@ -1242,6 +1333,8 @@ class MiniAppServer:
             raise _json_error(409, "Данные платежа не совпали")
 
         if status == "paid":
+            target_id = int(local.get("target_telegram_id") or uid)
+            before = await self.db.get_user(target_id)
             try:
                 fresh = await self.db.settle_sbp_payment(payment_id)
             except ValueError:
@@ -1256,10 +1349,26 @@ class MiniAppServer:
                 else:
                     await self._activate_paid(
                         buyer_id=uid,
-                        target_id=int(local.get("target_telegram_id") or uid),
+                        target_id=target_id,
                         code=str(local["plan_code"]),
                         event_key=f"sbp:{payment_id}",
                     )
+                await notify_purchase(
+                    self.bot,
+                    self.db,
+                    self.config,
+                    buyer_id=uid,
+                    target_id=target_id,
+                    product_code=str(local["plan_code"]),
+                    method="СБП",
+                    amount_text=f"{int(local['amount_rub'])} ₽",
+                    purchase_kind=(
+                        "Дополнительное устройство"
+                        if str(local["plan_code"]) == "device"
+                        else "Продление" if _active(before) else "Новая подписка"
+                    ),
+                    promo_code=str(local.get("promo_code") or "") or None,
+                )
             return web.json_response({"status": "paid"})
 
         await self.db.set_sbp_status(payment_id, status or "processing")
@@ -1267,6 +1376,7 @@ class MiniAppServer:
 
     async def buy_extra_device(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
+        await self._ensure_purchases_available()
         if not _active(row):
             raise _json_error(409, "Сначала активируйте подписку")
         if int(row.get("max_devices") or 1) >= MAX_DEVICES:
@@ -1391,6 +1501,7 @@ class MiniAppServer:
             first_name=tg_user.get("first_name"),
             message_type="text",
             text=message,
+            server_code=str(row.get("preferred_country") or "auto"),
         )
 
         username = (
@@ -1629,6 +1740,11 @@ class MiniAppServer:
             self.public_payment_check,
         )
         app.router.add_get("/api/miniapp/me", self.me)
+        app.router.add_get("/api/miniapp/servers", self.server_status)
+        app.router.add_post(
+            "/api/miniapp/preference/country",
+            self.set_country_preference,
+        )
         app.router.add_post("/api/miniapp/payment/stars", self.stars_invoice)
         app.router.add_post("/api/miniapp/payment/sbp", self.sbp_create)
         app.router.add_get("/api/miniapp/payment/sbp/{payment_id}", self.sbp_check)

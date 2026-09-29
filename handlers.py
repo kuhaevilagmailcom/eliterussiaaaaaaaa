@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
 import html
 import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
+from io import BytesIO, StringIO
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,8 @@ from catalog import (
     plan_savings_rub,
 )
 from config import Config
+from analytics import load_business_analytics
+from admin_notify import notify_purchase
 from db import Database, from_iso, utcnow
 from emoji import EmojiBank
 from giveaway import (
@@ -57,10 +60,11 @@ from giveaway import (
     render_giveaway_post,
     reroll_giveaway_winner,
     send_giveaway_post,
+    undo_giveaway_reroll,
 )
 from payments import RollyPayError, create_payment, get_payment
 from legal import agreement_telegram
-from vpn import VpnProvider, VpnState
+from vpn import CANONICAL_SERVERS, VpnProvider, VpnState
 from vpn_clients import CLIENTS, client_redirect_url
 
 
@@ -437,6 +441,13 @@ def main_menu_inline_keyboard(
             "Реферальная система",
             callback_data="menu:friends",
             icon_index=8,
+        )
+    )
+    kb.row(
+        blue_inline_button(
+            "Статус серверов",
+            callback_data="menu:serverstatus",
+            icon_index=2,
         )
     )
     kb.row(
@@ -853,10 +864,42 @@ def build_router(
         return bool(await get_admin_role(user_id))
 
     async def has_full_admin_access(user_id: int) -> bool:
-        return (await get_admin_role(user_id)) in {"owner", "full"}
+        # Product rule: every issued admin has the same operational access.
+        return await has_admin_access(user_id)
 
     def is_owner(user_id: int) -> bool:
         return user_id in config.admin_ids
+
+    async def purchases_open() -> tuple[bool, str]:
+        state = await db.maintenance_state()
+        return (
+            not bool(state.get("enabled")),
+            str(
+                state.get("message")
+                or "Покупки временно приостановлены. Активные VPN-подписки продолжают работать."
+            ),
+        )
+
+    async def guard_purchase_message(message: Message, actor) -> bool:
+        opened, reason = await purchases_open()
+        if opened:
+            return True
+        await send_screen(
+            message,
+            actor,
+            "🛠 <b>Технические работы</b>\n\n"
+            f"{html.escape(reason)}\n\n"
+            "<i>Если VPN уже активен, он продолжает работать как обычно.</i>",
+            reply_markup=section_nav_keyboard(back_data="home"),
+        )
+        return False
+
+    async def guard_purchase_callback(callback: CallbackQuery) -> bool:
+        opened, reason = await purchases_open()
+        if opened:
+            return True
+        await safe_callback_answer(callback, reason[:180], show_alert=True)
+        return False
 
     async def _send_screen_unlocked(
         message: Message,
@@ -1309,6 +1352,18 @@ def build_router(
             )
             kb.row(
                 blue_inline_button(
+                    "Выбор сервера",
+                    callback_data="menu:country",
+                    icon_index=2,
+                ),
+                blue_inline_button(
+                    "Статус серверов",
+                    callback_data="menu:serverstatus",
+                    icon_index=3,
+                ),
+            )
+            kb.row(
+                blue_inline_button(
                     "Продлить VPN",
                     callback_data="plans",
                     icon_index=1,
@@ -1322,6 +1377,22 @@ def build_router(
                     icon_index=1,
                 )
             )
+        kb.row(
+            blue_inline_button(
+                "История оплат",
+                callback_data="menu:paymenthistory",
+            ),
+            blue_inline_button(
+                "Начисления",
+                callback_data="menu:accruals",
+            ),
+        )
+        kb.row(
+            blue_inline_button(
+                "Бонусы",
+                callback_data="menu:bonusstats",
+            )
+        )
         add_nav_buttons(kb, back_data="home")
         await send_screen(
             message,
@@ -1330,6 +1401,232 @@ def build_router(
             reply_markup=kb.as_markup(),
         )
 
+
+    def country_label(code: str) -> str:
+        labels = dict(CANONICAL_SERVERS)
+        labels.update({
+            "auto": "⚡ Автоматически",
+            "lt": "🇱🇹 Литва",
+            "lv": "🇱🇻 Латвия",
+        })
+        return labels.get(str(code or ""), str(code or "—"))
+
+    async def show_user_server_status(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "Выбор сервера",
+                callback_data="menu:country",
+            )
+        )
+        kb.row(
+            blue_inline_button(
+                "Обновить",
+                callback_data="menu:serverstatus",
+            )
+        )
+        add_nav_buttons(kb, back_data="menu:profile")
+        try:
+            report = await asyncio.wait_for(
+                provider.server_diagnostics(user),
+                timeout=12.0,
+            )
+        except Exception:
+            await send_screen(
+                message,
+                actor,
+                "🌐 <b>Статус серверов</b>\n\n"
+                "Сейчас не удалось получить диагностику. Ваша подписка и конфиги не изменялись.",
+                reply_markup=kb.as_markup(),
+            )
+            return
+
+        preferred = str(user.get("preferred_country") or "auto")
+        lines = [
+            "🌐 <b>Статус серверов MGN VPN</b>",
+            f"Режим: <b>{html.escape(country_label(preferred))}</b>",
+            "",
+        ]
+        for item in report.get("servers") or []:
+            name = html.escape(str(item.get("name") or "VPN-сервер"))
+            configured = bool(item.get("configured") or item.get("available"))
+            available = bool(item.get("available"))
+            latency = item.get("latency_ms")
+            if available:
+                state = "🟢 доступен"
+            elif configured:
+                state = "🟡 настроен, проверка не прошла"
+            else:
+                state = "⚪ нет данных"
+            latency_text = (
+                f" · {int(latency)} мс"
+                if isinstance(latency, (int, float)) and available
+                else ""
+            )
+            lines.append(f"{state} · <b>{name}</b>{latency_text}")
+
+        lines += [
+            "",
+            "<i>Статус — это диагностика со стороны MGN VPN. "
+            "Мы не удаляем сервер из вашей подписки из-за одной неудачной проверки.</i>",
+        ]
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
+        )
+
+    async def show_country_picker(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        if not is_active(user):
+            await send_screen(
+                message,
+                actor,
+                "⚡ <b>Выбор сервера</b>\n\nСначала активируйте подписку.",
+                reply_markup=section_nav_keyboard(back_data="menu:profile"),
+            )
+            return
+
+        preferred = str(user.get("preferred_country") or "auto")
+        candidates: list[tuple[str, str, bool]] = []
+        try:
+            report = await asyncio.wait_for(provider.server_diagnostics(user), timeout=10.0)
+            for item in report.get("servers") or []:
+                code = str(item.get("catalog_id") or item.get("id") or "").strip().lower()
+                if code in {"main"}:
+                    code = "nl"
+                if code not in {"nl", "pk", "de", "pl", "fi", "us", "us2", "lt", "lv"}:
+                    continue
+                candidates.append(
+                    (
+                        code,
+                        str(item.get("name") or country_label(code)),
+                        bool(item.get("available")),
+                    )
+                )
+        except Exception:
+            candidates = []
+
+        if not candidates:
+            candidates = [(code, label, False) for code, label in CANONICAL_SERVERS]
+
+        dedup: dict[str, tuple[str, str, bool]] = {}
+        for item in candidates:
+            if item[0] not in dedup or item[2]:
+                dedup[item[0]] = item
+
+        kb = InlineKeyboardBuilder()
+        auto_prefix = "✓ " if preferred == "auto" else ""
+        kb.row(
+            blue_inline_button(
+                f"{auto_prefix}⚡ Автоматически",
+                callback_data="menu:country:set:auto",
+            )
+        )
+        for code, name, available in dedup.values():
+            prefix = "✓ " if preferred == code else ""
+            state = "🟢 " if available else ""
+            kb.row(
+                blue_inline_button(
+                    f"{prefix}{state}{name}",
+                    callback_data=f"menu:country:set:{code}",
+                )
+            )
+        kb.row(
+            blue_inline_button(
+                "Статус серверов",
+                callback_data="menu:serverstatus",
+            )
+        )
+        add_nav_buttons(kb, back_data="menu:profile")
+        await send_screen(
+            message,
+            actor,
+            "⚡ <b>Предпочитаемый сервер</b>\n\n"
+            "В режиме «Автоматически» проверенные быстрые серверы идут первыми. "
+            "При выборе страны она поднимается в начало подписки, <b>остальные страны не удаляются</b>.\n\n"
+            f"Сейчас: <b>{html.escape(country_label(preferred))}</b>",
+            reply_markup=kb.as_markup(),
+        )
+
+    async def show_payment_history(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        rows = await db.list_user_payment_history(int(user["telegram_id"]), limit=12)
+        lines = ["💳 <b>История оплат</b>", ""]
+        if not rows:
+            lines.append("Оплат пока нет.")
+        else:
+            for item in rows:
+                dt = from_iso(item.get("created_at"))
+                date_text = (
+                    dt.astimezone(config.display_tz).strftime("%d.%m.%Y · %H:%M")
+                    if dt else "—"
+                )
+                code = str(item.get("plan_code") or "")
+                product = (
+                    "+1 устройство"
+                    if code == DEVICE_PRODUCT_CODE
+                    else str(PLANS.get(code, {}).get("name") or code)
+                )
+                amount = int(item.get("amount") or 0)
+                currency = "₽" if str(item.get("currency")) == "RUB" else "⭐"
+                status = str(item.get("status") or "")
+                lines.append(
+                    f"• <b>{html.escape(product)}</b> · {amount} {currency}\n"
+                    f"  {html.escape(str(item.get('method') or ''))} · {date_text} · {html.escape(status)}"
+                )
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=section_nav_keyboard(back_data="menu:profile"),
+        )
+
+    async def show_subscription_events(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        rows = await db.list_subscription_events(int(user["telegram_id"]), limit=20)
+        lines = ["🎁 <b>История начислений</b>", ""]
+        if not rows:
+            lines.append("Начислений пока нет.")
+        else:
+            for item in rows:
+                dt = from_iso(item.get("at"))
+                date_text = (
+                    dt.astimezone(config.display_tz).strftime("%d.%m.%Y · %H:%M")
+                    if dt else "—"
+                )
+                lines.append(
+                    f"• <b>+{int(item.get('days') or 0)} дней</b> · "
+                    f"{html.escape(str(item.get('source') or ''))} · {date_text}"
+                )
+        await send_screen(
+            message,
+            actor,
+            "\n".join(lines),
+            reply_markup=section_nav_keyboard(back_data="menu:profile"),
+        )
+
+    async def show_bonus_stats(message: Message, actor) -> None:
+        user = await ensure_actor(actor)
+        uid = int(user["telegram_id"])
+        referrals = await db.referral_stats(uid)
+        promos = await db.user_promo_stats(uid)
+        username = (await message.bot.get_me()).username or "mgnvpn_bot"
+        text = (
+            "🎁 <b>Бонусы</b>\n\n"
+            f"👥 Приглашено друзей: <b>{referrals['invited']}</b>\n"
+            f"✅ Получено реферальных наград: <b>{referrals['rewarded']}</b> / 3\n"
+            f"🎟 Использовано промокодов: <b>{promos['used']}</b>\n\n"
+            f"Ваша ссылка:\n<code>https://t.me/{username}?start=ref_{uid}</code>"
+        )
+        await send_screen(
+            message,
+            actor,
+            text,
+            reply_markup=section_nav_keyboard(back_data="menu:profile"),
+        )
 
     async def show_subscription(message: Message, actor) -> None:
         user = await ensure_actor(actor)
@@ -1402,7 +1699,7 @@ def build_router(
 
     @router.message(Command("setbanner"))
     async def set_banner(message: Message) -> None:
-        if not message.from_user or message.from_user.id not in config.admin_ids:
+        if not message.from_user or not await has_admin_access(message.from_user.id):
             return
 
         source_message = message.reply_to_message or message
@@ -1561,6 +1858,51 @@ def build_router(
         await safe_callback_answer(callback, )
         if callback.message:
             await show_profile(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "menu:serverstatus")
+    async def menu_server_status(callback: CallbackQuery) -> None:
+        await safe_callback_answer(callback, "Проверяю серверы…")
+        if callback.message:
+            await show_user_server_status(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "menu:country")
+    async def menu_country(callback: CallbackQuery) -> None:
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_country_picker(callback.message, callback.from_user)
+
+    @router.callback_query(F.data.startswith("menu:country:set:"))
+    async def menu_country_set(callback: CallbackQuery) -> None:
+        code = str(callback.data.rsplit(":", 1)[-1]).lower()
+        try:
+            updated = await db.set_preferred_country(callback.from_user.id, code)
+        except (ValueError, KeyError):
+            await safe_callback_answer(callback, "Сервер не поддерживается.", show_alert=True)
+            return
+        await safe_callback_answer(
+            callback,
+            f"Выбрано: {country_label(str(updated.get('preferred_country') or 'auto'))}",
+        )
+        if callback.message:
+            await show_country_picker(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "menu:paymenthistory")
+    async def menu_payment_history(callback: CallbackQuery) -> None:
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_payment_history(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "menu:accruals")
+    async def menu_accruals(callback: CallbackQuery) -> None:
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_subscription_events(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "menu:bonusstats")
+    async def menu_bonus_stats(callback: CallbackQuery) -> None:
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_bonus_stats(callback.message, callback.from_user)
 
     @router.callback_query(F.data == "menu:connect")
     async def menu_connect(callback: CallbackQuery) -> None:
@@ -2173,6 +2515,8 @@ def build_router(
     @router.message(F.text.in_({"Подписка", "💳 Подписка", "💳 Купить VPN", "Купить VPN", "Продлить VPN"}))
     async def plans_message(message: Message) -> None:
         await ensure_actor(message.from_user)
+        if not await guard_purchase_message(message, message.from_user):
+            return
         e = emoji.icon(0, pack=PACK_NEWS)
         await send_screen(
             message,
@@ -2185,6 +2529,8 @@ def build_router(
 
     @router.callback_query(F.data == "menu:gift")
     async def gift_menu(callback: CallbackQuery) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         await safe_callback_answer(callback, )
         if not callback.message:
             return
@@ -2197,6 +2543,8 @@ def build_router(
 
     @router.callback_query(F.data == "plans")
     async def plans_callback(callback: CallbackQuery) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         await safe_callback_answer(callback, )
         if not callback.message:
             return
@@ -2212,6 +2560,8 @@ def build_router(
 
     @router.callback_query(F.data.startswith("plan:"))
     async def choose_plan(callback: CallbackQuery) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         if not callback.message:
             return
         code = callback.data.split(":", 1)[1]
@@ -2245,6 +2595,8 @@ def build_router(
 
     @router.callback_query(F.data.startswith("gift:"))
     async def start_gift(callback: CallbackQuery) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         if not callback.message:
             return
         code = callback.data.split(":", 1)[1]
@@ -2379,6 +2731,8 @@ def build_router(
         code: str,
         target_telegram_id: int,
     ) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         if not callback.message:
             return
         plan = PLANS.get(code)
@@ -2488,6 +2842,8 @@ def build_router(
 
     @router.callback_query(F.data == "device:sbp")
     async def buy_device_sbp(callback: CallbackQuery) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         if not callback.message:
             return
         user = await ensure_actor(callback.from_user)
@@ -2560,6 +2916,8 @@ def build_router(
         code: str,
         target_telegram_id: int,
     ) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         if not callback.message:
             return
 
@@ -2669,6 +3027,8 @@ def build_router(
 
     @router.callback_query(F.data == "device:stars")
     async def buy_device_stars(callback: CallbackQuery) -> None:
+        if not await guard_purchase_callback(callback):
+            return
         if not callback.message:
             return
         user = await ensure_actor(callback.from_user)
@@ -2741,6 +3101,13 @@ def build_router(
 
     @router.pre_checkout_query()
     async def pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
+        opened, maintenance_reason = await purchases_open()
+        if not opened:
+            await pre_checkout_query.answer(
+                ok=False,
+                error_message=maintenance_reason[:180],
+            )
+            return
         payload = pre_checkout_query.invoice_payload or ""
         parts = payload.split("|")
         if len(parts) == 2 and parts[0] == "xtr2":
@@ -2857,11 +3224,13 @@ def build_router(
                 logger.error("Rejected Stars payment intent %s", parts[1])
                 return
             charge_id = payment.telegram_payment_charge_id
+            intent_target_id = int(intent["target_telegram_id"])
+            before_purchase = await db.get_user(intent_target_id)
             try:
                 fresh_charge = await db.settle_star_payment(
                     telegram_payment_charge_id=charge_id,
                     buyer_telegram_id=message.from_user.id,
-                    target_telegram_id=int(intent["target_telegram_id"]),
+                    target_telegram_id=intent_target_id,
                     plan_code=str(intent["product_code"]),
                     stars=int(payment.total_amount),
                     intent_id=parts[1],
@@ -2871,11 +3240,27 @@ def build_router(
                 await message.answer("Платёж получен, но требует проверки. Напишите в поддержку.")
                 return
             if fresh_charge:
+                product_code = str(intent["product_code"])
                 await apply_paid_purchase(
                     message.from_user.id,
-                    int(intent["target_telegram_id"]),
-                    str(intent["product_code"]),
+                    intent_target_id,
+                    product_code,
                     f"stars:{charge_id}",
+                )
+                await notify_purchase(
+                    message.bot,
+                    db,
+                    config,
+                    buyer_id=message.from_user.id,
+                    target_id=intent_target_id,
+                    product_code=product_code,
+                    method="Telegram Stars",
+                    amount_text=f"{int(payment.total_amount)} ⭐",
+                    purchase_kind=(
+                        "Дополнительное устройство"
+                        if product_code == DEVICE_PRODUCT_CODE
+                        else "Продление" if is_active(before_purchase) else "Новая подписка"
+                    ),
                 )
             await show_home(message, message.from_user, force_new=True)
             await refresh_main_keyboard(message, message.from_user)
@@ -2899,6 +3284,7 @@ def build_router(
         target_id = int(target_raw)
 
         if code == DEVICE_PRODUCT_CODE:
+            before_purchase = await db.get_user(buyer_id)
             if (
                 target_id != buyer_id
                 or payment.total_amount != extra_device_price_stars()
@@ -2929,6 +3315,17 @@ def build_router(
                         reply_markup=section_nav_keyboard(back_data="home"),
                     )
                     return
+                await notify_purchase(
+                    message.bot,
+                    db,
+                    config,
+                    buyer_id=buyer_id,
+                    target_id=buyer_id,
+                    product_code=DEVICE_PRODUCT_CODE,
+                    method="Telegram Stars",
+                    amount_text=f"{int(payment.total_amount)} ⭐",
+                    purchase_kind="Дополнительное устройство",
+                )
 
             await show_devices_panel(
                 message,
@@ -2947,6 +3344,7 @@ def build_router(
             )
             return
 
+        before_purchase = await db.get_user(target_id)
         charge_id = payment.telegram_payment_charge_id
         fresh = await db.settle_star_payment(
             telegram_payment_charge_id=charge_id,
@@ -2963,6 +3361,17 @@ def build_router(
                 target_telegram_id=target_id,
                 code=code,
                 payment_event_key=f"stars:{charge_id}",
+            )
+            await notify_purchase(
+                message.bot,
+                db,
+                config,
+                buyer_id=buyer_id,
+                target_id=target_id,
+                product_code=code,
+                method="Telegram Stars",
+                amount_text=f"{int(payment.total_amount)} ⭐",
+                purchase_kind="Продление" if is_active(before_purchase) else "Новая подписка",
             )
 
         if target_id == buyer_id:
@@ -3036,6 +3445,11 @@ def build_router(
             return
 
         if status == "paid":
+            target_id = int(
+                local.get("target_telegram_id")
+                or callback.from_user.id
+            )
+            before_purchase = await db.get_user(target_id)
             try:
                 fresh = await db.settle_sbp_payment(payment_id)
             except ValueError as exc:
@@ -3046,10 +3460,6 @@ def build_router(
                 )
                 return
             code = str(local["plan_code"])
-            target_id = int(
-                local.get("target_telegram_id")
-                or callback.from_user.id
-            )
 
             if code == DEVICE_PRODUCT_CODE:
                 if fresh:
@@ -3062,6 +3472,18 @@ def build_router(
                             show_alert=True,
                         )
                         return
+                    await notify_purchase(
+                        callback.bot,
+                        db,
+                        config,
+                        buyer_id=callback.from_user.id,
+                        target_id=target_id,
+                        product_code=code,
+                        method="СБП",
+                        amount_text=f"{int(local['amount_rub'])} ₽",
+                        purchase_kind="Дополнительное устройство",
+                        promo_code=str(local.get("promo_code") or "") or None,
+                    )
                 await safe_callback_answer(callback, "Оплата получена · +1 устройство")
                 await show_devices_panel(
                     callback.message,
@@ -3077,6 +3499,18 @@ def build_router(
                     target_telegram_id=target_id,
                     code=code,
                     payment_event_key=f"sbp:{payment_id}",
+                )
+                await notify_purchase(
+                    callback.bot,
+                    db,
+                    config,
+                    buyer_id=callback.from_user.id,
+                    target_id=target_id,
+                    product_code=code,
+                    method="СБП",
+                    amount_text=f"{int(local['amount_rub'])} ₽",
+                    purchase_kind="Продление" if is_active(before_purchase) else "Новая подписка",
+                    promo_code=str(local.get("promo_code") or "") or None,
                 )
 
             await safe_callback_answer(callback, "Оплата получена")
@@ -3251,8 +3685,8 @@ def build_router(
     def admin_role_label(role: str | None) -> str:
         return {
             "owner": "Владелец",
-            "full": "Полная",
-            "limited": "Ограниченная",
+            "full": "Администратор",
+            "limited": "Администратор",
         }.get(role or "", "Нет")
 
     def format_joined(value: str | None) -> str:
@@ -3273,7 +3707,10 @@ def build_router(
         kb.row(
             blue_inline_button("Обращения", callback_data="admin:support", icon_index=6),
         )
-        if role in {"owner", "full"}:
+        if role:
+            kb.row(
+                blue_inline_button("📈 Аналитика", callback_data="admin:analytics"),
+            )
             kb.row(
                 blue_inline_button("🎟 Промокоды", callback_data="admin:bonuses"),
                 blue_inline_button("⚙️ Система", callback_data="admin:system"),
@@ -3288,7 +3725,6 @@ def build_router(
             kb.row(
                 blue_inline_button("🎁 Розыгрыши", callback_data="admin:giveaways"),
             )
-        if role == "owner":
             kb.row(
                 blue_inline_button("🛡 Администраторы", callback_data="admin:admins"),
             )
@@ -3369,6 +3805,173 @@ def build_router(
             "\n".join(lines),
             reply_markup=admin_main_keyboard(role),
         )
+
+    def analytics_bar(value: int | float, maximum: int | float, width: int = 10) -> str:
+        maximum = max(float(maximum or 0), 1.0)
+        ratio = max(0.0, min(1.0, float(value or 0) / maximum))
+        filled = int(round(ratio * width))
+        return "█" * filled + "░" * (width - filled)
+
+    async def show_admin_analytics(message: Message, actor) -> None:
+        if not await has_admin_access(actor.id):
+            return
+        data = await load_business_analytics(db)
+        revenue = data["revenue"]
+        purchases = data["purchases"]
+        avg = data["average_check_30d"]
+        expiring = data["expiring"]
+        usage = data["observed_usage"]
+
+        max_rub = max(
+            int(revenue["day"]["rub"]),
+            int(revenue["week"]["rub"]),
+            int(revenue["month"]["rub"]),
+            1,
+        )
+        max_sales = max(
+            int(purchases["day"]["new"]) + int(purchases["day"]["renewal"]),
+            int(purchases["week"]["new"]) + int(purchases["week"]["renewal"]),
+            int(purchases["month"]["new"]) + int(purchases["month"]["renewal"]),
+            1,
+        )
+
+        lines = [
+            "📈 <b>Бизнес-аналитика MGN VPN</b>",
+            "",
+            f"👥 Пользователей: <b>{data['total_users']}</b> · активных: <b>{data['active_subscriptions']}</b>",
+            "",
+            "💰 <b>Выручка</b>",
+            "<blockquote>",
+            f"24ч  <code>{analytics_bar(revenue['day']['rub'], max_rub)}</code> <b>{revenue['day']['rub']} ₽</b> · {revenue['day']['stars']} ⭐",
+            f"7д   <code>{analytics_bar(revenue['week']['rub'], max_rub)}</code> <b>{revenue['week']['rub']} ₽</b> · {revenue['week']['stars']} ⭐",
+            f"30д  <code>{analytics_bar(revenue['month']['rub'], max_rub)}</code> <b>{revenue['month']['rub']} ₽</b> · {revenue['month']['stars']} ⭐",
+            "</blockquote>",
+            "",
+            "🛒 <b>Покупки: новые / продления</b>",
+            "<blockquote>",
+            f"24ч  <code>{analytics_bar(purchases['day']['new'] + purchases['day']['renewal'], max_sales)}</code> {purchases['day']['new']} / {purchases['day']['renewal']}",
+            f"7д   <code>{analytics_bar(purchases['week']['new'] + purchases['week']['renewal'], max_sales)}</code> {purchases['week']['new']} / {purchases['week']['renewal']}",
+            f"30д  <code>{analytics_bar(purchases['month']['new'] + purchases['month']['renewal'], max_sales)}</code> {purchases['month']['new']} / {purchases['month']['renewal']}",
+            "</blockquote>",
+            "",
+            f"🧾 Средний чек 30д: <b>{avg.get('rub', 0):g} ₽</b> · <b>{avg.get('stars', 0):g} ⭐</b>",
+            f"🔁 Retention 30д: <b>{data['retention_30d']:.1f}%</b> <i>(выборка {data['retention_sample']})</i>",
+            "",
+            "⏳ <b>Скоро закончатся</b>",
+            f"1 день — <b>{expiring['1']}</b> · 3 дня — <b>{expiring['3']}</b> · 7 дней — <b>{expiring['7']}</b>",
+            "",
+            "📡 <b>Наблюдаемая активность VPN</b>",
+            f"24ч — <b>{usage['day']}</b> · 7д — <b>{usage['week']}</b> · 30д — <b>{usage['month']}</b>",
+            "<i>Считаются пользователи, по которым получался ненулевой traffic sample.</i>",
+        ]
+
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button("📣 Источники", callback_data="admin:analytics:sources"),
+            blue_inline_button("🎟 Промокоды", callback_data="admin:analytics:promos"),
+        )
+        kb.row(
+            blue_inline_button("🌐 VPN / Support", callback_data="admin:analytics:vpn"),
+        )
+        kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:analytics"))
+        kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
+        await send_screen(message, actor, "\n".join(lines), reply_markup=kb.as_markup())
+
+    async def show_admin_analytics_sources(message: Message, actor) -> None:
+        if not await has_admin_access(actor.id):
+            return
+        data = await load_business_analytics(db)
+        sources = list(data.get("sources") or [])
+        max_arrived = max([int(item["arrived"]) for item in sources] or [1])
+
+        lines = ["📣 <b>Источники и конверсия</b>", ""]
+        priority = {"anonchat_mgn": 0, "pozor_mgn": 1}
+        sources.sort(key=lambda item: (priority.get(str(item["source"]), 9), -int(item["arrived"])))
+        if not sources:
+            lines.append("Данных по источникам пока нет.")
+        else:
+            for item in sources[:20]:
+                source = html.escape(str(item["source"]))
+                arrived = int(item["arrived"])
+                buyers = int(item["buyers"])
+                lines += [
+                    f"<b>{source}</b>",
+                    f"<code>{analytics_bar(arrived, max_arrived, 12)}</code> {arrived} пришли · {buyers} купили · <b>{float(item['conversion']):.1f}%</b>",
+                    "",
+                ]
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("⬅️ Аналитика", callback_data="admin:analytics"))
+        await send_screen(message, actor, "\n".join(lines).rstrip(), reply_markup=kb.as_markup())
+
+    async def show_admin_analytics_promos(message: Message, actor) -> None:
+        if not await has_admin_access(actor.id):
+            return
+        data = await load_business_analytics(db)
+        promos = list(data.get("promos") or [])
+        lines = ["🎟 <b>Промокоды — аналитика</b>", ""]
+        if not promos:
+            lines.append("Промокодов пока нет.")
+        else:
+            for item in promos[:20]:
+                state = "🟢" if item.get("active") else "⚪"
+                lines += [
+                    f"{state} <code>{html.escape(str(item['code']))}</code> · {html.escape(str(item['type']))} {int(item['value'])}",
+                    f"использований <b>{int(item['uses'])}</b> · пользователей <b>{int(item['buyers'])}</b> · попыток <b>{int(item['attempts'])}</b> · конверсия <b>{float(item['conversion']):.1f}%</b>",
+                    "",
+                ]
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("⬅️ Аналитика", callback_data="admin:analytics"))
+        await send_screen(message, actor, "\n".join(lines).rstrip(), reply_markup=kb.as_markup())
+
+    async def show_admin_analytics_vpn(message: Message, actor) -> None:
+        if not await has_admin_access(actor.id):
+            return
+        data = await load_business_analytics(db)
+        country_names = {
+            "auto": "⚡ Авто",
+            "nl": "🇳🇱 Нидерланды",
+            "pk": "🇵🇰 Пакистан",
+            "de": "🇩🇪 Германия",
+            "pl": "🇵🇱 Польша",
+            "fi": "🇫🇮 Финляндия",
+            "us": "🇺🇸 США",
+            "us2": "🇺🇸 США 2",
+            "lt": "🇱🇹 Литва",
+            "lv": "🇱🇻 Латвия",
+        }
+        preferences = list(data.get("country_preferences") or [])
+        max_pref = max([int(item["count"]) for item in preferences] or [1])
+        lines = [
+            "🌐 <b>VPN и поддержка</b>",
+            "",
+            "⚡ <b>Предпочтения активных пользователей</b>",
+        ]
+        if preferences:
+            for item in preferences:
+                code = str(item["country"])
+                count = int(item["count"])
+                lines.append(
+                    f"{country_names.get(code, html.escape(code))}: "
+                    f"<code>{analytics_bar(count, max_pref, 10)}</code> <b>{count}</b>"
+                )
+        else:
+            lines.append("Нет данных.")
+
+        lines += ["", "🆘 <b>Обращения по серверу</b>"]
+        support_rows = list(data.get("support_servers") or [])
+        if support_rows:
+            for item in support_rows:
+                code = str(item["server_code"])
+                lines.append(
+                    f"{country_names.get(code, html.escape(code))}: <b>{int(item['count'])}</b>"
+                )
+        else:
+            lines.append("Пока нет обращений с привязкой к серверу.")
+
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("🌐 Состояние серверов", callback_data="admin:servers"))
+        kb.row(blue_inline_button("⬅️ Аналитика", callback_data="admin:analytics"))
+        await send_screen(message, actor, "\n".join(lines), reply_markup=kb.as_markup())
 
     async def show_admin_support(message: Message, actor, status: str = "all", page: int = 0) -> None:
         role = await get_admin_role(actor.id)
@@ -3634,7 +4237,7 @@ def build_router(
             blue_inline_button("Выдать подписку", callback_data=f"admin:grantmenu:{telegram_id}"),
         )
 
-        if actor_role in {"owner", "full"}:
+        if actor_role:
             kb.row(
                 blue_inline_button("Добавить дни", callback_data=f"admin:daysmenu:{telegram_id}:add"),
                 blue_inline_button("Списать дни", callback_data=f"admin:daysmenu:{telegram_id}:sub"),
@@ -3644,7 +4247,7 @@ def build_router(
             )
             kb.row(blue_inline_button("Отключить подписку", callback_data=f"admin:revokeconfirm:{telegram_id}"))
 
-        if actor_role == "owner" and telegram_id not in config.admin_ids:
+        if actor_role and telegram_id not in config.admin_ids:
             kb.row(
                 blue_inline_button(
                     "🛡 Полная админка",
@@ -3777,9 +4380,21 @@ def build_router(
         rolly = "✅ настроена" if config.rollypay_enabled else "❌ не настроена"
         rolly_mode = "тест" if config.rollypay_test_mode else "боевой"
         vpn_ready = "✅" if getattr(provider, "service_ready", True) else "⚠️"
+        maintenance = await db.maintenance_state()
+        maintenance_enabled = bool(maintenance.get("enabled"))
 
         kb = InlineKeyboardBuilder()
         kb.row(blue_inline_button("🌐 Серверы VPN", callback_data="admin:servers"))
+        kb.row(
+            blue_inline_button(
+                "🟢 Выключить техработы" if maintenance_enabled else "🟠 Включить техработы",
+                callback_data=(
+                    "admin:maintenance:off"
+                    if maintenance_enabled
+                    else "admin:maintenance:on"
+                ),
+            )
+        )
         kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:system"))
         kb.row(blue_inline_button("⬅️ Админка", callback_data="admin:home"))
 
@@ -3789,10 +4404,11 @@ def build_router(
             f"🔗 Реальные подключения — <b>{'готовы' if getattr(provider, 'service_ready', True) else 'ожидают серверы'}</b>\n"
             f"🌐 Основной сервер — <b>{html.escape(config.vpn_server_name)}</b>\n"
             f"💳 RollyPay — <b>{rolly}</b>\n"
-            f"🧾 Режим оплаты — <b>{rolly_mode}</b>\n\n"
+            f"🧾 Режим оплаты — <b>{rolly_mode}</b>\n"
+            f"🛠 Техработы — <b>{'ВКЛЮЧЕНЫ' if maintenance_enabled else 'выключены'}</b>\n\n"
+            "<i>Техработы блокируют только новые покупки. Уже активные VPN-подписки и /sub продолжают работать.</i>\n\n"
             "<i>Основной сервер — это только базовая H1-нода. "
-            "Список стран федерации смотрите в «Серверы VPN».</i>\n\n"
-            "<i>Секретные ключи здесь не отображаются.</i>"
+            "Список стран федерации смотрите в «Серверы VPN».</i>"
         )
         await send_screen(message, actor, text, reply_markup=kb.as_markup())
 
@@ -3929,7 +4545,7 @@ def build_router(
         )
 
     async def show_admin_admins(message: Message, actor) -> None:
-        if not is_owner(actor.id):
+        if not await has_admin_access(actor.id):
             return
 
         dynamic_admins = await db.list_admin_roles()
@@ -3981,8 +4597,8 @@ def build_router(
             "<i>Выдать доступ можно из карточки пользователя: "
             "Пользователи → выбрать человека.</i>",
             "",
-            "Полная — управление подписками, бонусами и системой.",
-            "Ограниченная — просмотр сводки, пользователей и платежей + выдача подписок.",
+            "Все выданные администраторы имеют полный операционный доступ.",
+            "Владельцы из конфигурации нельзя удалить из панели.",
         ]
 
         kb.row(blue_inline_button("🔄 Обновить", callback_data="admin:admins"))
@@ -4160,6 +4776,15 @@ def build_router(
         posts = await db.list_giveaway_posts(giveaway_id)
         winners = await db.get_giveaway_winners(giveaway_id)
         rerolls = await db.list_giveaway_rerolls(giveaway_id)
+        active_rerolls = [row for row in rerolls if not row.get("undone_at")]
+        latest_reroll = active_rerolls[-1] if active_rerolls else None
+        can_undo_reroll = False
+        if latest_reroll:
+            rerolled_at = from_iso(latest_reroll.get("created_at"))
+            can_undo_reroll = bool(
+                rerolled_at
+                and rerolled_at >= utcnow() - timedelta(minutes=10)
+            )
         status_labels = {
             "active": "🟢 Идёт",
             "finishing": "🟡 Подводятся итоги",
@@ -4175,7 +4800,8 @@ def build_router(
             f"Приз: <b>{int(item.get('prize_days') or 0)} дней MGN VPN</b>",
             f"Условие завершения: <b>{html.escape(giveaway_end_label(item))}</b>",
             f"Публикаций: <b>{len(posts)}</b>",
-            f"Перевыборов: <b>{len(rerolls)}</b>",
+            f"Перевыборов: <b>{len(active_rerolls)}</b>"
+            + (f" · отменено: <b>{len(rerolls) - len(active_rerolls)}</b>" if len(rerolls) != len(active_rerolls) else ""),
         ]
         if winners:
             lines += ["", "🏆 <b>Победители</b>"]
@@ -4190,6 +4816,13 @@ def build_router(
                 callback_data=f"admin:giveaway:participants:{giveaway_id}:0",
             )
         )
+        if int(item.get("participant_count") or 0) > 0:
+            kb.row(
+                blue_inline_button(
+                    "📥 CSV участников",
+                    callback_data=f"admin:giveaway:export:{giveaway_id}",
+                )
+            )
         if (
             str(item.get("status")) == "finished"
             and winners
@@ -4201,6 +4834,13 @@ def build_router(
                     callback_data=f"admin:giveaway:reroll:{giveaway_id}",
                 )
             )
+            if can_undo_reroll:
+                kb.row(
+                    blue_inline_button(
+                        "↩️ Отменить последний перевыбор · 10 мин",
+                        callback_data=f"admin:giveaway:rerollundo:{giveaway_id}",
+                    )
+                )
         if str(item.get("status")) == "active":
             kb.row(
                 blue_inline_button(
@@ -4728,6 +5368,92 @@ def build_router(
             reply_markup=kb.as_markup(),
         )
 
+    @router.callback_query(F.data.regexp(r"^admin:giveaway:export:\d+$"))
+    async def admin_giveaway_export(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        giveaway_id = int(callback.data.rsplit(":", 1)[-1])
+        item = await db.get_giveaway(giveaway_id)
+        if not item:
+            await safe_callback_answer(callback, "Розыгрыш не найден.", show_alert=True)
+            return
+        participants = await db.list_giveaway_participants(giveaway_id)
+        winners = {
+            int(row["telegram_id"]): int(row["position"])
+            for row in await db.get_giveaway_winners(giveaway_id)
+        }
+        output = StringIO()
+        writer = csv.writer(output, delimiter=";")
+        writer.writerow([
+            "telegram_id",
+            "username",
+            "first_name",
+            "joined_at",
+            "winner_position",
+        ])
+        for row in participants:
+            writer.writerow([
+                int(row["telegram_id"]),
+                str(row.get("username") or ""),
+                str(row.get("first_name") or ""),
+                str(row.get("joined_at") or ""),
+                winners.get(int(row["telegram_id"]), ""),
+            ])
+        payload = ("\ufeff" + output.getvalue()).encode("utf-8")
+        await safe_callback_answer(callback, "Формирую CSV…")
+        await callback.bot.send_document(
+            chat_id=callback.message.chat.id,
+            document=BufferedInputFile(
+                payload,
+                filename=f"giveaway_{giveaway_id}_participants.csv",
+            ),
+            caption=(
+                f"📥 Участники розыгрыша #{giveaway_id}\n"
+                f"Всего: <b>{len(participants)}</b>"
+            ),
+        )
+
+    @router.callback_query(F.data.regexp(r"^admin:giveaway:rerollundo:\d+$"))
+    async def admin_giveaway_reroll_undo(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id) or not callback.message:
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        giveaway_id = int(callback.data.rsplit(":", 1)[-1])
+        await safe_callback_answer(callback, "Отменяю перевыбор…")
+        try:
+            result = await undo_giveaway_reroll(
+                callback.bot,
+                db,
+                config,
+                provider,
+                giveaway_id,
+                undone_by=callback.from_user.id,
+                max_age_seconds=600,
+            )
+        except ValueError as exc:
+            await callback.message.answer(
+                f"Не удалось отменить перевыбор: {html.escape(str(exc))}"
+            )
+            return
+        except Exception as exc:
+            logger.exception(
+                "Giveaway reroll undo failed for #%s: %s",
+                giveaway_id,
+                type(exc).__name__,
+            )
+            await callback.message.answer(
+                "Не удалось отменить перевыбор. Откройте розыгрыш и проверьте состояние."
+            )
+            return
+        await callback.message.answer(
+            "✅ <b>Перевыбор отменён</b>\n\n"
+            f"Исходный победитель <code>{int(result['restored_telegram_id'])}</code> восстановлен.\n"
+            f"Начисление пользователю <code>{int(result['removed_telegram_id'])}</code> отозвано.\n"
+            "Итоговый пост обновлён."
+        )
+        await show_admin_giveaway(callback.message, callback.from_user, giveaway_id)
+
     @router.callback_query(F.data.regexp(r"^admin:giveaway:reroll:\d+$"))
     async def admin_giveaway_reroll(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id) or not callback.message:
@@ -4749,9 +5475,10 @@ def build_router(
 
         participants = await db.list_giveaway_participants(giveaway_id)
         rerolls = await db.list_giveaway_rerolls(giveaway_id)
+        active_rerolls = [row for row in rerolls if not row.get("undone_at")]
         excluded = {int(winner["telegram_id"]) for winner in winners}
-        excluded.update(int(row["old_telegram_id"]) for row in rerolls)
-        excluded.update(int(row["new_telegram_id"]) for row in rerolls)
+        excluded.update(int(row["old_telegram_id"]) for row in active_rerolls)
+        excluded.update(int(row["new_telegram_id"]) for row in active_rerolls)
         eligible = [
             row for row in participants
             if int(row["telegram_id"]) not in excluded
@@ -4851,6 +5578,12 @@ def build_router(
             else (new_first_name or f"ID {int(result['new_telegram_id'])}")
         )
         kb = InlineKeyboardBuilder()
+        kb.row(
+            blue_inline_button(
+                "↩️ Отменить перевыбор · 10 мин",
+                callback_data=f"admin:giveaway:rerollundo:{giveaway_id}",
+            )
+        )
         kb.row(
             blue_inline_button(
                 "🔄 Ещё перевыбор",
@@ -5158,6 +5891,15 @@ def build_router(
             await safe_callback_answer(callback, "Этот розыгрыш уже завершён.", show_alert=True)
             return
 
+        if not await is_channel_member(callback.bot, callback.from_user.id):
+            await safe_callback_answer(
+                callback,
+                "Для участия сначала подпишитесь на обязательный канал MGN VPN и нажмите кнопку ещё раз.",
+                show_alert=True,
+            )
+            return
+
+        await db.mark_channel_verified(callback.from_user.id)
         await ensure_actor(callback.from_user)
         result = await db.add_giveaway_participant(
             giveaway_id=giveaway_id,
@@ -5246,6 +5988,42 @@ def build_router(
             page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
             await show_admin_support(callback.message, callback.from_user, status, page)
 
+    @router.callback_query(F.data == "admin:analytics")
+    async def admin_analytics_callback(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_admin_analytics(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:analytics:sources")
+    async def admin_analytics_sources_callback(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_admin_analytics_sources(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:analytics:promos")
+    async def admin_analytics_promos_callback(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_admin_analytics_promos(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:analytics:vpn")
+    async def admin_analytics_vpn_callback(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        if callback.message:
+            await show_admin_analytics_vpn(callback.message, callback.from_user)
+
     @router.callback_query(F.data == "admin:payments")
     async def admin_payments_callback(callback: CallbackQuery) -> None:
         if not await has_admin_access(callback.from_user.id):
@@ -5279,6 +6057,26 @@ def build_router(
         if callback.message:
             await show_admin_system(callback.message, callback.from_user)
 
+    @router.callback_query(F.data.in_({"admin:maintenance:on", "admin:maintenance:off"}))
+    async def admin_maintenance_callback(callback: CallbackQuery) -> None:
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа.", show_alert=True)
+            return
+        enabled = callback.data.endswith(":on")
+        state = await db.set_maintenance(
+            enabled,
+            updated_by=callback.from_user.id,
+        )
+        await safe_callback_answer(
+            callback,
+            "Техработы включены: новые покупки остановлены."
+            if state.get("enabled")
+            else "Техработы выключены: покупки снова доступны.",
+            show_alert=True,
+        )
+        if callback.message:
+            await show_admin_system(callback.message, callback.from_user)
+
     @router.callback_query(F.data == "admin:servers")
     async def admin_servers_callback(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
@@ -5294,11 +6092,8 @@ def build_router(
 
     @router.callback_query(F.data == "admin:admins")
     async def admin_admins_callback(callback: CallbackQuery) -> None:
-        if not is_owner(callback.from_user.id):
-            await safe_callback_answer(callback, 
-                "Управление администраторами доступно только владельцу.",
-                show_alert=True,
-            )
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа.", show_alert=True)
             return
         await safe_callback_answer(callback, )
         if callback.message:
@@ -5320,11 +6115,8 @@ def build_router(
 
     @router.callback_query(F.data.startswith("admin:role:"))
     async def admin_role_callback(callback: CallbackQuery) -> None:
-        if not is_owner(callback.from_user.id):
-            await safe_callback_answer(callback, 
-                "Выдавать админки может только владелец.",
-                show_alert=True,
-            )
+        if not await has_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа.", show_alert=True)
             return
         if not callback.message:
             return
@@ -6137,10 +6929,13 @@ def build_router(
             if await db.recent_support_ticket_count(user_id) >= 3:
                 await message.answer("Слишком много новых обращений. Продолжите одно из уже созданных.")
                 return True
-            await ensure_actor(message.from_user)
+            support_user = await ensure_actor(message.from_user)
             ticket = await db.create_support_thread(
-                telegram_id=user_id, username=message.from_user.username,
-                first_name=message.from_user.first_name, **payload,
+                telegram_id=user_id,
+                username=message.from_user.username,
+                first_name=message.from_user.first_name,
+                server_code=str(support_user.get("preferred_country") or "auto"),
+                **payload,
             )
             ticket_id = int(ticket["id"])
             await db.clear_support_session(user_id)
