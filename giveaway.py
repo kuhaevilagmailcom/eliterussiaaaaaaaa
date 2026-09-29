@@ -54,8 +54,9 @@ def render_giveaway_post(
     participant_count: int,
     winners: list[dict[str, Any]] | None = None,
     display_tz=None,
+    include_base: bool = True,
 ) -> str:
-    base = str(giveaway.get("text_html") or "").strip()
+    base = str(giveaway.get("text_html") or "").strip() if include_base else ""
     winners_count = int(giveaway.get("winners_count") or 1)
     prize_days = int(giveaway.get("prize_days") or 1)
     status = str(giveaway.get("status") or "active")
@@ -65,6 +66,14 @@ def render_giveaway_post(
         "",
         f"🎁 <b>Приз:</b> {winners_count} × {_days_label(prize_days)} MGN VPN",
     ]
+
+    if status == "cancelled":
+        lines += [
+            f"👥 <b>Участников:</b> {int(participant_count)}",
+            "",
+            "⚪ <b>Розыгрыш отменён</b>",
+        ]
+        return "\n".join(line for line in lines if line != "" or base)
 
     if status in {"active", "finishing"} and winners is None:
         if giveaway.get("end_mode") == "time":
@@ -96,8 +105,7 @@ def render_giveaway_post(
             if username:
                 label = "@" + html.escape(username)
             else:
-                first_name = str(item.get("first_name") or "").strip()
-                label = html.escape(first_name) if first_name else f"Победитель #{index}"
+                label = f"Победитель #{index}"
             lines.append(f"{index}. {label}")
         lines += [
             "",
@@ -149,6 +157,16 @@ async def _finalize_channel_posts(
         display_tz=config.display_tz,
     )
     has_photo = bool(str(giveaway.get("photo_file_id") or "").strip())
+    # Telegram photo captions are much shorter than normal messages. Keep the
+    # result publishable even when the original post and winner list are long.
+    if has_photo and len(final_text) > 900:
+        final_text = render_giveaway_post(
+            giveaway,
+            participant_count=int(giveaway.get("participant_count") or 0),
+            winners=winners,
+            display_tz=config.display_tz,
+            include_base=False,
+        )
 
     for post in posts:
         if post.get("finalized_at"):
@@ -238,6 +256,75 @@ async def _notify_winners(
             )
             continue
         await db.mark_giveaway_winner_notified(int(giveaway["id"]), telegram_id)
+
+
+async def cancel_giveaway(
+    bot,
+    db: Database,
+    config,
+    giveaway_id: int,
+) -> bool:
+    """Cancel an active giveaway, keep its history, and disable channel buttons."""
+    giveaway_id = int(giveaway_id)
+    lock = _finish_locks.setdefault(giveaway_id, asyncio.Lock())
+    async with lock:
+        changed = await db.cancel_giveaway(giveaway_id)
+        giveaway = await db.get_giveaway(giveaway_id)
+        if not giveaway:
+            return False
+        if not changed and str(giveaway.get("status")) != "cancelled":
+            return False
+
+        posts = await db.list_giveaway_posts(giveaway_id)
+        text = render_giveaway_post(
+            giveaway,
+            participant_count=int(giveaway.get("participant_count") or 0),
+            display_tz=config.display_tz,
+        )
+        has_photo = bool(str(giveaway.get("photo_file_id") or "").strip())
+        if has_photo and len(text) > 900:
+            text = render_giveaway_post(
+                giveaway,
+                participant_count=int(giveaway.get("participant_count") or 0),
+                display_tz=config.display_tz,
+                include_base=False,
+            )
+
+        for post in posts:
+            if post.get("finalized_at"):
+                continue
+            try:
+                if has_photo:
+                    await bot.edit_message_caption(
+                        chat_id=_chat_id(post["chat_id"]),
+                        message_id=int(post["message_id"]),
+                        caption=text,
+                        reply_markup=None,
+                    )
+                else:
+                    await bot.edit_message_text(
+                        chat_id=_chat_id(post["chat_id"]),
+                        message_id=int(post["message_id"]),
+                        text=text,
+                        reply_markup=None,
+                    )
+            except (TelegramBadRequest, TelegramForbiddenError):
+                logger.warning(
+                    "Could not mark cancelled giveaway %s in %s",
+                    giveaway_id,
+                    post["chat_id"],
+                )
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "Could not mark cancelled giveaway %s in %s: %s",
+                    giveaway_id,
+                    post["chat_id"],
+                    type(exc).__name__,
+                )
+                continue
+            await db.mark_giveaway_post_finalized(giveaway_id, post["chat_id"])
+        return True
 
 
 async def delete_giveaway(
