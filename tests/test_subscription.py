@@ -509,13 +509,17 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
         servers = report["servers"]
         assert len(servers) == 7
         assert all(item["configured"] for item in servers)
-        assert next(item for item in servers if "Германия" in item["name"])["available"] is True
+        germany = next(item for item in servers if "Германия" in item["name"])
+        assert germany["available"] is True
+        assert germany["host"] == "de5.h1cloud.net"
+        assert germany["port"] == 443
         finland = next(item for item in servers if "Финляндия" in item["name"])
         assert finland["configured"] is True
         assert finland["available"] is False
         assert finland["error"] == "probe_unverified"
         assert next(item for item in servers if item["name"] == "🇺🇸 США 2")["configured"] is True
         assert report["sources"]["subscription"]["count"] == 7
+        assert next(item for item in servers if item["name"] == "🇳🇱 Нидерланды")["port"] == 443
 
     asyncio.run(run())
 
