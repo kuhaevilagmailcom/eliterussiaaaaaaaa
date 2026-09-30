@@ -8,7 +8,7 @@
   <title>MGN VPN</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="/static/assets/lucide.min.js?v=1"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=22">
+  <link rel="stylesheet" href="/static/styles.css?v=23">
 </head>
 <body>
   <section id="appError" class="app-error" hidden role="status">
@@ -313,11 +313,11 @@
   <section class="sheet" id="deviceSheet" role="dialog" aria-modal="true" aria-label="Дополнительное устройство" hidden>
     <div class="sheet-handle"></div>
     <button type="button" class="sheet-close" id="deviceSheetClose" aria-label="Закрыть"><i data-lucide="x"></i></button>
-    <span class="eyebrow">ДОП. УСТРОЙСТВО</span>
-    <h2>+1 слот навсегда</h2>
-    <p>Слот сохранится и будет добавляться к лимиту следующих подписок.</p>
+    <span class="eyebrow">УСТРОЙСТВА</span>
+    <h2>Добавить устройство</h2>
+    <p>Добавьте ещё одно устройство к текущему лимиту. При следующем продлении количество можно выбрать заново.</p>
     <article class="sheet-summary"><span class="icon-box"><i data-lucide="wallet-cards"></i></span><div><small>Стоимость</small><b id="deviceSheetPrice">—</b></div><em id="deviceSheetBalance">Оплата через СБП</em></article>
-    <button type="button" class="sheet-primary" id="confirmDevicePurchase">Купить слот</button>
+    <button type="button" class="sheet-primary" id="confirmDevicePurchase">Добавить устройство</button>
   </section>
 
   <section class="sheet" id="clientSheet" role="dialog" aria-modal="true" aria-label="VPN-клиент" hidden>
