@@ -447,7 +447,8 @@ def test_h1_server_diagnostics_reports_exact_mgn_fleet():
         assert finland["check"] == "inbounds"
 
         usa1 = next(item for item in servers if item["name"] == "🇺🇸 США 1")
-        assert usa1["available"] is False
+        assert usa1["available"] is True
+        assert usa1["check"] == "federation_present"
 
     asyncio.run(run())
 
@@ -517,8 +518,9 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
         assert not any("Литва" in item["name"] or "Германия" in item["name"] for item in servers)
 
         finland = next(item for item in servers if "Финляндия" in item["name"])
-        assert finland["available"] is False
-        assert finland["error"] == "probe_unverified"
+        assert finland["available"] is True
+        assert finland["latency_ms"] is None
+        assert finland["check"] == "subscription_present"
 
         usa1 = next(item for item in servers if item["name"] == "🇺🇸 США 1")
         usa2 = next(item for item in servers if item["name"] == "🇺🇸 США 2")
@@ -584,3 +586,38 @@ def test_h1_node_labels_include_flags_and_variants():
     assert H1CloudVpnProvider._diagnostic_node_label(
         {"id": "x", "name": "Poland-Premium"}
     ) == "🇵🇱 Польша-Премиум"
+
+
+
+def test_h1_explicit_health_down_is_the_only_remote_red_state():
+    async def run():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider.api_url = "https://nl1.h1cloud.net/api"
+        provider.server_name = "MGN VPN"
+
+        async def request(method, path, **kwargs):
+            assert method == "GET"
+            if path == "/health":
+                return {"ok": True}
+            if path == "/fed/link":
+                return {"links": ["MGN-FI"]}
+            if path == "/fed/registry":
+                return {"nodes": []}
+            if path == "/fed/lagg":
+                return None
+            if path == "/fed/lproxy/MGN-FI/health":
+                return {"ok": False}
+            if path == "/fed/lproxy/MGN-FI/inbounds":
+                raise RuntimeError("explicitly unavailable")
+            raise AssertionError(path)
+
+        provider._request = AsyncMock(side_effect=request)
+        report = await provider.server_diagnostics()
+        finland = next(
+            item for item in report["servers"]
+            if item["name"] == "🇫🇮 Финляндия"
+        )
+        assert finland["available"] is False
+        assert finland["check"] == "h1_explicit_down"
+
+    asyncio.run(run())
