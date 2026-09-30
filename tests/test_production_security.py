@@ -812,3 +812,13 @@ def test_public_buttons_default_to_plain_emoji_only():
         for row in reply.keyboard
         for button in row
     )
+
+
+def test_main_menu_has_exactly_one_button_per_row():
+    markup = main_menu_inline_keyboard(
+        "full",
+        "https://mgnvpn.ru/app",
+        active=True,
+    )
+    assert all(len(row) == 1 for row in markup.inline_keyboard)
+    assert len(markup.inline_keyboard) == 8
