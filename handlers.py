@@ -92,7 +92,8 @@ def format_admin_server_status(servers: list[dict[str, Any]]) -> str:
         if item is None:
             lines.append(f"➖ <b>{label}</b>")
             continue
-        icon = "✅" if item.get("available") else "❌"
+        available = item.get("available")
+        icon = "✅" if available is True else "❌" if available is False else "⚪"
         latency = item.get("latency_ms")
         latency_text = f" · {int(latency)} мс" if isinstance(latency, (int, float)) else ""
         lines.append(f"{icon} <b>{label}</b>{latency_text}")
