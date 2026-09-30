@@ -967,7 +967,11 @@ def build_router(
             )
         keyboard = InlineKeyboardBuilder()
         keyboard.row(
-            blue_inline_button("Моя подписка", callback_data="menu:connect", icon_index=2)
+            blue_inline_button(
+                "Моя подписка",
+                web_app=WebAppInfo(url=config.miniapp_url),
+                icon_index=2,
+            )
         )
         if not await db.claim_trial_grant_notification(user_id):
             return user

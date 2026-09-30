@@ -63,6 +63,14 @@ def test_trial_is_granted_once_and_expiry_notice_is_idempotent(tmp_path):
         assert await db.claim_trial_grant_notification(91)
         assert not await db.claim_trial_grant_notification(91)
         assert await db.list_pending_trial_grant_notifications() == []
+        async with aiosqlite.connect(db.path) as connection:
+            await connection.execute(
+                "UPDATE trial_grant_notifications SET button_version=1 WHERE telegram_id=91"
+            )
+            await connection.commit()
+        assert await db.list_pending_trial_grant_notifications() == [91]
+        assert await db.claim_trial_grant_notification(91)
+        assert await db.list_pending_trial_grant_notifications() == []
 
         # Trial users receive the dedicated expiry flow, not the ordinary
         # immediate "1 day remaining" paid-subscription reminder.

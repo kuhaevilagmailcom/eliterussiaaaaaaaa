@@ -11,7 +11,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonCommands
+from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonCommands, WebAppInfo
 
 from admin_notifications import (
     notify_purchase_admins,
@@ -213,11 +213,16 @@ async def _is_channel_member(bot: Bot, channel_id: str | int, user_id: int) -> b
     )
 
 
-async def _notify_trial_granted(bot: Bot, db: Database, user_id: int) -> bool:
+async def _notify_trial_granted(
+    bot: Bot,
+    db: Database,
+    user_id: int,
+    miniapp_url: str,
+) -> bool:
     if not await db.claim_trial_grant_notification(user_id):
         return False
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="Моя подписка", callback_data="menu:connect")
+        InlineKeyboardButton(text="Моя подписка", web_app=WebAppInfo(url=miniapp_url))
     ]])
     try:
         await bot.send_message(
@@ -265,7 +270,7 @@ async def distribute_existing_trials_once(
                     "Trial provisioning deferred for %s: %s", user_id, type(exc).__name__
                 )
             try:
-                if await _notify_trial_granted(bot, db, user_id):
+                if await _notify_trial_granted(bot, db, user_id, config.miniapp_url):
                     notified += 1
             except Exception as exc:
                 logging.getLogger(__name__).warning(
@@ -321,11 +326,15 @@ async def send_expired_trial_notifications_once(bot: Bot, db: Database) -> int:
     return sent
 
 
-async def retry_trial_grant_notifications_once(bot: Bot, db: Database) -> int:
+async def retry_trial_grant_notifications_once(
+    bot: Bot,
+    db: Database,
+    config: Config,
+) -> int:
     sent = 0
     for user_id in await db.list_pending_trial_grant_notifications():
         try:
-            if await _notify_trial_granted(bot, db, user_id):
+            if await _notify_trial_granted(bot, db, user_id, config.miniapp_url):
                 sent += 1
         except Exception as exc:
             logging.getLogger(__name__).warning(
@@ -344,7 +353,7 @@ async def expiry_notification_loop(bot: Bot, db: Database, config: Config) -> No
             trial_sent = await send_expired_trial_notifications_once(bot, db)
             if trial_sent:
                 logger.info("Expired trial notifications sent: %s", trial_sent)
-            grant_sent = await retry_trial_grant_notifications_once(bot, db)
+            grant_sent = await retry_trial_grant_notifications_once(bot, db, config)
             if grant_sent:
                 logger.info("Retried trial grant notifications sent: %s", grant_sent)
         except Exception:

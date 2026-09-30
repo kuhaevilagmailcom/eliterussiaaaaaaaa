@@ -58,7 +58,9 @@ def test_existing_channel_member_receives_one_trial_and_notification(tmp_path, m
         assert user["trial_used"] == 1
         assert user["plan_name"] == "Пробный доступ"
         assert bot.send_message.await_count == 1
-        assert bot.send_message.await_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "menu:connect"
+        button = bot.send_message.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+        assert button.callback_data is None
+        assert button.web_app.url == config.miniapp_url
 
         assert await distribute_existing_trials_once(bot, db, config, provider) == (0, 0, 0, 0)
 

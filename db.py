@@ -142,7 +142,8 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS trial_grant_notifications (
                     telegram_id INTEGER PRIMARY KEY,
-                    sent_at TEXT NOT NULL
+                    sent_at TEXT NOT NULL,
+                    button_version INTEGER NOT NULL DEFAULT 2
                 );
 
                 CREATE TABLE IF NOT EXISTS channel_trial_campaign_grants (
@@ -396,6 +397,17 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_users_attribution_source "
                 "ON users(attribution_source)"
             )
+            trial_notice_columns = {
+                row[1]
+                for row in await (
+                    await db.execute("PRAGMA table_info(trial_grant_notifications)")
+                ).fetchall()
+            }
+            if "button_version" not in trial_notice_columns:
+                await db.execute(
+                    "ALTER TABLE trial_grant_notifications "
+                    "ADD COLUMN button_version INTEGER NOT NULL DEFAULT 1"
+                )
             # A trial already issued by the previous deployment belongs to
             # this campaign and must not be granted for a second day later.
             await db.execute(
@@ -757,7 +769,7 @@ class Database:
                     LEFT JOIN trial_grant_notifications n ON n.telegram_id=u.telegram_id
                     WHERE u.trial_used=1 AND u.plan_name='Пробный доступ'
                       AND u.subscription_until>?
-                      AND n.telegram_id IS NULL
+                      AND (n.telegram_id IS NULL OR n.button_version<2)
                     ORDER BY u.telegram_id LIMIT ?
                     """,
                     (to_iso(utcnow()), limit),
@@ -768,7 +780,14 @@ class Database:
     async def claim_trial_grant_notification(self, telegram_id: int) -> bool:
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
-                "INSERT OR IGNORE INTO trial_grant_notifications (telegram_id, sent_at) VALUES (?, ?)",
+                """
+                INSERT INTO trial_grant_notifications (telegram_id, sent_at, button_version)
+                VALUES (?, ?, 2)
+                ON CONFLICT(telegram_id) DO UPDATE SET
+                    sent_at=excluded.sent_at,
+                    button_version=excluded.button_version
+                WHERE trial_grant_notifications.button_version<2
+                """,
                 (int(telegram_id), to_iso(utcnow())),
             )
             await db.commit()
