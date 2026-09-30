@@ -1703,16 +1703,24 @@ class H1CloudVpnProvider(VpnProvider):
             except Exception as exc:
                 inbound_ms = int(max(0.0, (loop.time() - started) * 1000))
                 error = type(exc).__name__ or health_error
+                explicit_down = bool(
+                    isinstance(health_data, dict)
+                    and health_data.get("ok") is False
+                )
                 return {
                     "kind": "federation",
                     "name": self._diagnostic_node_label(node, health_data),
                     "id": node_id,
                     "proxy_kind": kind,
-                    "available": False,
+                    # Presence in H1 federation means the node is configured.
+                    # A timeout from BotHost is not evidence that the VPN node
+                    # itself is offline. Only trust an explicit H1 ok:false.
+                    "available": not explicit_down,
                     "configured": True,
-                    "latency_ms": max(health_ms, inbound_ms),
-                    "check": "health+inbounds",
-                    "error": error or health_error or "unavailable",
+                    "latency_ms": None,
+                    "check": "h1_explicit_down" if explicit_down else "federation_present",
+                    "error": error or health_error or "",
+                    "probe_verified": False,
                 }
 
         if nodes:
@@ -1841,11 +1849,15 @@ class H1CloudVpnProvider(VpnProvider):
                 "host": host,
                 "port": port,
                 "proxy_kind": "subscription",
-                "available": latency is not None,
+                # A VLESS entry in the aggregate subscription is proof that H1
+                # currently publishes this server. TCP latency from BotHost is
+                # optional telemetry, not the health verdict.
+                "available": True,
                 "configured": True,
                 "latency_ms": int(latency) if latency is not None else None,
-                "check": "vless_tcp" if latency is not None else "subscription",
-                "error": "" if latency is not None else "probe_unverified",
+                "check": "vless_tcp" if latency is not None else "subscription_present",
+                "error": "",
+                "probe_verified": latency is not None,
             }
 
             if existing_index is not None:
@@ -1855,21 +1867,22 @@ class H1CloudVpnProvider(VpnProvider):
                         "host": host,
                         "port": port,
                         "configured": True,
-                        "available": bool(current.get("available")) or latency is not None,
+                        "available": True,
                         "latency_ms": (
                             current.get("latency_ms")
-                            if current.get("available")
+                            if isinstance(current.get("latency_ms"), (int, float))
                             else payload["latency_ms"]
                         ),
                         "check": (
                             current.get("check")
-                            if current.get("available")
+                            if isinstance(current.get("latency_ms"), (int, float))
                             else payload["check"]
                         ),
-                        "error": (
-                            ""
-                            if current.get("available") or latency is not None
-                            else "probe_unverified"
+                        "error": "",
+                        "probe_verified": bool(
+                            current.get("probe_verified")
+                            or payload.get("probe_verified")
+                            or isinstance(current.get("latency_ms"), (int, float))
                         ),
                     }
                 )
@@ -1954,11 +1967,12 @@ class H1CloudVpnProvider(VpnProvider):
                     "host": "",
                     "port": 0,
                     "proxy_kind": "direct" if code == "nl" else "federation",
-                    "available": False,
+                    "available": None,
                     "configured": True,
                     "latency_ms": None,
                     "check": "catalog_fallback",
                     "error": "temporarily_not_reported",
+                    "probe_verified": False,
                 }
             )
 
@@ -2008,11 +2022,12 @@ class H1CloudVpnProvider(VpnProvider):
                     "host": "",
                     "port": 0,
                     "proxy_kind": "direct" if code == "nl" else "federation",
-                    "available": False,
+                    "available": None,
                     "configured": True,
                     "latency_ms": None,
                     "check": "catalog_fallback",
                     "error": "temporarily_not_reported",
+                    "probe_verified": False,
                 }
             )
 
