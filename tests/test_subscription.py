@@ -30,15 +30,15 @@ def test_poland_subscription_name_is_normalized_from_h1_inbound_label():
     assert "mgn_8464597898" not in decoded
 
 
-def test_duplicate_us_nodes_are_named_usa_and_usa_2():
+def test_us1_and_us2_nodes_keep_explicit_names():
     payload = (
         "vless://uuid@us3.h1cloud.net:443?security=reality#MGN-US\n"
-        "vless://uuid@us3.h1cloud.net:8443?security=reality#MGN-US\n"
+        "vless://uuid@us2.h1cloud.net:443?security=reality#MGN-US2\n"
     ).encode()
     rendered, count = prettify_subscription_payload(payload)
     decoded = base64.b64decode(rendered).decode()
     assert count == 2
-    assert "%D0%A1%D0%A8%D0%90" in decoded
+    assert "%D0%A1%D0%A8%D0%90%201" in decoded
     assert "%D0%A1%D0%A8%D0%90%202" in decoded
 
 
