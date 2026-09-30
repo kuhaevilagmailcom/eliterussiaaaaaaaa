@@ -4224,14 +4224,14 @@ def build_router(
             sample_user = sample_users[0] if sample_users else None
             report = await asyncio.wait_for(
                 provider.server_diagnostics(sample_user),
-                timeout=12.0,
+                timeout=18.0,
             )
         except asyncio.TimeoutError:
             await send_screen(
                 message,
                 actor,
                 "🌐 <b>Серверы VPN</b>\n\n"
-                "⚠️ Диагностика H1 не успела завершиться за 12 секунд.\n"
+                "⚠️ Диагностика H1 не успела завершиться за 18 секунд.\n"
                 "Пользовательские конфиги при этом не изменялись.",
                 reply_markup=kb.as_markup(),
             )
@@ -4284,6 +4284,7 @@ def build_router(
             "🖥 <b>Состояние серверов</b>",
         ]
 
+        compact_inventory = len(servers) > 20
         for index, item in enumerate(servers, start=1):
             ok = bool(item.get("available"))
             configured = bool(item.get("configured"))
@@ -4293,6 +4294,9 @@ def build_router(
             latency = item.get("latency_ms")
             latency_text = f" · {int(latency)} мс" if isinstance(latency, (int, float)) else ""
             lines.append(f"{icon} <b>{name}</b>{latency_text}")
+
+            if compact_inventory:
+                continue
 
             details: list[str] = [kind]
             host = str(item.get("host") or "").strip()
@@ -4320,6 +4324,13 @@ def build_router(
                     lines.append(f"   ↳ конфиг есть · проверка: <code>{html.escape(error)}</code>")
                 elif not configured:
                     lines.append("   ↳ нет данных для проверки, сервер не скрыт")
+
+        if compact_inventory:
+            lines += [
+                "",
+                "<i>При большом каталоге показан компактный список. "
+                "Все обнаруженные H1-ноды остаются в проверке и подписке.</i>",
+            ]
 
         if sources:
             lines += ["", "🔗 <b>Источники диагностики</b>"]
