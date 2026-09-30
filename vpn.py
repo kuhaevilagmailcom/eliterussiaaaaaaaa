@@ -5,6 +5,7 @@ import json as json_module
 import base64
 import ipaddress
 import math
+import re
 import socket
 import ssl
 from dataclasses import dataclass
@@ -94,6 +95,94 @@ def _location_label(value: str) -> str:
         or ".PK" in host
     ):
         return "🇵🇰 Пакистан"
+    return ""
+
+
+def _flagged_h1_node_name(value: str) -> str:
+    """Return a readable H1 location with a country flag when it can be inferred."""
+    raw = unquote(str(value or "")).strip()
+    if not raw:
+        return ""
+
+    upper = raw.upper()
+    countries: tuple[tuple[tuple[str, ...], str, str], ...] = (
+        (("FINLAND", "ФИНЛЯНД", "MGN-FI"), "🇫🇮", "Финляндия"),
+        (("POLAND", "ПОЛЬШ", "MGN-PL"), "🇵🇱", "Польша"),
+        (("NETHERLAND", "НИДЕРЛ", "MGN-NL"), "🇳🇱", "Нидерланды"),
+        (("GERMANY", "ГЕРМАН", "MGN-DE"), "🇩🇪", "Германия"),
+        (("SWEDEN", "ШВЕЦ", "MGN-SE"), "🇸🇪", "Швеция"),
+        (("SWITZERLAND", "ШВЕЙЦ", "MGN-CH"), "🇨🇭", "Швейцария"),
+        (("SPAIN", "ИСПАН", "MGN-ES"), "🇪🇸", "Испания"),
+        (("LITHUANIA", "ЛИТВ", "MGN-LT"), "🇱🇹", "Литва"),
+        (("ESTONIA", "ЭСТОН", "MGN-EE"), "🇪🇪", "Эстония"),
+        (("MOLDOVA", "МОЛДОВ", "MGN-MD"), "🇲🇩", "Молдова"),
+        (("TURKEY", "TURKIYE", "ТУРЦ", "MGN-TR"), "🇹🇷", "Турция"),
+        (("ALBANIA", "АЛБАН", "MGN-AL"), "🇦🇱", "Албания"),
+        (("GEORGIA", "ГРУЗ", "MGN-GE"), "🇬🇪", "Грузия"),
+        (("MOSCOW", "МОСКВ", "MGN-MSK", "MGN-RU"), "🇷🇺", "Москва"),
+        (("INDIA", "ИНДИ", "MGN-IN"), "🇮🇳", "Индия"),
+        (("BELARUS", "БЕЛАР", "MGN-BY"), "🇧🇾", "Беларусь"),
+        (("ISRAEL", "ИЗРАИЛ", "MGN-IL"), "🇮🇱", "Израиль"),
+        (("PAKISTAN", "ПАКИСТ", "KARACHI", "ISLAMABAD", "LAHORE", "MGN-PK"), "🇵🇰", "Пакистан"),
+        (("UNITED STATES", "USA", "США", "MGN-US"), "🇺🇸", "США"),
+    )
+
+    for markers, flag, russian_name in countries:
+        matched = next((token for token in markers if token in upper), "")
+        if not matched:
+            continue
+
+        suffix = ""
+        # Preserve useful H1 variants such as "-1", "-Премиум" or "-боты-2".
+        match = re.search(
+            r"(?:-|_|\s)(\d+|PREMIUM|ПРЕМИУМ|BOTS?(?:[-_\s]?\d+)?|БОТЫ?(?:[-_\s]?\d+)?)",
+            upper,
+        )
+        if match:
+            suffix_raw = match.group(1).replace("_", "-").replace(" ", "-")
+            translations = {
+                "PREMIUM": "Премиум",
+                "BOTS": "боты",
+                "BOT": "боты",
+            }
+            suffix = translations.get(suffix_raw, suffix_raw)
+            if suffix.startswith("BOTS-") or suffix.startswith("BOT-"):
+                suffix = "боты-" + suffix.split("-", 1)[1]
+            elif suffix.startswith("БОТ"):
+                suffix = suffix_raw.lower()
+            elif suffix == "ПРЕМИУМ":
+                suffix = "Премиум"
+            suffix = f"-{suffix}"
+
+        return f"{flag} {russian_name}{suffix}"
+
+    # Short H1 host/node codes, e.g. fi5.h1cloud.net or pl-2.
+    code_map = {
+        "FI": ("🇫🇮", "Финляндия"),
+        "PL": ("🇵🇱", "Польша"),
+        "NL": ("🇳🇱", "Нидерланды"),
+        "DE": ("🇩🇪", "Германия"),
+        "SE": ("🇸🇪", "Швеция"),
+        "CH": ("🇨🇭", "Швейцария"),
+        "ES": ("🇪🇸", "Испания"),
+        "LT": ("🇱🇹", "Литва"),
+        "EE": ("🇪🇪", "Эстония"),
+        "MD": ("🇲🇩", "Молдова"),
+        "TR": ("🇹🇷", "Турция"),
+        "AL": ("🇦🇱", "Албания"),
+        "GE": ("🇬🇪", "Грузия"),
+        "IN": ("🇮🇳", "Индия"),
+        "BY": ("🇧🇾", "Беларусь"),
+        "IL": ("🇮🇱", "Израиль"),
+        "PK": ("🇵🇰", "Пакистан"),
+        "US": ("🇺🇸", "США"),
+    }
+    code_match = re.search(r"(?:^|[^A-Z0-9])(FI|PL|NL|DE|SE|CH|ES|LT|EE|MD|TR|AL|GE|IN|BY|IL|PK|US)[-_]?(\d+)?(?:[^A-Z0-9]|$)", upper)
+    if code_match:
+        flag, russian_name = code_map[code_match.group(1)]
+        number = code_match.group(2)
+        return f"{flag} {russian_name}{'-' + number if number else ''}"
+
     return ""
 
 
@@ -706,7 +795,7 @@ class H1CloudVpnProvider(VpnProvider):
     async def _federated_nodes(self) -> list[dict[str, Any]]:
         """Merge every H1 federation store and tolerate response-shape changes."""
         nodes: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
+        index_by_key: dict[tuple[str, str], int] = {}
 
         def add_value(value: Any, proxy_kind: str) -> None:
             if isinstance(value, dict):
@@ -717,10 +806,22 @@ class H1CloudVpnProvider(VpnProvider):
                 node = {"id": node_id}
 
             key = (proxy_kind, node_id)
-            if not node_id or key in seen:
+            if not node_id:
                 return
-            seen.add(key)
+
             node["proxy_kind"] = proxy_kind
+            existing_index = index_by_key.get(key)
+            if existing_index is not None:
+                # /fed/link often gives only an ID while /fed/lagg later gives
+                # country/name/host. Keep the richer metadata for diagnostics.
+                current = dict(nodes[existing_index])
+                for field, field_value in node.items():
+                    if field_value not in (None, "", [], {}):
+                        current[field] = field_value
+                nodes[existing_index] = current
+                return
+
+            index_by_key[key] = len(nodes)
             nodes.append(node)
 
         async def load_linked() -> None:
@@ -1433,6 +1534,10 @@ class H1CloudVpnProvider(VpnProvider):
                     values.append(str(value).strip())
 
         identity = " ".join(values)
+        flagged = _flagged_h1_node_name(identity)
+        if flagged:
+            return flagged
+
         location = _location_label(identity)
         if location:
             return location
@@ -1441,8 +1546,9 @@ class H1CloudVpnProvider(VpnProvider):
         for value in values:
             cleaned = str(value).strip()
             if cleaned and cleaned != node_id and len(cleaned) <= 64:
-                return cleaned
-        return f"Узел {node_id}" if node_id else "Удалённый узел"
+                inferred = _flagged_h1_node_name(cleaned)
+                return inferred or f"🌐 {cleaned}"
+        return f"🌐 Узел {node_id}" if node_id else "🌐 Удалённый узел"
 
     async def server_diagnostics(
         self,
@@ -1511,7 +1617,7 @@ class H1CloudVpnProvider(VpnProvider):
 
         source_rows: dict[str, dict[str, Any]] = {}
         nodes: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
+        node_index: dict[tuple[str, str], int] = {}
 
         def add_diag_node(value: Any, proxy_kind: str) -> None:
             if isinstance(value, dict):
@@ -1521,10 +1627,20 @@ class H1CloudVpnProvider(VpnProvider):
                 node_id = str(value or "").strip()
                 node = {"id": node_id}
             key = (proxy_kind, node_id)
-            if not node_id or key in seen:
+            if not node_id:
                 return
-            seen.add(key)
             node["proxy_kind"] = proxy_kind
+
+            existing_index = node_index.get(key)
+            if existing_index is not None:
+                current = dict(nodes[existing_index])
+                for field, field_value in node.items():
+                    if field_value not in (None, "", [], {}):
+                        current[field] = field_value
+                nodes[existing_index] = current
+                return
+
+            node_index[key] = len(nodes)
             nodes.append(node)
 
         for result, kind in (
