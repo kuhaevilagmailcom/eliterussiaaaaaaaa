@@ -397,7 +397,7 @@ def test_h1_smart_selection_preserves_transient_probe_failures():
     asyncio.run(run())
 
 
-def test_h1_server_diagnostics_reports_main_and_federated_nodes():
+def test_h1_server_diagnostics_reports_exact_mgn_fleet():
     async def run():
         provider = object.__new__(H1CloudVpnProvider)
         provider.api_url = "https://nl1.h1cloud.net/api"
@@ -408,13 +408,13 @@ def test_h1_server_diagnostics_reports_main_and_federated_nodes():
             if path == "/health":
                 return {"ok": True}
             if path == "/fed/link":
-                return {"links": ["MGN-DE"]}
+                return {"links": ["MGN-FI"]}
             if path == "/fed/registry":
                 return {"nodes": [{"id": "us-node", "name": "MGN-US"}]}
-            if path == "/fed/lproxy/MGN-DE/health":
+            if path == "/fed/lproxy/MGN-FI/health":
                 raise RuntimeError("health endpoint unavailable")
-            if path == "/fed/lproxy/MGN-DE/inbounds":
-                return {"inbounds": [{"id": "11", "remark": "MGN-DE"}]}
+            if path == "/fed/lproxy/MGN-FI/inbounds":
+                return {"inbounds": [{"id": "11", "remark": "MGN-FI"}]}
             if path in {
                 "/fed/proxy/us-node/health",
                 "/fed/proxy/us-node/inbounds",
@@ -431,25 +431,23 @@ def test_h1_server_diagnostics_reports_main_and_federated_nodes():
         assert report["sources"]["/fed/registry"]["count"] == 1
 
         servers = report["servers"]
-        assert len(servers) == 5
         assert [item["name"] for item in servers] == [
             "🇳🇱 Нидерланды",
-            "🇩🇪 Германия",
             "🇫🇮 Финляндия",
-            "🇱🇹 Литва",
-            "🇺🇸 США",
+            "🇵🇱 Польша",
+            "🇵🇰 Пакистан",
+            "🇺🇸 США 1",
+            "🇺🇸 США 2",
         ]
-        assert servers[0]["name"] == "🇳🇱 Нидерланды"
-        assert servers[0]["available"] is True
+        assert len(servers) == 6
+        assert all(item["configured"] is True for item in servers)
 
-        germany = next(item for item in servers if "Германия" in item["name"])
-        assert germany["available"] is True
-        assert germany["configured"] is True
-        assert germany["check"] == "inbounds"
+        finland = next(item for item in servers if "Финляндия" in item["name"])
+        assert finland["available"] is True
+        assert finland["check"] == "inbounds"
 
-        usa = next(item for item in servers if "США" in item["name"])
-        assert usa["available"] is False
-        assert usa["configured"] is True
+        usa1 = next(item for item in servers if item["name"] == "🇺🇸 США 1")
+        assert usa1["available"] is False
 
     asyncio.run(run())
 
@@ -484,12 +482,11 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
         provider._fetch_public_subscription = AsyncMock(
             return_value=(
                 "vless://u@nl1.h1cloud.net:443#MGN-NL\n"
-                "vless://u@pk1.h1cloud.net:443#MGN-PK\n"
-                "vless://u@de5.h1cloud.net:443#MGN-DE\n"
-                "vless://u@pl-d1.h1cloud.net:443#MGN-PL\n"
                 "vless://u@fi5.h1cloud.net:443#MGN-FI\n"
+                "vless://u@pl-d1.h1cloud.net:443#MGN-PL\n"
+                "vless://u@pk1.h1cloud.net:443#MGN-PK\n"
                 "vless://u@us3.h1cloud.net:443#MGN-US\n"
-                "vless://u@us4.h1cloud.net:443#MGN-US\n"
+                "vless://u@us2.h1cloud.net:443#MGN-US2\n"
             ).encode()
         )
 
@@ -507,21 +504,27 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
             }
         )
         servers = report["servers"]
-        assert len(servers) == 8
+        assert len(servers) == 6
+        assert [item["name"] for item in servers] == [
+            "🇳🇱 Нидерланды",
+            "🇫🇮 Финляндия",
+            "🇵🇱 Польша",
+            "🇵🇰 Пакистан",
+            "🇺🇸 США 1",
+            "🇺🇸 США 2",
+        ]
         assert all(item["configured"] for item in servers)
-        assert any(item["name"] == "🇱🇹 Литва" for item in servers)
-        germany = next(item for item in servers if "Германия" in item["name"])
-        assert germany["available"] is True
-        assert germany["host"] == "de5.h1cloud.net"
-        assert germany["port"] == 443
+        assert not any("Литва" in item["name"] or "Германия" in item["name"] for item in servers)
+
         finland = next(item for item in servers if "Финляндия" in item["name"])
-        assert finland["configured"] is True
         assert finland["available"] is False
         assert finland["error"] == "probe_unverified"
-        usa_nodes = [item for item in servers if "США" in item["name"]]
-        assert len(usa_nodes) == 2
-        assert all(item["configured"] for item in usa_nodes)
-        assert report["sources"]["subscription"]["count"] == 7
+
+        usa1 = next(item for item in servers if item["name"] == "🇺🇸 США 1")
+        usa2 = next(item for item in servers if item["name"] == "🇺🇸 США 2")
+        assert usa1["host"] == "us3.h1cloud.net"
+        assert usa2["host"] == "us2.h1cloud.net"
+        assert report["sources"]["subscription"]["count"] == 6
         assert next(item for item in servers if item["name"] == "🇳🇱 Нидерланды")["port"] == 443
 
     asyncio.run(run())
@@ -549,13 +552,14 @@ def test_h1_server_diagnostics_distinguishes_empty_federation_from_main_config()
 
         report = await provider.server_diagnostics()
         assert report["discovery_ok"] is True
-        assert len(report["servers"]) == 5
+        assert len(report["servers"]) == 6
         assert [item["name"] for item in report["servers"]] == [
             "🇳🇱 Нидерланды",
-            "🇩🇪 Германия",
             "🇫🇮 Финляндия",
-            "🇱🇹 Литва",
-            "🇺🇸 США",
+            "🇵🇱 Польша",
+            "🇵🇰 Пакистан",
+            "🇺🇸 США 1",
+            "🇺🇸 США 2",
         ]
         assert report["servers"][0]["kind"] == "main"
         assert report["servers"][0]["available"] is True
