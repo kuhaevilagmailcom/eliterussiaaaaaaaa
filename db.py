@@ -145,6 +145,11 @@ class Database:
                     sent_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS channel_trial_campaign_grants (
+                    telegram_id INTEGER PRIMARY KEY,
+                    granted_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS traffic_daily (
                     telegram_id INTEGER NOT NULL,
                     day TEXT NOT NULL,
@@ -390,6 +395,18 @@ class Database:
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_users_attribution_source "
                 "ON users(attribution_source)"
+            )
+            # A trial already issued by the previous deployment belongs to
+            # this campaign and must not be granted for a second day later.
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO channel_trial_campaign_grants (telegram_id, granted_at)
+                SELECT telegram_id, ? FROM users
+                WHERE plan_name='Пробный доступ'
+                  AND subscription_until IS NOT NULL
+                  AND subscription_until>?
+                """,
+                (to_iso(utcnow()), to_iso(utcnow())),
             )
 
             sbp_columns = {
@@ -638,6 +655,52 @@ class Database:
             return None
         return await self.get_user(int(telegram_id))
 
+    async def grant_channel_trial_campaign_once(
+        self,
+        telegram_id: int,
+    ) -> dict[str, Any] | None:
+        """Grant this channel campaign once, independent of legacy trial_used."""
+        now = utcnow()
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT subscription_until FROM users WHERE telegram_id=?",
+                    (int(telegram_id),),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                return None
+            current = from_iso(row[0])
+            already = await (
+                await db.execute(
+                    "SELECT 1 FROM channel_trial_campaign_grants WHERE telegram_id=?",
+                    (int(telegram_id),),
+                )
+            ).fetchone()
+            if already or (current and current > now):
+                await db.rollback()
+                return None
+            cursor = await db.execute(
+                "INSERT OR IGNORE INTO channel_trial_campaign_grants (telegram_id, granted_at) VALUES (?, ?)",
+                (int(telegram_id), to_iso(now)),
+            )
+            if cursor.rowcount != 1:
+                await db.rollback()
+                return None
+            await db.execute(
+                """
+                UPDATE users
+                SET trial_used=1, subscription_until=?, plan_name='Пробный доступ',
+                    traffic_limit_gb=0
+                WHERE telegram_id=?
+                """,
+                (to_iso(now + timedelta(days=1)), int(telegram_id)),
+            )
+            await db.commit()
+        return await self.get_user(int(telegram_id))
+
     async def list_trial_candidates(
         self,
         *,
@@ -650,8 +713,12 @@ class Database:
                 await db.execute(
                     """
                     SELECT telegram_id FROM users
-                    WHERE telegram_id>? AND trial_used=0
+                    WHERE telegram_id>?
                       AND (subscription_until IS NULL OR subscription_until<=?)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM channel_trial_campaign_grants g
+                          WHERE g.telegram_id=users.telegram_id
+                      )
                     ORDER BY telegram_id LIMIT ?
                     """,
                     (int(after_id), to_iso(utcnow()), limit),

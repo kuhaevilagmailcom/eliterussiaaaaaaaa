@@ -237,13 +237,13 @@ async def distribute_existing_trials_once(
     db: Database,
     config: Config,
     provider: VpnProvider,
-) -> tuple[int, int]:
+) -> tuple[int, int, int, int]:
     """Grant trials to existing inactive users who are still channel members."""
     channel_id = _required_channel_id(config.channel_url)
     if channel_id is None:
         logging.getLogger(__name__).error("CHANNEL_URL cannot be used for trial distribution")
-        return 0, 0
-    granted = checked = 0
+        return 0, 0, 0, 0
+    granted = checked = members = notified = 0
     after_id = 0
     while True:
         candidates = await db.list_trial_candidates(after_id=after_id, limit=100)
@@ -254,7 +254,8 @@ async def distribute_existing_trials_once(
             checked += 1
             if not await _is_channel_member(bot, channel_id, user_id):
                 continue
-            user = await db.grant_trial_once(user_id)
+            members += 1
+            user = await db.grant_channel_trial_campaign_once(user_id)
             if not user:
                 continue
             try:
@@ -264,14 +265,15 @@ async def distribute_existing_trials_once(
                     "Trial provisioning deferred for %s: %s", user_id, type(exc).__name__
                 )
             try:
-                await _notify_trial_granted(bot, db, user_id)
+                if await _notify_trial_granted(bot, db, user_id):
+                    notified += 1
             except Exception as exc:
                 logging.getLogger(__name__).warning(
                     "Could not notify trial user %s: %s", user_id, type(exc).__name__
                 )
             granted += 1
             await asyncio.sleep(0.05)
-    return granted, checked
+    return granted, checked, members, notified
 
 
 async def trial_distribution_loop(
@@ -283,8 +285,13 @@ async def trial_distribution_loop(
     logger = logging.getLogger(__name__)
     while True:
         try:
-            granted, checked = await distribute_existing_trials_once(bot, db, config, provider)
-            logger.info("Trial distribution complete: %s granted, %s checked", granted, checked)
+            granted, checked, members, notified = await distribute_existing_trials_once(
+                bot, db, config, provider
+            )
+            logger.info(
+                "Trial distribution complete: checked=%s members=%s granted=%s notified=%s",
+                checked, members, granted, notified,
+            )
         except Exception:
             logger.exception("Trial distribution pass failed")
         await asyncio.sleep(6 * 60 * 60)

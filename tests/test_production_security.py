@@ -50,17 +50,17 @@ def test_existing_channel_member_receives_one_trial_and_notification(tmp_path, m
         )
         provider = SimpleNamespace(provision=AsyncMock())
 
-        granted, checked = await distribute_existing_trials_once(
+        granted, checked, members, notified = await distribute_existing_trials_once(
             bot, db, config, provider
         )
-        assert (granted, checked) == (1, 1)
+        assert (granted, checked, members, notified) == (1, 1, 1, 1)
         user = await db.get_user(701)
         assert user["trial_used"] == 1
         assert user["plan_name"] == "Пробный доступ"
         assert bot.send_message.await_count == 1
         assert bot.send_message.await_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "menu:connect"
 
-        assert await distribute_existing_trials_once(bot, db, config, provider) == (0, 0)
+        assert await distribute_existing_trials_once(bot, db, config, provider) == (0, 0, 0, 0)
 
     asyncio.run(run())
 

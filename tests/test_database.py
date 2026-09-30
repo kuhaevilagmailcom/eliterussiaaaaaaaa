@@ -82,6 +82,26 @@ def test_trial_is_granted_once_and_expiry_notice_is_idempotent(tmp_path):
     run(scenario())
 
 
+def test_channel_trial_campaign_ignores_legacy_trial_used_flag(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "channel-campaign.sqlite3"))
+        await db.init()
+        await db.ensure_user(92, "legacy_trial", "Legacy")
+        async with aiosqlite.connect(db.path) as connection:
+            await connection.execute(
+                "UPDATE users SET trial_used=1, subscription_until=NULL, plan_name='' WHERE telegram_id=92"
+            )
+            await connection.commit()
+
+        assert await db.list_trial_candidates() == [92]
+        granted = await db.grant_channel_trial_campaign_once(92)
+        assert granted is not None
+        assert granted["plan_name"] == "Пробный доступ"
+        assert await db.grant_channel_trial_campaign_once(92) is None
+
+    run(scenario())
+
+
 def test_referral_rewards_are_atomic_and_capped(tmp_path):
     async def scenario():
         db = Database(str(tmp_path / "mgn.sqlite3"))

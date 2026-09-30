@@ -956,7 +956,7 @@ def build_router(
         return status == "restricted" and bool(getattr(member, "is_member", False))
 
     async def grant_trial_after_verification(bot, user_id: int) -> dict[str, Any] | None:
-        user = await db.grant_trial_once(user_id)
+        user = await db.grant_channel_trial_campaign_once(user_id)
         if not user:
             return None
         try:
