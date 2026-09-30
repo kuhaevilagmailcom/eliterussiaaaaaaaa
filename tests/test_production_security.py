@@ -757,10 +757,10 @@ def test_support_validation_and_device_payment_limits(tmp_path):
         ticket=await db.create_support_ticket(telegram_id=42,username=None,first_name='Test',message='x'*3000)
         assert len(ticket['message'])==3000
         for i in range(4):
-            assert await db.settle_star_payment('device-'+str(i),42,42,'device',63)
+            assert await db.settle_star_payment('device-'+str(i),42,42,'device',32)
         assert (await db.get_user(42))['max_devices']==5
         with pytest.raises(ValueError):
-            await db.settle_star_payment('device-excess',42,42,'device',63)
+            await db.settle_star_payment('device-excess',42,42,'device',32)
         assert (await db.get_user(42))['max_devices']==5
     asyncio.run(run())
 
