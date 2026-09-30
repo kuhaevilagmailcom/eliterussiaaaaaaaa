@@ -273,7 +273,7 @@ def strip_custom_emoji(value: str) -> str:
 def main_keyboard(
     emoji: EmojiBank | None = None,
     *,
-    custom_icons: bool = True,
+    custom_icons: bool = False,
     active: bool = False,
     admin: bool = False,
 ) -> ReplyKeyboardMarkup:
@@ -282,7 +282,6 @@ def main_keyboard(
     def button(text: str, index: int) -> KeyboardButton:
         kwargs: dict[str, Any] = {
             "text": _clean_button_text(text),
-            "style": "danger",
         }
         if custom_icons and bank is not None:
             custom_id = bank.raw_id(index, pack=PACK_NEWS)
@@ -308,7 +307,7 @@ def blue_inline_button(
     url: str | None = None,
     web_app: WebAppInfo | None = None,
     icon_index: int | None = None,
-    premium_icon: bool = True,
+    premium_icon: bool = False,
     style: str | None = None,
 ) -> InlineKeyboardButton:
     # Admin controls intentionally use ordinary Unicode emoji, not Premium/custom
@@ -355,14 +354,16 @@ def copy_inline_button(
     value: str,
     *,
     icon_index: int | None = None,
+    premium_icon: bool = False,
 ) -> InlineKeyboardButton:
     kwargs: dict[str, Any] = {
         "text": _clean_button_text(text),
         "copy_text": CopyTextButton(text=value),
     }
-    custom_id = _button_icon_id(text, icon_index)
-    if custom_id:
-        kwargs["icon_custom_emoji_id"] = custom_id
+    if premium_icon:
+        custom_id = _button_icon_id(text, icon_index)
+        if custom_id:
+            kwargs["icon_custom_emoji_id"] = custom_id
     return InlineKeyboardButton(**kwargs)
 
 
@@ -1644,12 +1645,18 @@ def build_router(
         kb = InlineKeyboardBuilder()
         kb.row(
             blue_inline_button(
-                "Создать обращение",
+                "🆘 Создать обращение",
                 callback_data="support:new",
-                icon_index=6,
+                premium_icon=False,
             )
         )
-        kb.row(blue_inline_button("Мои обращения", callback_data="support:list:0"))
+        kb.row(
+            blue_inline_button(
+                "📂 Мои обращения",
+                callback_data="support:list:0",
+                premium_icon=False,
+            )
+        )
         add_nav_buttons(kb, back_data="home")
         return kb.as_markup()
 
@@ -2082,9 +2089,9 @@ def build_router(
         if config.miniapp_url:
             kb.row(
                 blue_inline_button(
-                    "Открыть промокоды",
+                    "🎟 Открыть промокоды",
                     web_app=WebAppInfo(url=config.miniapp_url),
-                    icon_index=7,
+                    premium_icon=False,
                 )
             )
         add_nav_buttons(kb, back_data="home")
@@ -2110,8 +2117,8 @@ def build_router(
             + "&text=" + quote("Подключай MGN VPN", safe="")
         )
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("Пригласить друга", url=share_url))
-        kb.row(copy_inline_button("Скопировать ссылку", link))
+        kb.row(blue_inline_button("👥 Пригласить друга", url=share_url, premium_icon=False))
+        kb.row(copy_inline_button("📋 Скопировать ссылку", link, premium_icon=False))
         add_nav_buttons(kb, back_data="home")
         e = emoji.icon(8, pack=PACK_UI)
         await send_screen(
