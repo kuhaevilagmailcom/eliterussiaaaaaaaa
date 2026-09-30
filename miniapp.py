@@ -24,6 +24,8 @@ from admin_notifications import notify_purchase_admins
 from catalog import (
     EXTRA_DEVICE_PRICE_RUB,
     MAX_DEVICES,
+    STAR_RATE_RUB,
+    STAR_RATE_XTR,
     PLANS,
     plan_price_rub,
     plan_price_stars,
@@ -1131,6 +1133,8 @@ class MiniAppServer:
                     "extra_device_price_rub": int(EXTRA_DEVICE_PRICE_RUB),
                     "extra_device_price_stars": rub_to_stars(EXTRA_DEVICE_PRICE_RUB),
                     "max_devices": MAX_DEVICES,
+                    "star_rate_rub": STAR_RATE_RUB,
+                    "star_rate_xtr": STAR_RATE_XTR,
                 },
                 "bot_url": f"https://t.me/{username}",
                 "agreement": {
@@ -1284,7 +1288,7 @@ class MiniAppServer:
                 self.config,
                 order_id=order_id,
                 amount=Decimal(amount),
-                description=f"MGN VPN {plan['name']}",
+                description=f"MGN VPN {plan['name']} · {device_count} устр.",
                 user_id=uid,
             )
             payment_id = str(payment["payment_id"])
