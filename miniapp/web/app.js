@@ -680,15 +680,9 @@
       const result=await request('/api/miniapp/shop/device',{method:'POST',body:'{}'});
       rememberPayment(result.payment_id);
       if(tg?.openLink)tg.openLink(result.pay_url); else window.open(result.pay_url,'_blank');
-      $('#payStars').hidden=true;
-      $('#paySbp').hidden=true;
-      $('#deviceSheet').hidden=true;
-      $('#paymentSheet').hidden=false;
-      $('#sheetTitle').textContent='Дополнительное устройство';
-      $('#sheetText').textContent='После оплаты нажмите «Проверить оплату»';
-      $('#checkPayment').hidden=false;
-      showBackdrop();
-      toast('После оплаты нажмите «Проверить оплату»');
+      closeSheets();
+      go('profile');
+      toast('После оплаты вернись в приложение — платёж проверится автоматически');
       [3000,8000,15000].forEach(delay=>setTimeout(()=>{
         if(state.sbpPayment===result.payment_id)checkSbp();
       },delay));
