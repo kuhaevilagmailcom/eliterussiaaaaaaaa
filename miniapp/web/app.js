@@ -331,7 +331,7 @@
     if($('#deviceLimit'))$('#deviceLimit').textContent=limit;
     if($('#deviceCapacityBar'))$('#deviceCapacityBar').style.width=Math.min(100,(used/limit)*100)+'%';
     if($('#deviceFreeSlots'))$('#deviceFreeSlots').textContent=Math.max(0,limit-used);
-    $('#buyDevicePrice').textContent='+1 постоянный слот · '+Number(d.shop.extra_device_price_rub||100)+' ₽';
+    $('#buyDevicePrice').textContent='+1 устройство · '+Number(d.shop.extra_device_price_rub||50)+' ₽';
 
     const root=$('#deviceList');
     const canRemove=Boolean(d.capabilities?.device_removal);
@@ -577,10 +577,10 @@
     closeSheets();
     const limit=Number(d.subscription.max_devices||1);
     const max=Number(d.shop.max_devices||5);
-    $('#deviceSheetPrice').textContent=Number(d.shop.extra_device_price_rub||100)+' ₽';
+    $('#deviceSheetPrice').textContent=Number(d.shop.extra_device_price_rub||50)+' ₽';
     $('#deviceSheetBalance').textContent='Оплата через СБП';
     $('#confirmDevicePurchase').disabled=limit>=max||!d.payments.sbp_enabled;
-    $('#confirmDevicePurchase').textContent=limit>=max?'Лимит устройств достигнут':'Купить слот';
+    $('#confirmDevicePurchase').textContent=limit>=max?'Лимит устройств достигнут':'Добавить устройство';
     $('#deviceSheet').hidden=false;
     showBackdrop();
     icons();
