@@ -57,16 +57,46 @@ def test_canonical_config_and_back(monkeypatch):
     assert buttons[5][0].icon_custom_emoji_id is None
 
 
-def test_main_inline_menu_has_direct_miniapp_entry():
+def test_main_inline_menu_has_reference_layout_without_premium_icons_or_styles():
     markup = main_menu_inline_keyboard(
-        None,
+        "full",
         "https://mgnvpn.ru/app",
         active=True,
     )
-    buttons = markup.inline_keyboard
-    assert buttons[0][0].text == "Открыть приложение"
-    assert buttons[0][0].web_app.url == "https://mgnvpn.ru/app"
-    assert buttons[1][0].text == "Моя подписка"
+    rows = markup.inline_keyboard
+    labels = [row[0].text for row in rows]
+    assert labels == [
+        "📱 Открыть приложение",
+        "📊 Моя подписка",
+        "🎁 Подарить другу",
+        "👥 Пригласить друга",
+        "🎟 Промокод",
+        "🆘 Поддержка",
+        "ℹ️ О сервисе",
+        "🛡 Админ-панель",
+    ]
+    assert rows[0][0].web_app.url == "https://mgnvpn.ru/app"
+    assert rows[1][0].callback_data == "menu:connect"
+    assert rows[4][0].callback_data == "menu:promo"
+    assert rows[5][0].callback_data == "menu:support"
+    assert all(
+        button.icon_custom_emoji_id is None and button.style is None
+        for row in rows
+        for button in row
+    )
+    assert all("Баланс" not in button.text for row in rows for button in row)
+
+
+def test_main_inline_menu_switches_to_purchase_without_subscription():
+    markup = main_menu_inline_keyboard(
+        None,
+        "https://mgnvpn.ru/app",
+        active=False,
+    )
+    rows = markup.inline_keyboard
+    assert rows[1][0].text == "💳 Купить подписку"
+    assert rows[1][0].callback_data == "plans"
+    assert all("Админ-панель" not in button.text for row in rows for button in row)
 
 
 def test_main_reply_keyboard_has_only_vpn_and_home():
