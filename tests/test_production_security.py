@@ -57,7 +57,7 @@ def test_canonical_config_and_back(monkeypatch):
     assert buttons[5][0].icon_custom_emoji_id is None
 
 
-def test_main_inline_menu_has_reference_layout_without_premium_icons_or_styles():
+def test_main_inline_menu_has_reference_layout_with_colors_and_no_premium_icons():
     markup = main_menu_inline_keyboard(
         "full",
         "https://mgnvpn.ru/app",
@@ -80,9 +80,15 @@ def test_main_inline_menu_has_reference_layout_without_premium_icons_or_styles()
     assert rows[4][0].callback_data == "menu:promo"
     assert rows[5][0].callback_data == "menu:support"
     assert all(
-        button.icon_custom_emoji_id is None and button.style is None
+        button.icon_custom_emoji_id is None
         for row in rows
         for button in row
+    )
+    assert rows[0][0].style == "primary"
+    assert rows[1][0].style == "success"
+    assert all(
+        rows[index][0].style == "primary"
+        for index in (2, 3, 4, 5, 6, 7)
     )
     assert all("Баланс" not in button.text for row in rows for button in row)
 
@@ -96,6 +102,7 @@ def test_main_inline_menu_switches_to_purchase_without_subscription():
     rows = markup.inline_keyboard
     assert rows[1][0].text == "💳 Купить подписку"
     assert rows[1][0].callback_data == "plans"
+    assert rows[1][0].style == "success"
     assert all("Админ-панель" not in button.text for row in rows for button in row)
 
 
