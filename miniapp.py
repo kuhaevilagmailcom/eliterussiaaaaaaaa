@@ -27,6 +27,7 @@ from catalog import (
     PLANS,
     plan_price_rub,
     plan_price_stars,
+    plan_total_price_rub,
     plan_savings_rub,
     rub_to_stars,
 )
@@ -723,7 +724,7 @@ class MiniAppServer:
                 self.config,
                 order_id=order_id,
                 amount=Decimal(amount),
-                description=f"MGN VPN {plan['name']}",
+                description=f"MGN VPN {plan['name']} · {device_count} устр.",
                 user_id=user_id,
             )
             payment_id = str(payment["payment_id"])
@@ -1143,14 +1144,22 @@ class MiniAppServer:
         )
 
     async def stars_invoice(self, request: web.Request) -> web.Response:
-        uid, _tg_user, _row = await self._auth(request)
+        uid, _tg_user, row = await self._auth(request)
         data = await self._json_body(request)
         code = str(data.get("plan_code") or "")
         plan = PLANS.get(code)
         if not plan:
             raise _json_error(400, "Тариф не найден")
 
-        original = plan_price_rub(self.config, code)
+        try:
+            device_count = int(data.get("device_count") or (row.get("max_devices") if _active(row) else 1) or 1)
+        except (TypeError, ValueError):
+            raise _json_error(400, "Некорректное количество устройств")
+        if device_count < 1 or device_count > MAX_DEVICES:
+            raise _json_error(400, "Можно выбрать от 1 до 5 устройств")
+        previous_device_count = max(1, min(MAX_DEVICES, int(row.get("max_devices") or 1)))
+
+        original = plan_total_price_rub(self.config, code, device_count)
         promo_code = str(data.get("promo_code") or "").strip()
         quote = None
         if promo_code:
@@ -1170,6 +1179,7 @@ class MiniAppServer:
                 await self.db.redeem_full_discount(
                     promo_id=int(quote["id"]), buyer_id=uid,
                     target_id=uid, product_code=code,
+                    device_count=device_count,
                 )
             except ValueError:
                 raise _json_error(409, "Промокод уже использован или больше не действует")
@@ -1189,12 +1199,14 @@ class MiniAppServer:
             currency_amount=stars,
             promo_id=int(quote["id"]) if quote else None,
             promo_code=str(quote["code"]) if quote else None,
+            device_count=device_count,
+            previous_device_count=previous_device_count,
         )
         payload = f"xtr2|{intent_id}"
         try:
             invoice_url = await self.bot.create_invoice_link(
                 title=f"MGN VPN · {plan['name']}",
-                description=f"Подписка MGN VPN: {plan['name']}",
+                description=f"Подписка MGN VPN: {plan['name']} · {device_count} устр.",
                 payload=payload,
                 currency="XTR",
                 prices=[LabeledPrice(label=f"MGN VPN · {plan['name']}", amount=stars)],
@@ -1209,10 +1221,11 @@ class MiniAppServer:
             "original_price": original,
             "discount": int(quote["discount"]) if quote else 0,
             "final_price": final,
+            "device_count": device_count,
         })
 
     async def sbp_create(self, request: web.Request) -> web.Response:
-        uid, _tg_user, _row = await self._auth(request)
+        uid, _tg_user, row = await self._auth(request)
         if not self.config.rollypay_enabled:
             raise _json_error(503, "СБП пока не настроена")
 
@@ -1222,7 +1235,15 @@ class MiniAppServer:
         if not plan:
             raise _json_error(400, "Тариф не найден")
 
-        original = plan_price_rub(self.config, code)
+        try:
+            device_count = int(data.get("device_count") or (row.get("max_devices") if _active(row) else 1) or 1)
+        except (TypeError, ValueError):
+            raise _json_error(400, "Некорректное количество устройств")
+        if device_count < 1 or device_count > MAX_DEVICES:
+            raise _json_error(400, "Можно выбрать от 1 до 5 устройств")
+        previous_device_count = max(1, min(MAX_DEVICES, int(row.get("max_devices") or 1)))
+
+        original = plan_total_price_rub(self.config, code, device_count)
         promo_code = str(data.get("promo_code") or "").strip()
         quote = None
         if promo_code:
@@ -1242,6 +1263,7 @@ class MiniAppServer:
                 await self.db.redeem_full_discount(
                     promo_id=int(quote["id"]), buyer_id=uid,
                     target_id=uid, product_code=code,
+                    device_count=device_count,
                 )
             except ValueError:
                 raise _json_error(409, "Промокод уже использован или больше не действует")
@@ -1254,6 +1276,8 @@ class MiniAppServer:
             discount_amount_rub=int(quote["discount"]) if quote else 0,
             promo_id=int(quote["id"]) if quote else None,
             promo_code=str(quote["code"]) if quote else None,
+            device_count=device_count,
+            previous_device_count=previous_device_count,
         )
         try:
             payment = await create_payment(
@@ -1278,6 +1302,7 @@ class MiniAppServer:
                 "amount_rub": amount,
                 "original_price": original,
                 "discount": int(quote["discount"]) if quote else 0,
+                "device_count": device_count,
             }
         )
 
@@ -1391,12 +1416,18 @@ class MiniAppServer:
         )
 
     async def promo_quote(self, request: web.Request) -> web.Response:
-        uid, _tg_user, _row = await self._auth(request)
+        uid, _tg_user, row = await self._auth(request)
         data = await self._json_body(request)
         code = str(data.get("code") or "")
         plan_code = str(data.get("plan_code") or "")
         plan = PLANS.get(plan_code)
-        original = plan_price_rub(self.config, plan_code) if plan else 0
+        try:
+            device_count = int(data.get("device_count") or (row.get("max_devices") if _active(row) else 1) or 1)
+        except (TypeError, ValueError):
+            raise _json_error(400, "Некорректное количество устройств")
+        if device_count < 1 or device_count > MAX_DEVICES:
+            raise _json_error(400, "Можно выбрать от 1 до 5 устройств")
+        original = plan_total_price_rub(self.config, plan_code, device_count) if plan else 0
         quote = await self.db.promo_quote(
             code=code,
             telegram_id=uid,
@@ -1413,6 +1444,7 @@ class MiniAppServer:
                 "original_price": int(quote["original_price"]),
                 "discount": int(quote["discount"]),
                 "final_price": int(quote["final_price"]),
+                "device_count": device_count,
             }
         )
 
