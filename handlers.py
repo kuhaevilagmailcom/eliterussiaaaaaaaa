@@ -6,6 +6,7 @@ import html
 import json
 import logging
 import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from decimal import Decimal, InvalidOperation
@@ -282,7 +283,8 @@ def main_keyboard(
 
     def button(text: str, index: int) -> KeyboardButton:
         kwargs: dict[str, Any] = {
-            "text": _clean_button_text(text),
+            "text": _regular_button_text(text),
+            "style": "primary",
         }
         if custom_icons and bank is not None:
             custom_id = bank.raw_id(index, pack=PACK_NEWS)
@@ -301,6 +303,55 @@ def main_keyboard(
     )
 
 
+def _button_has_leading_symbol(text: str) -> bool:
+    value = str(text or "").lstrip()
+    if not value:
+        return False
+    first = value[0]
+    return unicodedata.category(first) in {"So", "Sk"}
+
+
+def _regular_button_text(text: str) -> str:
+    """Ensure public button labels have a normal Unicode emoji, never Premium emoji."""
+    value = str(text or "").strip()
+    if not value:
+        return "🔹"
+    if _button_has_leading_symbol(value):
+        return value
+
+    lowered = value.casefold()
+    rules = (
+        (("назад",), "⬅️"),
+        (("главн",), "🏠"),
+        (("добавить в ",), "➕"),
+        (("подключ",), "🔗"),
+        (("скопир",), "📋"),
+        (("продл", "обнов"), "🔄"),
+        (("устройств",), "📱"),
+        (("купить", "оплат"), "💳"),
+        (("подар",), "🎁"),
+        (("приглас", "реферал"), "👥"),
+        (("промокод",), "🎟"),
+        (("поддерж", "обращен"), "🆘"),
+        (("написать", "ответить"), "💬"),
+        (("закрыть", "подтверд"), "✅"),
+        (("удалить", "отключить", "отмена"), "🗑"),
+        (("профил", "пользоват"), "👤"),
+        (("канал",), "📣"),
+        (("политик", "правил"), "📄"),
+        (("сервер", "vpn"), "🌐"),
+        (("открыть",), "👁"),
+        (("поиск",), "🔎"),
+        (("провер",), "🔄"),
+        (("система", "настрой"), "⚙️"),
+        (("платеж",), "💳"),
+    )
+    for keywords, emoji_prefix in rules:
+        if any(keyword in lowered for keyword in keywords):
+            return f"{emoji_prefix} {value}"
+    return f"🔹 {value}"
+
+
 def blue_inline_button(
     text: str,
     *,
@@ -309,17 +360,18 @@ def blue_inline_button(
     web_app: WebAppInfo | None = None,
     icon_index: int | None = None,
     premium_icon: bool = False,
-    style: str | None = None,
+    style: str | None = "primary",
 ) -> InlineKeyboardButton:
-    # Admin controls intentionally use ordinary Unicode emoji, not Premium/custom
-    # emoji. Keep those characters in the visible label; the old generic cleaner
-    # removed them and even turned arrow-only pagination buttons into empty text.
+    # All bot buttons use regular Unicode emoji. Premium/custom emoji are opt-in
+    # only for legacy call sites and are never used in the admin panel.
     is_admin_button = str(callback_data or "").startswith("admin:")
+    raw_text = str(text or "").strip()
     visible_text = (
-        str(text or "").strip()
-        if is_admin_button or not premium_icon
-        else _clean_button_text(text)
+        raw_text
+        if is_admin_button and _button_has_leading_symbol(raw_text)
+        else _regular_button_text(raw_text)
     )
+
     kwargs: dict[str, Any] = {
         "text": visible_text,
         "callback_data": callback_data,
@@ -341,7 +393,7 @@ def admin_inline_button(
     callback_data: str,
     style: str | None = "primary",
 ) -> InlineKeyboardButton:
-    """Admin-only button: standard emoji + Bot API native style, never custom emoji."""
+    """Admin-only button: ordinary emoji + Telegram native color."""
     return blue_inline_button(
         text,
         callback_data=callback_data,
@@ -356,17 +408,19 @@ def copy_inline_button(
     *,
     icon_index: int | None = None,
     premium_icon: bool = False,
+    style: str | None = "primary",
 ) -> InlineKeyboardButton:
     kwargs: dict[str, Any] = {
-        "text": _clean_button_text(text),
+        "text": _regular_button_text(text),
         "copy_text": CopyTextButton(text=value),
     }
+    if style in {"primary", "success", "danger"}:
+        kwargs["style"] = style
     if premium_icon:
         custom_id = _button_icon_id(text, icon_index)
         if custom_id:
             kwargs["icon_custom_emoji_id"] = custom_id
     return InlineKeyboardButton(**kwargs)
-
 
 def connection_keyboard(
     subscription_url: str,
@@ -377,37 +431,39 @@ def connection_keyboard(
     for client in CLIENTS[:2]:
         kb.row(
             blue_inline_button(
-                f"Добавить в {client.name}",
+                f"➕ Добавить в {client.name}",
                 url=client_redirect_url(subscription_url, client),
                 icon_index=2,
             )
         )
     kb.row(
         copy_inline_button(
-            "Скопировать ссылку",
+            "📋 Скопировать ссылку",
             subscription_url,
             icon_index=3,
         )
     )
     kb.row(
         blue_inline_button(
-            "Продлить подписку",
+            "🔄 Продлить подписку",
             callback_data="plans",
+            style="success",
             icon_index=1,
         )
     )
     kb.row(
         blue_inline_button(
-            "Устройства",
+            "📱 Устройства",
             callback_data="menu:devices",
             icon_index=3,
         )
     )
     kb.row(
         blue_inline_button(
-            "Назад",
+            "⬅️ Назад",
             callback_data=back_data,
             premium_icon=False,
+            style="primary",
         )
     )
     return kb.as_markup()
@@ -1721,9 +1777,9 @@ def build_router(
         ticket_id = int(ticket["id"])
         kb = InlineKeyboardBuilder()
         if ticket.get("status") != "closed":
-            kb.row(blue_inline_button("Написать сообщение", callback_data=f"support:write:{ticket_id}"))
-            kb.row(blue_inline_button("Закрыть обращение", callback_data=f"support:close:{ticket_id}"))
-        kb.row(blue_inline_button("Назад", callback_data="support:list:0", premium_icon=False))
+            kb.row(blue_inline_button("💬 Написать сообщение", callback_data=f"support:write:{ticket_id}", style="primary"))
+            kb.row(blue_inline_button("✅ Закрыть обращение", callback_data=f"support:close:{ticket_id}", style="success"))
+        kb.row(blue_inline_button("⬅️ Назад", callback_data="support:list:0", premium_icon=False, style="primary"))
         return kb.as_markup()
 
     def support_admin_ticket_keyboard(ticket: dict[str, Any]) -> Any:
