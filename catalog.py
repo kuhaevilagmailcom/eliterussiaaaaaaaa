@@ -38,7 +38,7 @@ PLANS: dict[str, dict[str, Any]] = {
 BASE_DEVICES = 1
 MAX_DEVICES = 5
 DEVICE_PRODUCT_CODE = "device"
-EXTRA_DEVICE_PRICE_RUB = 100
+EXTRA_DEVICE_PRICE_RUB = 50
 REFERRAL_REWARD_DAYS = 1
 MAX_REFERRAL_REWARDS = 3
 POPULAR_PLAN_CODE = "90"
@@ -53,6 +53,15 @@ def plan_price_rub(config, code: str) -> int:
 
 def plan_price_stars(config, code: str) -> int:
     return rub_to_stars(plan_price_rub(config, code))
+
+
+def plan_total_price_rub(config, code: str, devices: int = 1) -> int:
+    count = clamp_device_limit(devices)
+    return plan_price_rub(config, code) + (count - BASE_DEVICES) * EXTRA_DEVICE_PRICE_RUB
+
+
+def plan_total_price_stars(config, code: str, devices: int = 1) -> int:
+    return rub_to_stars(plan_total_price_rub(config, code, devices))
 
 
 def plan_savings_rub(code: str) -> int:
