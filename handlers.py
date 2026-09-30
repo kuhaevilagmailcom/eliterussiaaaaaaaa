@@ -23,6 +23,7 @@ from aiogram.types import (
     BufferedInputFile,
     CopyTextButton,
     InlineKeyboardButton,
+    InlineKeyboardMarkup,
     InputMediaPhoto,
     KeyboardButton,
     LabeledPrice,
