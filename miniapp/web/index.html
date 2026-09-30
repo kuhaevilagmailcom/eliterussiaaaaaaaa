@@ -282,6 +282,24 @@
     <span class="eyebrow">ОПЛАТА</span>
     <h2 id="sheetTitle">Подписка</h2>
     <p id="sheetText">Выбери способ оплаты.</p>
+
+    <section class="device-picker" aria-labelledby="paymentDeviceLabel">
+      <div class="device-picker-head">
+        <div>
+          <small id="paymentDeviceLabel">КОЛИЧЕСТВО УСТРОЙСТВ</small>
+          <b><span id="paymentDeviceCount">1</span> <span id="paymentDeviceWord">устройство</span></b>
+        </div>
+        <span class="device-current" id="paymentDeviceCurrent">Сейчас 1</span>
+      </div>
+      <p class="device-picker-hint" id="paymentDeviceHint">1 устройство включено в тариф.</p>
+      <div class="device-range-wrap">
+        <input id="paymentDeviceRange" class="device-range" type="range" min="1" max="5" step="1" value="1" aria-label="Количество устройств от 1 до 5">
+        <div class="device-range-dots" aria-hidden="true">
+          <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span>
+        </div>
+      </div>
+    </section>
+
     <label class="promo-field"><span>Промокод</span><input id="paymentPromoCode" autocomplete="off" maxlength="40" placeholder="MGN20"></label>
     <button type="button" class="promo-apply" id="applyPaymentPromo">Применить</button>
     <p class="promo-hint" id="paymentPromoResult"></p>
@@ -314,6 +332,6 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"><span><i></i></span></div>
 
-  <script src="/static/app.js?v=23"></script>
+  <script src="/static/app.js?v=24"></script>
 </body>
 </html>
