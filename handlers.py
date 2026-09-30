@@ -1290,37 +1290,26 @@ def build_router(
     ) -> None:
         user = await ensure_actor(actor)
         active = is_active(user)
-        display_name = html.escape(
-            str(
-                getattr(actor, "first_name", None)
-                or (f"@{getattr(actor, 'username', '')}" if getattr(actor, "username", None) else "")
-                or "Пользователь"
-            )
-        )
 
         lines = [
-            f"👤 <b>Профиль: {display_name}</b>",
-            f"ID: <code>{int(user['telegram_id'])}</code>",
+            "🔐 <b>MGN VPN</b>",
+            "",
+            "🌍 Несколько стран",
+            "⚡ Быстрое подключение",
+            "📱 Удобное подключение прямо в Telegram",
+            "🔒 Без автосписаний",
             "",
         ]
 
         if active:
             lines += [
-                "🔑 <b>Подписка активна</b>",
-                f"Тариф: <b>{html.escape(str(user.get('plan_name') or 'VPN'))}</b>",
+                "✅ <b>Подписка активна</b>",
                 f"До: <b>{format_until(user, config)}</b>",
-                f"Осталось: <b>{remaining_text(user)}</b>",
-                f"Устройства: <b>до {int(user.get('max_devices') or 1)}</b>",
-                "",
-                "<blockquote>🔧 Нажмите <b>«Моя подписка»</b>, чтобы подключить устройство, "
-                "продлить доступ или скопировать персональную ссылку.</blockquote>",
             ]
         else:
             lines += [
-                "🔒 <b>Подписка не активна</b>",
-                "",
-                "<blockquote>🔧 Нажмите <b>«Купить подписку»</b>, чтобы выбрать тариф "
-                "и настроить VPN-подключение.</blockquote>",
+                "💳 <b>Подписка не активна</b>",
+                "Выберите тариф и подключитесь за несколько минут.",
             ]
 
         await send_screen(
@@ -1333,9 +1322,6 @@ def build_router(
         )
 
         if ensure_reply_keyboard:
-            # Remove the old persistent ReplyKeyboard without leaving a visible
-            # service message in the chat. From now on navigation is inline and
-            # through /start and /sub only.
             try:
                 cleanup = await message.answer(
                     "\u2063",
@@ -1347,6 +1333,7 @@ def build_router(
                     pass
             except Exception:
                 pass
+
 
     async def show_profile(message: Message, actor) -> None:
         user = await ensure_actor(actor)
