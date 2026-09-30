@@ -48,6 +48,7 @@ from catalog import (
     extra_device_price_stars,
     plan_price_rub,
     plan_price_stars,
+    plan_total_price_rub,
     plan_savings_rub,
 )
 from config import Config
@@ -2980,8 +2981,12 @@ def build_router(
             expected_original = (
                 EXTRA_DEVICE_PRICE_RUB
                 if product_code == DEVICE_PRODUCT_CODE
-                else plan_price_rub(config, product_code)
-                if product_code in PLANS
+                else plan_total_price_rub(
+                    config,
+                    product_code,
+                    int(intent.get("device_count") or BASE_DEVICES),
+                )
+                if product_code in PLANS and intent
                 else -1
             )
             valid = bool(
