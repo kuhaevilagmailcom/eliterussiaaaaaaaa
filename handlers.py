@@ -438,7 +438,7 @@ def main_menu_inline_keyboard(
     *,
     active: bool = False,
 ) -> Any:
-    """Large, simple public menu: regular emoji only, no custom icons or styles."""
+    """Reference-style menu: regular emoji, blue navigation, green subscription."""
     kb = InlineKeyboardBuilder()
 
     def menu_button(
@@ -446,13 +446,14 @@ def main_menu_inline_keyboard(
         *,
         callback_data: str | None = None,
         web_app: WebAppInfo | None = None,
+        style: str | None = "primary",
     ) -> InlineKeyboardButton:
         return blue_inline_button(
             text,
             callback_data=callback_data,
             web_app=web_app,
             premium_icon=False,
-            style=None,
+            style=style,
         )
 
     if miniapp_url:
@@ -467,6 +468,7 @@ def main_menu_inline_keyboard(
         menu_button(
             "📊 Моя подписка" if active else "💳 Купить подписку",
             callback_data="menu:connect" if active else "plans",
+            style="success",
         )
     )
     kb.row(
@@ -1291,26 +1293,37 @@ def build_router(
     ) -> None:
         user = await ensure_actor(actor)
         active = is_active(user)
+        display_name = html.escape(
+            str(
+                getattr(actor, "first_name", None)
+                or (f"@{getattr(actor, 'username', '')}" if getattr(actor, "username", None) else "")
+                or "Пользователь"
+            )
+        )
 
         lines = [
-            "🔐 <b>MGN VPN</b>",
-            "",
-            "🌍 Несколько стран",
-            "⚡ Быстрое подключение",
-            "📱 Удобное подключение прямо в Telegram",
-            "🔒 Без автосписаний",
+            f"👤 <b>Профиль: {display_name}</b>",
+            f"ID: <code>{int(user['telegram_id'])}</code>",
             "",
         ]
 
         if active:
             lines += [
-                "✅ <b>Подписка активна</b>",
+                "🔑 <b>Подписка активна</b>",
+                f"Тариф: <b>{html.escape(str(user.get('plan_name') or 'VPN'))}</b>",
                 f"До: <b>{format_until(user, config)}</b>",
+                f"Осталось: <b>{remaining_text(user)}</b>",
+                f"Устройства: <b>до {int(user.get('max_devices') or 1)}</b>",
+                "",
+                "<blockquote>🔧 Нажмите <b>«Моя подписка»</b>, чтобы подключить устройство, "
+                "продлить доступ или скопировать персональную ссылку.</blockquote>",
             ]
         else:
             lines += [
-                "💳 <b>Подписка не активна</b>",
-                "Выберите тариф и подключитесь за несколько минут.",
+                "🔒 <b>Подписка не активна</b>",
+                "",
+                "<blockquote>🔧 Нажмите <b>«Купить подписку»</b>, чтобы выбрать тариф "
+                "и настроить VPN-подключение.</blockquote>",
             ]
 
         await send_screen(
