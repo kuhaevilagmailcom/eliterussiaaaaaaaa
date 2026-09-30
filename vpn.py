@@ -22,14 +22,12 @@ GB = 1024 ** 3
 logger = logging.getLogger(__name__)
 
 
-CANONICAL_SERVERS: tuple[tuple[str, str], ...] = (
+BASE_MGN_SERVERS: tuple[tuple[str, str], ...] = (
     ("nl", "🇳🇱 Нидерланды"),
-    ("pk", "🇵🇰 Пакистан"),
     ("de", "🇩🇪 Германия"),
-    ("pl", "🇵🇱 Польша"),
     ("fi", "🇫🇮 Финляндия"),
+    ("lt", "🇱🇹 Литва"),
     ("us", "🇺🇸 США"),
-    ("us2", "🇺🇸 США 2"),
 )
 
 LOCATION_LABELS = {
@@ -1907,6 +1905,58 @@ class H1CloudVpnProvider(VpnProvider):
             occurrence = name_counts[base_name]
             if occurrence > 1:
                 item["name"] = f"{base_name} · {occurrence}"
+
+        def base_code(item: dict[str, Any]) -> str:
+            identity = " ".join(
+                str(item.get(key) or "")
+                for key in ("name", "host", "id")
+            )
+            label = _location_label(identity) or _flagged_h1_node_name(identity)
+            if "Нидерланды" in label:
+                return "nl"
+            if "Германия" in label:
+                return "de"
+            if "Финляндия" in label:
+                return "fi"
+            if "Литва" in label:
+                return "lt"
+            if "США" in label:
+                return "us"
+            return ""
+
+        present_base = {
+            code
+            for item in deduped
+            if (code := base_code(item))
+        }
+        for code, label in BASE_MGN_SERVERS:
+            if code in present_base:
+                continue
+            deduped.append(
+                {
+                    "kind": "main" if code == "nl" else "federation",
+                    "name": label,
+                    "id": f"base:{code}",
+                    "host": "",
+                    "port": 0,
+                    "proxy_kind": "direct" if code == "nl" else "federation",
+                    "available": False,
+                    "configured": True,
+                    "latency_ms": None,
+                    "check": "catalog_fallback",
+                    "error": "temporarily_not_reported",
+                }
+            )
+
+        # Keep the stable MGN base locations first, then any extra H1 nodes.
+        base_order = {code: index for index, (code, _label) in enumerate(BASE_MGN_SERVERS)}
+        deduped.sort(
+            key=lambda item: (
+                0 if base_code(item) in base_order else 1,
+                base_order.get(base_code(item), 999),
+                str(item.get("name") or ""),
+            )
+        )
 
         servers = deduped
 
