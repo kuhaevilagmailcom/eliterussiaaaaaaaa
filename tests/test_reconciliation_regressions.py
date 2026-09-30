@@ -140,3 +140,32 @@ def test_h1_federation_merges_link_registry_and_lagg():
     assert ("proxy", "registry-node") in pairs
     assert ("lproxy", "lagg-node") in pairs
     assert len([pair for pair in pairs if pair == ("lproxy", "link-node")]) == 1
+
+
+
+def test_h1_federation_accepts_nested_and_object_response_shapes():
+    provider = object.__new__(H1CloudVpnProvider)
+
+    async def request(_method, path, **_kwargs):
+        if path == "/fed/link":
+            return {
+                "data": {
+                    "links": [
+                        {"sid": "fi-1", "name": "MGN-FI"},
+                        {"service_id": "de-1", "name": "MGN-DE"},
+                    ]
+                }
+            }
+        if path == "/fed/registry":
+            return {"result": {"items": [{"node_id": "pl-1", "name": "MGN-PL"}]}}
+        if path == "/fed/lagg":
+            return {"payload": {"servers": [{"billingId": "us-1", "name": "MGN-US"}]}}
+        raise AssertionError(path)
+
+    provider._request = request
+    nodes = run(provider._federated_nodes())
+    pairs = {(item["proxy_kind"], provider._node_id(item)) for item in nodes}
+    assert ("lproxy", "fi-1") in pairs
+    assert ("lproxy", "de-1") in pairs
+    assert ("proxy", "pl-1") in pairs
+    assert ("lproxy", "us-1") in pairs
