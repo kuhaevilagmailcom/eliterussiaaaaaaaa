@@ -255,6 +255,19 @@ def test_http_security_routes_and_subscription(tmp_path, monkeypatch):
             assert savings['90'] == 48 and savings['180'] == 95 and savings['365'] == 189
             assert catalog['max_devices'] == 5
             assert (await client.get('/api/miniapp/me')).status == 401
+            await db.create_service_promo(
+                code='MGN20', promo_type='discount', value=20,
+                created_by=1, applicable_plans='90',
+            )
+            discount_response = await client.post(
+                '/api/miniapp/promo/redeem',
+                json={'code':'mgn20'},
+                headers={'X-Telegram-Init-Data': signed()},
+            )
+            assert discount_response.status == 200
+            assert await discount_response.json() == {
+                'ok': True, 'type': 'discount', 'code': 'MGN20', 'value': 20,
+            }
             for data in ('[]', 'null', '{', '{"code":12}', '{"code":"'+'x'*65+'"}'):
                 response = await client.post('/api/miniapp/promo/redeem', data=data, headers={'X-Telegram-Init-Data': signed()})
                 assert response.status == 400

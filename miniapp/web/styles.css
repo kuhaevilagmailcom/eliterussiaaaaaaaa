@@ -1602,6 +1602,25 @@ body{background:#000;letter-spacing:-.01em}
   font-weight:750!important
 }
 .link-primary-action{background:var(--accent)!important;color:#fff!important}
+.link-actions .link-primary-action{
+  display:inline-flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  gap:7px!important;
+  padding:0 12px!important;
+  white-space:nowrap
+}
+.link-actions .link-primary-action svg{
+  display:block;
+  flex:0 0 17px;
+  width:17px!important;
+  height:17px!important
+}
+.link-actions .link-primary-action span{
+  display:block;
+  min-width:0;
+  line-height:1.1
+}
 .link-secondary-action{border-color:var(--ui-border)!important;background:var(--ui-surface-2)!important}
 .link-private{margin-top:7px!important;font-size:8px!important;color:#767681!important}
 .quick-grid{grid-template-columns:1fr 1fr!important;gap:8px!important}

@@ -1457,15 +1457,38 @@ class MiniAppServer:
         data = await self._json_body(request)
         code = str(data.get("code") or "")
         updated = await self.db.redeem_free_days_promo(code, uid)
-        if not updated:
-            raise _json_error(400, "Промокод недействителен или не даёт бесплатные дни")
-        if getattr(self.provider, "service_ready", True):
-            try:
-                await asyncio.wait_for(self.provider.provision(updated), 7.0)
-            except Exception as exc:
-                logger.warning("Promo provisioning deferred for %s: %s", uid, exc)
-        await self._sync_bot_subscription_menu(updated)
-        return web.json_response({"ok": True, "subscription_until": updated["subscription_until"]})
+        if updated:
+            if getattr(self.provider, "service_ready", True):
+                try:
+                    await asyncio.wait_for(self.provider.provision(updated), 7.0)
+                except Exception as exc:
+                    logger.warning("Promo provisioning deferred for %s: %s", uid, exc)
+            await self._sync_bot_subscription_menu(updated)
+            return web.json_response({
+                "ok": True,
+                "type": "free_days",
+                "subscription_until": updated["subscription_until"],
+            })
+
+        # The bonuses page is also the entry point for discount codes. Validate
+        # the code against every plan without consuming it; the client stores
+        # it and applies it automatically when the user opens checkout.
+        for plan_code in PLANS:
+            quote = await self.db.promo_quote(
+                code=code,
+                telegram_id=uid,
+                plan_code=plan_code,
+                original_price=plan_total_price_rub(self.config, plan_code, 1),
+            )
+            if quote and quote["type"] == "discount":
+                return web.json_response({
+                    "ok": True,
+                    "type": "discount",
+                    "code": str(quote["code"]),
+                    "value": int(quote["value"]),
+                })
+
+        raise _json_error(400, "Промокод недействителен или уже использован")
 
     async def delete_device(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)

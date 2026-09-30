@@ -20,6 +20,12 @@ async function routeFiles(page, miniApp = false) {
       max_devices: 5,
       extra_device_price_rub: 100
     }});
+    if (url.pathname === '/api/miniapp/promo/redeem') return route.fulfill({json:{
+      ok:true,type:'discount',code:'MGN20',value:20
+    }});
+    if (url.pathname === '/api/miniapp/promo/quote') return route.fulfill({json:{
+      code:'MGN20',type:'discount',value:20,original_price:100,discount:20,final_price:80,device_count:1
+    }});
     if (url.pathname === '/api/miniapp/me') return route.fulfill({ json: {
       user: {id:42,first_name:'Тест',username:'test',telegram_id:42,referrals:0,referral_rewards:0},
       subscription: {active:true,plan:'1 месяц',until:'2027-01-01T00:00:00+00:00',remaining_seconds:2592000,max_devices:1},
@@ -176,4 +182,29 @@ test('Mini App lets an active user choose Happ or INCY', async ({page}) => {
   await expect(page.locator('#clientList [data-client]')).toHaveCount(2);
   await expect(page.locator('#clientList')).toContainText('Happ');
   await expect(page.locator('#clientList')).toContainText('INCY');
+});
+
+test('Mini App saves a discount promo from Bonuses and carries it into checkout', async ({page}) => {
+  await page.setViewportSize({width:390,height:844});
+  await routeFiles(page, true);
+  await page.goto('http://mgn.test/app');
+
+  await page.locator('#bottomNav [data-nav="bonuses"]').click();
+  await page.locator('#promoCodePage').fill('mgn20');
+  await page.locator('#redeemPromo').click();
+  await expect(page.locator('#promoPageResult')).toContainText('Скидка 20% сохранена');
+
+  await page.locator('#bottomNav [data-nav="plans"]').click();
+  await page.locator('[data-buy="30"]').click();
+  await expect(page.locator('#paymentPromoCode')).toHaveValue('MGN20');
+  await expect(page.locator('#paymentPromoResult')).toContainText('итого 80 ₽');
+
+  await page.locator('#sheetClose').click();
+  await page.locator('#bottomNav [data-nav="home"]').click();
+  const icon=page.locator('#copySubscriptionHome svg');
+  const label=page.locator('#copySubscriptionHome span');
+  await expect(icon).toBeVisible();
+  const iconRect=await icon.boundingBox();
+  const labelRect=await label.boundingBox();
+  expect(labelRect.x-(iconRect.x+iconRect.width)).toBeGreaterThanOrEqual(5);
 });

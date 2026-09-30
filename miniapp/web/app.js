@@ -558,7 +558,8 @@
         ? 'Выберите срок и количество устройств. Новые дни прибавятся к текущей подписке.'
         : 'Выберите количество устройств и способ оплаты.')+
       (savings>0?(' Выгода тарифа '+savings.toLocaleString('ru-RU')+' ₽.'):'');
-    $('#paymentPromoCode').value='';
+    const savedCode=readSavedPromo();
+    $('#paymentPromoCode').value=savedCode;
     $('#paymentPromoResult').textContent='';
     $('#paymentSheet').classList.remove('payment-pending');
     $('#checkPayment').hidden=true;
@@ -570,6 +571,7 @@
     showBackdrop();
     icons();
     haptic('medium');
+    if(savedCode)applyPaymentPromo();
   }
 
   function openDeviceSheet(){
@@ -608,6 +610,20 @@
       if(id)localStorage.setItem(key,id);else localStorage.removeItem(key);
     }catch(_){}
     $('#pendingPaymentCheck').hidden=!id;
+  }
+
+  function promoStorageKey(){
+    return 'mgn-promo-'+String(state.data?.user?.id||state.data?.user?.telegram_id||'user');
+  }
+  function readSavedPromo(){
+    try{return String(localStorage.getItem(promoStorageKey())||'').trim()}catch(_){return ''}
+  }
+  function rememberPromo(code){
+    try{
+      const key=promoStorageKey();
+      if(code)localStorage.setItem(key,String(code).trim().toUpperCase());
+      else localStorage.removeItem(key);
+    }catch(_){}
   }
 
   async function payStars(){
@@ -698,6 +714,7 @@
     if(!code){
       state.promoCode='';
       state.promoPercent=0;
+      rememberPromo('');
       $('#paymentPromoResult').textContent='';
       updatePaymentDeviceUI();
       return;
@@ -714,11 +731,13 @@
       if(quote.type!=='discount')throw new Error('Этот код даёт бесплатные дни. Активируйте его в профиле.');
       state.promoCode=quote.code;
       state.promoPercent=Number(quote.value||0);
+      rememberPromo(quote.code);
       updatePaymentDeviceUI();
       notify();
     }catch(error){
       state.promoCode='';
       state.promoPercent=0;
+      rememberPromo('');
       $('#paymentPromoResult').textContent=error.message;
       updatePaymentDeviceUI();
     }
@@ -728,9 +747,17 @@
     const code=$('#promoCodePage').value.trim();
     if(!code)return toast('Введите промокод');
     try{
-      await request('/api/miniapp/promo/redeem',{method:'POST',body:JSON.stringify({code})});
-      $('#promoPageResult').textContent='Промокод активирован. Дни добавлены к подписке.';
-      notify();await load(true);
+      const result=await request('/api/miniapp/promo/redeem',{method:'POST',body:JSON.stringify({code})});
+      if(result.type==='discount'){
+        rememberPromo(result.code||code);
+        $('#promoPageResult').textContent='Скидка '+Number(result.value||0)+'% сохранена и применится при покупке тарифа.';
+        toast('Промокод сохранён');
+      }else{
+        rememberPromo('');
+        $('#promoPageResult').textContent='Промокод активирован. Дни добавлены к подписке.';
+        await load(true);
+      }
+      notify();
     }catch(error){$('#promoPageResult').textContent=error.message;notify('error')}
   }
 
