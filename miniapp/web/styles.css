@@ -1222,8 +1222,8 @@ button.pressing,
 #paymentSheet.checkout-sheet{
   inset:0!important;
   z-index:40;
-  display:grid;
-  grid-template-rows:auto minmax(0,1fr) auto;
+  display:flex;
+  flex-direction:column;
   width:100%!important;
   max-width:none!important;
   height:100dvh!important;
@@ -1292,6 +1292,7 @@ button.pressing,
   color:#fff
 }
 .checkout-body{
+  flex:0 1 auto;
   min-height:0;
   overflow-x:hidden;
   overflow-y:auto;
@@ -1346,6 +1347,7 @@ button.pressing,
 }
 .checkout-promo .promo-hint:empty{display:none}
 .checkout-actions{
+  flex:0 0 auto;
   padding:12px 20px calc(14px + var(--safe-bottom));
   border-top:1px solid rgba(255,255,255,.08);
   background:rgba(11,11,13,.97);

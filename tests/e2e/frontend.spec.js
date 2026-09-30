@@ -132,6 +132,9 @@ test('Mini App checkout fills the viewport and keeps payment actions visible', a
       const actionBox=await action.boundingBox();
       expect(actionBox.y+actionBox.height).toBeLessThanOrEqual(viewport.height);
     }
+    const promoBox=await page.locator('#applyPaymentPromo').boundingBox();
+    const firstPaymentBox=await page.locator('#payStars').boundingBox();
+    expect(firstPaymentBox.y-(promoBox.y+promoBox.height)).toBeLessThanOrEqual(80);
     await expect(page.locator('#payStars b')).toHaveText('Telegram Stars');
     await expect(page.locator('#paymentSheet')).toHaveCSS('font-family',/Manrope/);
 
