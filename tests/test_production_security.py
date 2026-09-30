@@ -70,15 +70,15 @@ def test_main_inline_menu_has_reference_layout_with_colors_and_no_premium_icons(
         "📊 Моя подписка",
         "🎁 Подарить другу",
         "👥 Пригласить друга",
-        "🎟 Промокод",
         "🆘 Поддержка",
         "ℹ️ О сервисе",
         "🛡 Админ-панель",
     ]
     assert rows[0][0].web_app.url == "https://mgnvpn.ru/app"
     assert rows[1][0].callback_data == "menu:connect"
-    assert rows[4][0].callback_data == "menu:promo"
-    assert rows[5][0].callback_data == "menu:support"
+    assert rows[2][0].callback_data == "menu:gift"
+    assert rows[2][1].callback_data == "menu:promo"
+    assert rows[4][0].callback_data == "menu:support"
     assert all(
         button.icon_custom_emoji_id is None
         for row in rows
@@ -87,8 +87,9 @@ def test_main_inline_menu_has_reference_layout_with_colors_and_no_premium_icons(
     assert rows[0][0].style == "primary"
     assert rows[1][0].style == "success"
     assert all(
-        rows[index][0].style == "primary"
-        for index in (2, 3, 4, 5, 6, 7)
+        button.style == "primary"
+        for row in rows[2:]
+        for button in row
     )
     assert all("Баланс" not in button.text for row in rows for button in row)
 
@@ -814,11 +815,12 @@ def test_public_buttons_default_to_plain_emoji_only():
     )
 
 
-def test_main_menu_has_exactly_one_button_per_row():
+def test_main_menu_matches_reference_row_layout():
     markup = main_menu_inline_keyboard(
         "full",
         "https://mgnvpn.ru/app",
         active=True,
     )
-    assert all(len(row) == 1 for row in markup.inline_keyboard)
-    assert len(markup.inline_keyboard) == 8
+    assert [len(row) for row in markup.inline_keyboard] == [1, 1, 2, 1, 1, 1, 1]
+    assert markup.inline_keyboard[2][0].text.startswith("🎁")
+    assert markup.inline_keyboard[2][1].text.startswith("🎟")
