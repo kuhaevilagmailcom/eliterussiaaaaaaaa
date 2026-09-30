@@ -14,6 +14,8 @@ from catalog import (
     EXTRA_DEVICE_PRICE_RUB,
     MAX_DEVICES,
     PLANS,
+    clamp_device_limit,
+    plan_total_price_rub,
     rub_to_stars,
 )
 
@@ -436,6 +438,8 @@ class Database:
                 ("discount_amount_rub", "INTEGER NOT NULL DEFAULT 0"),
                 ("promo_id", "INTEGER"),
                 ("promo_code", "TEXT"),
+                ("device_count", "INTEGER"),
+                ("previous_device_count", "INTEGER"),
                 ("pay_url", "TEXT"),
                 ("reconciliation_checked_at", "TEXT"),
                 ("access_reversed_at", "TEXT"),
@@ -453,6 +457,10 @@ class Database:
             }
             if "expires_at" not in intent_columns:
                 await db.execute("ALTER TABLE payment_intents ADD COLUMN expires_at TEXT")
+            if "device_count" not in intent_columns:
+                await db.execute("ALTER TABLE payment_intents ADD COLUMN device_count INTEGER")
+            if "previous_device_count" not in intent_columns:
+                await db.execute("ALTER TABLE payment_intents ADD COLUMN previous_device_count INTEGER")
             await db.execute(
                 "UPDATE payment_intents SET expires_at=datetime(created_at, '+20 minutes') "
                 "WHERE expires_at IS NULL"
@@ -1445,6 +1453,8 @@ class Database:
         currency_amount: int,
         promo_id: int | None = None,
         promo_code: str | None = None,
+        device_count: int | None = None,
+        previous_device_count: int | None = None,
     ) -> None:
         created_at = utcnow()
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
@@ -1454,13 +1464,16 @@ class Database:
                     intent_id, buyer_telegram_id, target_telegram_id,
                     product_code, original_amount_rub, discount_amount_rub,
                     final_amount_rub, currency, currency_amount,
-                    promo_id, promo_code, created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    promo_id, promo_code, device_count, previous_device_count,
+                    created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     intent_id, buyer_id, target_id, product_code,
                     original_amount_rub, discount_amount_rub, final_amount_rub,
                     currency.upper(), currency_amount, promo_id, promo_code,
+                    clamp_device_limit(device_count) if device_count is not None else None,
+                    clamp_device_limit(previous_device_count) if previous_device_count is not None else None,
                     to_iso(created_at), to_iso(created_at + timedelta(minutes=20)),
                 ),
             )
@@ -1561,6 +1574,8 @@ class Database:
         discount_amount_rub: int = 0,
         promo_id: int | None = None,
         promo_code: str | None = None,
+        device_count: int | None = None,
+        previous_device_count: int | None = None,
     ) -> None:
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute(
@@ -1569,8 +1584,9 @@ class Database:
                     payment_id, order_id, telegram_id, target_telegram_id,
                     plan_code, amount_rub, original_amount_rub,
                     discount_amount_rub, promo_id, promo_code,
+                    device_count, previous_device_count,
                     status, created_at, paid_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, NULL)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, NULL)
                 """,
                 (
                     payment_id,
@@ -1583,6 +1599,8 @@ class Database:
                     max(0, int(discount_amount_rub)),
                     promo_id,
                     promo_code,
+                    clamp_device_limit(device_count) if device_count is not None else None,
+                    clamp_device_limit(previous_device_count) if previous_device_count is not None else None,
                     to_iso(utcnow()),
                 ),
             )
@@ -1593,6 +1611,7 @@ class Database:
         amount_rub: int, target_telegram_id: int | None = None,
         original_amount_rub: int | None = None, discount_amount_rub: int = 0,
         promo_id: int | None = None, promo_code: str | None = None,
+        device_count: int | None = None, previous_device_count: int | None = None,
     ) -> str:
         local_id = f"creating:{order_id}"
         await self.create_sbp_payment(
@@ -1600,7 +1619,8 @@ class Database:
             target_telegram_id=target_telegram_id, plan_code=plan_code,
             amount_rub=amount_rub, original_amount_rub=original_amount_rub,
             discount_amount_rub=discount_amount_rub, promo_id=promo_id,
-            promo_code=promo_code,
+            promo_code=promo_code, device_count=device_count,
+            previous_device_count=previous_device_count,
         )
         await self.set_sbp_status(local_id, "creating")
         return local_id
@@ -1732,10 +1752,23 @@ class Database:
                     else:
                         until_value = to_iso(until)
                         plan_name = str(user["plan_name"] or "")
-                    await db.execute(
-                        "UPDATE users SET subscription_until=?, plan_name=? WHERE telegram_id=?",
-                        (until_value, plan_name, target_id),
-                    )
+                    previous_devices = payment["previous_device_count"]
+                    if previous_devices is None:
+                        await db.execute(
+                            "UPDATE users SET subscription_until=?, plan_name=? WHERE telegram_id=?",
+                            (until_value, plan_name, target_id),
+                        )
+                    else:
+                        restored = clamp_device_limit(previous_devices)
+                        await db.execute(
+                            """
+                            UPDATE users
+                            SET subscription_until=?, plan_name=?,
+                                max_devices=?, bonus_devices=?
+                            WHERE telegram_id=?
+                            """,
+                            (until_value, plan_name, restored, restored - BASE_DEVICES, target_id),
+                        )
 
             reversed_at = to_iso(utcnow())
             await db.execute(
@@ -1809,7 +1842,13 @@ class Database:
             await db.commit()
             return cursor.rowcount == 1
 
-    async def _apply_product(self, db, target_id: int, code: str) -> None:
+    async def _apply_product(
+        self,
+        db,
+        target_id: int,
+        code: str,
+        device_count: int | None = None,
+    ) -> None:
         row = await (await db.execute(
             "SELECT * FROM users WHERE telegram_id=?", (target_id,)
         )).fetchone()
@@ -1823,19 +1862,36 @@ class Database:
                 "UPDATE users SET bonus_devices=bonus_devices+1, max_devices=max_devices+1 WHERE telegram_id=?",
                 (target_id,),
             )
-        else:
-            plan = PLANS[code]
-            current = from_iso(user["subscription_until"])
-            until = max(utcnow(), current or utcnow()) + timedelta(days=plan["days"])
+            return
+
+        plan = PLANS[code]
+        current = from_iso(user["subscription_until"])
+        until = max(utcnow(), current or utcnow()) + timedelta(days=plan["days"])
+        if device_count is None:
             await db.execute(
                 "UPDATE users SET subscription_until=?, plan_name=?, traffic_limit_gb=0 WHERE telegram_id=?",
                 (to_iso(until), plan["name"], target_id),
             )
+            return
+
+        selected = clamp_device_limit(device_count)
+        await db.execute(
+            """
+            UPDATE users
+            SET subscription_until=?,
+                plan_name=?,
+                traffic_limit_gb=0,
+                max_devices=?,
+                bonus_devices=?
+            WHERE telegram_id=?
+            """,
+            (to_iso(until), plan["name"], selected, selected - BASE_DEVICES, target_id),
+        )
 
     async def _consume_paid_promo(
         self, db, *, promo_id: int | None, buyer_id: int, payment_id: str,
         product_code: str, original_amount: int, discount_amount: int,
-        final_amount: int,
+        final_amount: int, device_count: int | None = None,
     ) -> None:
         if promo_id is None:
             return
@@ -1859,10 +1915,7 @@ class Database:
         if int(used[0]) >= int(promo["per_user_limit"]):
             raise ValueError("Promo user limit reached")
 
-        expected_original = (
-            EXTRA_DEVICE_PRICE_RUB if product_code == DEVICE_PRODUCT_CODE
-            else int(PLANS[product_code]["price_rub"])
-        )
+        expected_original = self._product_price(product_code, device_count)
         expected_discount = expected_original * int(promo["value"]) // 100
         expected_final = expected_original - expected_discount
         if (
@@ -1881,17 +1934,18 @@ class Database:
         )
 
     @staticmethod
-    def _product_price(product_code: str) -> int:
+    def _product_price(product_code: str, device_count: int | None = None) -> int:
         if product_code == DEVICE_PRODUCT_CODE:
             return EXTRA_DEVICE_PRICE_RUB
         if product_code not in PLANS:
             raise ValueError("Unknown payment product")
-        return int(PLANS[product_code]["price_rub"])
+        return plan_total_price_rub(None, product_code, device_count or BASE_DEVICES)
 
     async def redeem_full_discount(
         self, *, promo_id: int, buyer_id: int, target_id: int, product_code: str,
+        device_count: int | None = None,
     ) -> dict[str, Any]:
-        original = self._product_price(product_code)
+        original = self._product_price(product_code, device_count)
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
@@ -1910,8 +1964,9 @@ class Database:
                 original_amount=original,
                 discount_amount=original,
                 final_amount=0,
+                device_count=device_count,
             )
-            await self._apply_product(db, target_id, product_code)
+            await self._apply_product(db, target_id, product_code, device_count)
             await db.commit()
         return await self.get_user(target_id)
 
@@ -1926,7 +1981,7 @@ class Database:
             if row is None or row["status"] == "paid":
                 return False
             original_amount = int(row["original_amount_rub"] or row["amount_rub"])
-            if original_amount != self._product_price(str(row["plan_code"])):
+            if original_amount != self._product_price(str(row["plan_code"]), row["device_count"]):
                 raise ValueError("Payment price is outdated")
             if row["promo_id"] is None and (
                 int(row["discount_amount_rub"] or 0) != 0
@@ -1942,8 +1997,14 @@ class Database:
                 original_amount=original_amount,
                 discount_amount=int(row["discount_amount_rub"] or 0),
                 final_amount=int(row["amount_rub"]),
+                device_count=row["device_count"],
             )
-            await self._apply_product(db, row["target_telegram_id"] or row["telegram_id"], row["plan_code"])
+            await self._apply_product(
+                db,
+                row["target_telegram_id"] or row["telegram_id"],
+                row["plan_code"],
+                row["device_count"],
+            )
             await db.execute(
                 "UPDATE sbp_payments SET status='paid', paid_at=? WHERE payment_id=?",
                 (to_iso(utcnow()), payment_id),
@@ -1985,7 +2046,8 @@ class Database:
                     raise ValueError("Payment intent expired")
                 expected_stars = rub_to_stars(int(intent["final_amount_rub"]))
                 if (
-                    int(intent["original_amount_rub"]) != self._product_price(plan_code)
+                    int(intent["original_amount_rub"])
+                    != self._product_price(plan_code, intent["device_count"])
                     or expected_stars != stars
                 ):
                     raise ValueError("Payment intent price is invalid")
@@ -1998,8 +2060,14 @@ class Database:
                     original_amount=int(intent["original_amount_rub"]),
                     discount_amount=int(intent["discount_amount_rub"]),
                     final_amount=int(intent["final_amount_rub"]),
+                    device_count=intent["device_count"],
                 )
-            await self._apply_product(db, target_telegram_id, plan_code)
+            await self._apply_product(
+                db,
+                target_telegram_id,
+                plan_code,
+                intent["device_count"] if intent else None,
+            )
             await db.execute(
                 "INSERT INTO star_payments VALUES (?, ?, ?, ?, ?, ?)",
                 (telegram_payment_charge_id, buyer_telegram_id, target_telegram_id,
