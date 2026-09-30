@@ -17,7 +17,9 @@
     page:'home',
     previousRoot:'home',
     selectedPlan:null,
+    selectedDevices:1,
     promoCode:'',
+    promoPercent:0,
     sbpPayment:null,
     supportTicketId:null,
     busy:false,
@@ -132,6 +134,80 @@
     };
     return format(used)+' / '+(limit>0?format(limit):'∞');
   }
+  function deviceWord(count){
+    const n=Math.max(1,Math.min(5,Number(count||1)));
+    return n===1?'устройство':(n>=2&&n<=4?'устройства':'устройств');
+  }
+  function clampDevices(value){
+    return Math.max(1,Math.min(5,Math.round(Number(value)||1)));
+  }
+  function selectedPlanTotalRub(){
+    const plan=state.selectedPlan;
+    if(!plan)return 0;
+    const extra=Number(state.data?.shop?.extra_device_price_rub||50);
+    return Math.max(0,Number(plan.rub||0)+(clampDevices(state.selectedDevices)-1)*extra);
+  }
+  function rubToStars(amount){
+    const rub=Math.max(0,Math.round(Number(amount)||0));
+    const xtr=Math.max(1,Number(state.data?.shop?.star_rate_xtr||50));
+    const rateRub=Math.max(1,Number(state.data?.shop?.star_rate_rub||80));
+    return rub===0?0:Math.ceil(rub*xtr/rateRub);
+  }
+  function paymentFinalRub(){
+    const total=selectedPlanTotalRub();
+    const percent=Math.max(0,Math.min(100,Number(state.promoPercent||0)));
+    return total-Math.floor(total*percent/100);
+  }
+  function paymentDeviceHint(){
+    const d=state.data;
+    const selected=clampDevices(state.selectedDevices);
+    const active=!!d?.subscription?.active;
+    const current=clampDevices(d?.subscription?.max_devices||1);
+    const extra=Number(d?.shop?.extra_device_price_rub||50);
+    if(!active){
+      if(selected===1)return '1 устройство включено в тариф.';
+      return 'Доплата за устройства: +'+((selected-1)*extra).toLocaleString('ru-RU')+' ₽.';
+    }
+    const delta=selected-current;
+    if(delta===0)return 'Лимит устройств останется без изменений.';
+    if(delta>0)return 'Добавляем '+delta+' · цена +'+(delta*extra).toLocaleString('ru-RU')+' ₽ относительно текущего лимита.';
+    return 'Убираем '+Math.abs(delta)+' · цена −'+(Math.abs(delta)*extra).toLocaleString('ru-RU')+' ₽ относительно текущего лимита.';
+  }
+  function updatePaymentDeviceUI({hapticTick=false}={}){
+    if(!state.selectedPlan)return;
+    const selected=clampDevices(state.selectedDevices);
+    state.selectedDevices=selected;
+    const range=$('#paymentDeviceRange');
+    if(range){
+      range.value=String(selected);
+      range.style.setProperty('--range-progress',((selected-1)/4*100)+'%');
+    }
+    $('#paymentDeviceCount').textContent=String(selected);
+    $('#paymentDeviceWord').textContent=deviceWord(selected);
+    const active=!!state.data?.subscription?.active;
+    const current=clampDevices(state.data?.subscription?.max_devices||1);
+    $('#paymentDeviceCurrent').textContent=active?('Сейчас '+current):'От 1 до 5';
+    $('#paymentDeviceHint').textContent=paymentDeviceHint();
+
+    const total=selectedPlanTotalRub();
+    const finalRub=paymentFinalRub();
+    $('#sbpPrice').textContent=finalRub.toLocaleString('ru-RU')+' ₽';
+    $('#starsPrice').textContent=rubToStars(finalRub).toLocaleString('ru-RU')+' Stars';
+
+    if(state.promoPercent>0){
+      const discount=total-finalRub;
+      $('#paymentPromoResult').textContent=
+        'Скидка −'+discount.toLocaleString('ru-RU')+' ₽ · итого '+finalRub.toLocaleString('ru-RU')+' ₽';
+    }
+
+    if(hapticTick){
+      try{
+        if(tg?.HapticFeedback?.selectionChanged)tg.HapticFeedback.selectionChanged();
+        else haptic(selected===1||selected===5?'medium':'light');
+      }catch(_){}
+    }
+  }
+
   function fmtHistoryDate(iso){
     if(!iso)return '';
     try{return new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit'}).format(new Date(iso))}
@@ -469,22 +545,26 @@
     closeSheets();
     state.selectedPlan=plan;
     state.promoCode='';
-    $('#sheetTitle').textContent=plan.name+' · '+Number(plan.rub).toLocaleString('ru-RU')+' ₽'+(plan.popular?' · Популярный':'');
-    const extraPrice=Number(state.data?.shop?.extra_device_price_rub||0);
+    state.promoPercent=0;
+    const active=!!state.data?.subscription?.active;
+    state.selectedDevices=active
+      ? clampDevices(state.data?.subscription?.max_devices||1)
+      : 1;
+
+    $('#sheetTitle').textContent=(active?'Продление · ':'')+plan.name;
     const savings=Number(plan.savings||0);
     $('#sheetText').textContent=
-      '1 устройство включено. '+
-      (savings>0?('Выгода '+savings.toLocaleString('ru-RU')+' ₽. '):'')+
-      'Если подписка уже активна, новые дни добавятся к текущему сроку. '+
-      'Дополнительный слот — '+extraPrice.toLocaleString('ru-RU')+' ₽.';
+      (active
+        ? 'Выберите срок и количество устройств. Новые дни прибавятся к текущей подписке.'
+        : 'Выберите количество устройств и способ оплаты.')+
+      (savings>0?(' Выгода тарифа '+savings.toLocaleString('ru-RU')+' ₽.'):'');
     $('#paymentPromoCode').value='';
     $('#paymentPromoResult').textContent='';
-    $('#starsPrice').textContent=Number(plan.stars).toLocaleString('ru-RU')+' Stars';
-    $('#sbpPrice').textContent=Number(plan.rub).toLocaleString('ru-RU')+' ₽';
-    $('#paySbp').disabled=!state.data.payments.sbp_enabled;
     $('#checkPayment').hidden=true;
     $('#payStars').hidden=false;
     $('#paySbp').hidden=false;
+    $('#paySbp').disabled=!state.data.payments.sbp_enabled;
+    updatePaymentDeviceUI();
     $('#paymentSheet').hidden=false;
     showBackdrop();
     icons();
@@ -533,7 +613,7 @@
     if(state.busy||!state.selectedPlan)return;
     state.busy=true; $('#payStars').disabled=true;
     try{
-      const result=await request('/api/miniapp/payment/stars',{method:'POST',body:JSON.stringify({plan_code:state.selectedPlan.code,promo_code:state.promoCode})});
+      const result=await request('/api/miniapp/payment/stars',{method:'POST',body:JSON.stringify({plan_code:state.selectedPlan.code,promo_code:state.promoCode,device_count:state.selectedDevices})});
       if(result.granted){notify();toast('Подписка активирована');closeSheets();await load(true);go('home');return}
       if(tg?.openInvoice){
         tg.openInvoice(result.invoice_url,async status=>{
@@ -549,7 +629,7 @@
     if(state.busy||!state.selectedPlan)return;
     state.busy=true; $('#paySbp').disabled=true;
     try{
-      const result=await request('/api/miniapp/payment/sbp',{method:'POST',body:JSON.stringify({plan_code:state.selectedPlan.code,promo_code:state.promoCode})});
+      const result=await request('/api/miniapp/payment/sbp',{method:'POST',body:JSON.stringify({plan_code:state.selectedPlan.code,promo_code:state.promoCode,device_count:state.selectedDevices})});
       if(result.granted){notify();toast('Подписка активирована');closeSheets();await load(true);go('home');return}
       rememberPayment(result.payment_id);
       $('#checkPayment').hidden=false;
@@ -619,16 +699,33 @@
   async function applyPaymentPromo(){
     if(!state.selectedPlan)return;
     const code=$('#paymentPromoCode').value.trim();
-    if(!code){state.promoCode='';$('#paymentPromoResult').textContent='';return}
+    if(!code){
+      state.promoCode='';
+      state.promoPercent=0;
+      $('#paymentPromoResult').textContent='';
+      updatePaymentDeviceUI();
+      return;
+    }
     try{
-      const quote=await request('/api/miniapp/promo/quote',{method:'POST',body:JSON.stringify({code,plan_code:state.selectedPlan.code})});
+      const quote=await request('/api/miniapp/promo/quote',{
+        method:'POST',
+        body:JSON.stringify({
+          code,
+          plan_code:state.selectedPlan.code,
+          device_count:state.selectedDevices
+        })
+      });
       if(quote.type!=='discount')throw new Error('Этот код даёт бесплатные дни. Активируйте его в профиле.');
       state.promoCode=quote.code;
-      $('#paymentPromoResult').textContent='Скидка −'+Number(quote.discount)+' ₽ · итого '+Number(quote.final_price)+' ₽';
-      $('#sbpPrice').textContent=Number(quote.final_price)+' ₽';
-      $('#starsPrice').textContent='Цена пересчитается сервером';
+      state.promoPercent=Number(quote.value||0);
+      updatePaymentDeviceUI();
       notify();
-    }catch(error){state.promoCode='';$('#paymentPromoResult').textContent=error.message}
+    }catch(error){
+      state.promoCode='';
+      state.promoPercent=0;
+      $('#paymentPromoResult').textContent=error.message;
+      updatePaymentDeviceUI();
+    }
   }
 
   async function redeemPromo(){
@@ -771,6 +868,12 @@
   $('#deviceSheetClose').onclick=closeSheets;
   $('#clientSheetClose').onclick=closeSheets;
   $('#sheetBackdrop').onclick=closeSheets;
+  $('#paymentDeviceRange').addEventListener('input',event=>{
+    const next=clampDevices(event.target.value);
+    if(next===state.selectedDevices)return;
+    state.selectedDevices=next;
+    updatePaymentDeviceUI({hapticTick:true});
+  });
   $('#payStars').onclick=payStars;
   $('#paySbp').onclick=paySbp;
   $('#checkPayment').onclick=checkSbp;
