@@ -11,7 +11,7 @@
 
   const $=(selector,root=document)=>root.querySelector(selector);
   const $$=(selector,root=document)=>[...root.querySelectorAll(selector)];
-  const ROOT_PAGES=new Set(['home','plans','profile']);
+  const ROOT_PAGES=new Set(['home','plans','profile','bonuses']);
   const state={
     data:null,
     page:'home',

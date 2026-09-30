@@ -73,6 +73,31 @@ PACK_UI = "TgAndroidIcons"
 PACK_PROGRESS = "progressBarEmoji"
 PACK_NEWS = "NewsEmoji"
 
+ADMIN_SERVER_ORDER = (
+    "🇳🇱 Нидерланды",
+    "🇫🇮 Финляндия",
+    "🇵🇱 Польша",
+    "🇵🇰 Пакистан",
+    "🇺🇸 США 1",
+    "🇺🇸 США 2",
+)
+
+
+def format_admin_server_status(servers: list[dict[str, Any]]) -> str:
+    """Render the intentionally terse server health block used in the admin UI."""
+    by_name = {str(item.get("name") or "").strip(): item for item in servers}
+    lines = ["🖥 <b>Состояние серверов</b>"]
+    for label in ADMIN_SERVER_ORDER:
+        item = by_name.get(label)
+        if item is None:
+            lines.append(f"➖ <b>{label}</b>")
+            continue
+        icon = "✅" if item.get("available") else "❌"
+        latency = item.get("latency_ms")
+        latency_text = f" · {int(latency)} мс" if isinstance(latency, (int, float)) else ""
+        lines.append(f"{icon} <b>{label}</b>{latency_text}")
+    return "\n".join(lines)
+
 REPLY_NAVIGATION_TEXTS = frozenset(
     {
         "Главное",
@@ -1097,6 +1122,11 @@ def build_router(
                     )
 
             await db.set_last_menu_message(actor.id, sent.message_id)
+            sent_photos = getattr(sent, "photo", None) or []
+            if sent_photos:
+                telegram_file_id = str(getattr(sent_photos[-1], "file_id", "") or "").strip()
+                if telegram_file_id:
+                    save_main_menu_banner_file_id(telegram_file_id)
             logger.info(
                 "Persistent menu created for %s as message %s",
                 actor.id,
@@ -1105,32 +1135,23 @@ def build_router(
             return sent
 
         if force_new:
-            # Explicit /start should bring the menu back to the bottom of the
-            # chat while keeping one tracked bot UI message. Telegram may
-            # refuse deletion of very old messages; in that rare case we keep
-            # and edit the existing menu instead of creating a duplicate.
-            can_create_fresh = not last_id
+            # Every navigation action must bring the current screen to the
+            # bottom of the chat. Delete the tracked screen when Telegram
+            # allows it, then always send a fresh one instead of editing an
+            # old message that may be far above the user's viewport.
             if last_id:
                 try:
                     await message.bot.delete_message(
                         chat_id=message.chat.id,
                         message_id=int(last_id),
                     )
-                    can_create_fresh = True
                 except TelegramBadRequest as exc:
-                    error_text = str(exc).lower()
-                    if (
-                        "message to delete not found" in error_text
-                        or "message not found" in error_text
-                    ):
-                        can_create_fresh = True
-                    else:
-                        logger.warning(
-                            "Could not remove previous menu %s for user %s: %s",
-                            last_id,
-                            actor.id,
-                            exc,
-                        )
+                    logger.info(
+                        "Previous menu %s could not be deleted for user %s: %s",
+                        last_id,
+                        actor.id,
+                        exc,
+                    )
                 except Exception as exc:
                     logger.warning(
                         "Could not remove previous menu %s for user %s: %s",
@@ -1139,12 +1160,8 @@ def build_router(
                         exc,
                     )
 
-            if can_create_fresh:
-                await db.set_last_menu_message(actor.id, None)
-                return await create_first_menu()
-
-            # Keep exactly one bot UI message if Telegram refuses deletion.
-            force_new = False
+            await db.set_last_menu_message(actor.id, None)
+            return await create_first_menu()
 
         if not last_id:
             return await create_first_menu()
@@ -1357,7 +1374,7 @@ def build_router(
         reply_markup=None,
         bottom_menu: bool = False,
         recover_on_edit_failure: bool = False,
-        force_new: bool = False,
+        force_new: bool = True,
     ) -> Message:
         # A ReplyKeyboard tap posts a regular user message. Move the tracked
         # bot screen to the bottom and remove that navigation message so the
@@ -1393,7 +1410,7 @@ def build_router(
         actor,
         *,
         recover_on_edit_failure: bool = False,
-        force_new: bool = False,
+        force_new: bool = True,
         ensure_reply_keyboard: bool = False,
     ) -> None:
         user = await ensure_actor(actor)
@@ -4254,128 +4271,10 @@ def build_router(
             )
             return
 
-        servers = list(report.get("servers") or [])
-        available = sum(1 for item in servers if item.get("available"))
-        configured = sum(1 for item in servers if item.get("configured") or item.get("available"))
-        unknown = len(servers) - configured
-        remote_count = sum(1 for item in servers if item.get("kind") == "federation")
-        unverified = max(0, configured - available)
-        latency_values = [
-            float(item["latency_ms"])
-            for item in servers
-            if item.get("available") and isinstance(item.get("latency_ms"), (int, float))
-        ]
-        avg_latency = int(sum(latency_values) / len(latency_values)) if latency_values else None
-        sources = dict(report.get("sources") or {})
-        subscription_source = sources.get("subscription") if isinstance(sources.get("subscription"), dict) else {}
-        subscription_count = int(subscription_source.get("count") or 0)
-
-        lines = [
-            "🌐 <b>Серверы MGN VPN</b>",
-            "",
-            f"🧩 Провайдер — <b>{html.escape(str(report.get('provider') or 'VPN'))}</b>",
-            f"⚙️ Сервис — <b>{'готов' if getattr(provider, 'service_ready', True) else 'не готов'}</b>",
-            f"🖥 Серверов в каталоге — <b>{len(servers)}</b>",
-            f"✅ Подтверждено онлайн — <b>{available}</b>",
-            f"⚠️ Настроено, но не подтверждено — <b>{unverified}</b>",
-            f"➖ Без данных — <b>{unknown}</b>",
-            f"🔗 VLESS в тестовой подписке — <b>{subscription_count}</b>",
-            f"🕸 Узлов federation — <b>{remote_count}</b>",
-        ]
-        if avg_latency is not None:
-            lines.append(f"⚡ Средний TCP-отклик — <b>{avg_latency} мс</b>")
-        lines += [
-            "",
-            "🖥 <b>Состояние серверов</b>",
-        ]
-
-        compact_inventory = len(servers) > 20
-        for index, item in enumerate(servers, start=1):
-            ok = bool(item.get("available"))
-            configured = bool(item.get("configured"))
-            icon = "✅" if ok else ("⚠️" if configured else "➖")
-            name = html.escape(str(item.get("name") or f"Сервер {index}"))
-            kind = "основной" if item.get("kind") == "main" else "federation"
-            latency = item.get("latency_ms")
-            latency_text = f" · {int(latency)} мс" if isinstance(latency, (int, float)) else ""
-            lines.append(f"{icon} <b>{name}</b>{latency_text}")
-
-            if compact_inventory:
-                continue
-
-            details: list[str] = [kind]
-            host = str(item.get("host") or "").strip()
-            port = int(item.get("port") or 0)
-            if host:
-                endpoint = f"{host}:{port}" if port else host
-                details.append(f"<code>{html.escape(endpoint)}</code>")
-            node_id = str(item.get("id") or "").strip()
-            if node_id and node_id != "main":
-                safe_id = node_id if len(node_id) <= 28 else node_id[:12] + "…" + node_id[-6:]
-                details.append(f"ID <code>{html.escape(safe_id)}</code>")
-            proxy_kind = str(item.get("proxy_kind") or "").strip()
-            if proxy_kind and proxy_kind not in {"direct", ""}:
-                details.append(html.escape(proxy_kind))
-            check = str(item.get("check") or "").strip()
-            if check:
-                details.append(f"проверка: {html.escape(check)}")
-            lines.append("   " + " · ".join(details))
-
-            error = str(item.get("error") or "").strip()
-            if not ok:
-                if configured and error == "probe_unverified":
-                    lines.append("   ↳ конфиг есть в подписке · ping с BotHost не подтверждён")
-                elif configured and error:
-                    lines.append(f"   ↳ конфиг есть · проверка: <code>{html.escape(error)}</code>")
-                elif not configured:
-                    lines.append("   ↳ нет данных для проверки, сервер не скрыт")
-
-        if compact_inventory:
-            lines += [
-                "",
-                "<i>При большом каталоге показан компактный список. "
-                "Все обнаруженные H1-ноды остаются в проверке и подписке.</i>",
-            ]
-
-        if sources:
-            lines += ["", "🔗 <b>Источники диагностики</b>"]
-            for path in ("/fed/link", "/fed/registry", "/fed/lagg", "subscription"):
-                item = sources.get(path)
-                if not isinstance(item, dict):
-                    continue
-                icon = "✅" if item.get("available") else "❌"
-                count = int(item.get("count") or 0)
-                source_label = "тестовая подписка" if path == "subscription" else path
-                line = f"{icon} <code>{html.escape(source_label)}</code> — <b>{count}</b>"
-                error = str(item.get("error") or "").strip()
-                if error and not item.get("available"):
-                    line += f" · {html.escape(error)}"
-                lines.append(line)
-
-        if remote_count == 0:
-            lines += [
-                "",
-                "⚠️ <b>H1 сейчас не отдал удалённые узлы.</b>",
-                "Каталог MGN VPN всё равно показывает все серверы; "
-                "недоступность влияет только на статус, а не скрывает страну.",
-            ]
-        if not report.get("discovery_ok", True):
-            error = str(report.get("discovery_error") or "federation unavailable")
-            lines += [
-                "",
-                "❌ <b>Не удалось нормально прочитать federation H1.</b>",
-                f"<code>{html.escape(error)}</code>",
-            ]
-
-        lines += [
-            "",
-            "<i>Проверка read-only: пользователей, UUID, подписки и серверные настройки не меняет.</i>",
-        ]
-
         await send_screen(
             message,
             actor,
-            "\n".join(lines),
+            format_admin_server_status(list(report.get("servers") or [])),
             reply_markup=kb.as_markup(),
         )
 

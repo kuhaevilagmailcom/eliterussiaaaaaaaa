@@ -21,8 +21,8 @@ async function routeFiles(page, miniApp = false) {
       extra_device_price_rub: 100
     }});
     if (url.pathname === '/api/miniapp/me') return route.fulfill({ json: {
-      user: {first_name:'Тест', username:'test', telegram_id:42},
-      subscription: {active:true, plan_name:'1 месяц', until:'2027-01-01T00:00:00+00:00', days_left:30, max_devices:1},
+      user: {id:42,first_name:'Тест',username:'test',telegram_id:42,referrals:0,referral_rewards:0},
+      subscription: {active:true,plan:'1 месяц',until:'2027-01-01T00:00:00+00:00',remaining_seconds:2592000,max_devices:1},
       vpn: {ready:true, ok:true, server:'MGN VPN', subscription_url:'https://mgn.test/sub/token', traffic_used_gb:0, traffic_limit_gb:0, devices:[]},
       plans: [{code:'30',name:'1 месяц',days:30,devices:1,rub:100,stars:63,savings:0}],
       payments: {sbp_enabled:true}, capabilities:{device_list:true,device_removal:false,device_reset:true},
@@ -38,7 +38,8 @@ async function routeFiles(page, miniApp = false) {
       '/static/app.js': ['miniapp/web/app.js','application/javascript'],
       '/static/styles.css': ['miniapp/web/styles.css','text/css'],
       '/static/assets/lucide.min.js': ['miniapp/web/assets/lucide.min.js','application/javascript'],
-      '/static/assets/Manrope-Variable.ttf': ['miniapp/web/assets/Manrope-Variable.ttf','font/ttf']
+      '/static/assets/Manrope-Variable.ttf': ['miniapp/web/assets/Manrope-Variable.ttf','font/ttf'],
+      '/static/assets/mgn-vpn-logo.webp': ['miniapp/web/assets/mgn-vpn-logo.webp','image/webp']
     } : {
       '/': ['miniapp/web/site/index.html','text/html'],
       '/agreement': ['miniapp/web/site/agreement.html','text/html'],
@@ -94,10 +95,19 @@ test('Mini App loads and navigates core screens', async ({page}) => {
   await page.setViewportSize({width:390,height:844}); await routeFiles(page, true);
   await page.goto('http://mgn.test/app');
   await expect(page.locator('.app-shell')).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect(page.locator('#bottomNav button')).toHaveCount(4);
+  if (process.env.MGN_APP_SCREENSHOT_DIR) {
+    await page.screenshot({path:path.join(process.env.MGN_APP_SCREENSHOT_DIR,'home.png')});
+  }
   for (const name of ['plans','profile','bonuses','support']) {
     await page.locator('[data-nav="home"]:visible').first().click();
     await page.locator(`[data-nav="${name}"]:visible`).first().click();
     await expect(page.locator(`[data-page="${name}"]`)).toHaveClass(/active/);
+    await page.waitForTimeout(500);
+    if (process.env.MGN_APP_SCREENSHOT_DIR) {
+      await page.screenshot({path:path.join(process.env.MGN_APP_SCREENSHOT_DIR,`${name}.png`)});
+    }
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   expect(errors).toEqual([]);

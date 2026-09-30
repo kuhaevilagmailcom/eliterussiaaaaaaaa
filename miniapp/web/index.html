@@ -8,7 +8,7 @@
   <title>MGN VPN</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="/static/assets/lucide.min.js?v=1"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=24">
+  <link rel="stylesheet" href="/static/styles.css?v=25">
 </head>
 <body>
   <section id="appError" class="app-error" hidden role="status">
@@ -95,8 +95,8 @@
       <section class="page premium-page" data-page="plans">
         <div class="page-intro premium-intro">
           <span class="eyebrow">ПОДПИСКА</span>
-          <h1>MGN Plus</h1>
-          <p>Продлевай доступ и управляй тарифом без лишних экранов.</p>
+          <h1>Тарифы</h1>
+          <p>Выбери подходящий период и количество устройств.</p>
         </div>
 
         <article class="current-card plan-overview">
@@ -231,6 +231,11 @@
         <label class="promo-field"><span>Введите код</span><input id="promoCodePage" autocomplete="off" maxlength="40" placeholder="MGN20"></label>
         <button type="button" class="sheet-primary" id="redeemPromo">Применить промокод</button>
         <p class="promo-hint" id="promoPageResult"></p>
+        <button type="button" class="secondary-row bonus-referral-link" data-nav="referrals">
+          <span class="icon-box"><i data-lucide="users-round"></i></span>
+          <span><b>Пригласить друзей</b><small>Получай бесплатные дни за приглашения</small></span>
+          <i data-lucide="chevron-right"></i>
+        </button>
       </section>
 
       <section class="page inner-page" data-page="terms">
@@ -272,6 +277,7 @@
       <button type="button" class="active" data-nav="home"><i data-lucide="house"></i><small>Главная</small></button>
       <button type="button" data-nav="plans"><i data-lucide="crown"></i><small>Подписка</small></button>
       <button type="button" data-nav="profile"><i data-lucide="user-round"></i><small>Профиль</small></button>
+      <button type="button" data-nav="bonuses"><i data-lucide="gift"></i><small>Бонусы</small></button>
     </nav>
   </div>
 
@@ -344,6 +350,6 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"><span><i></i></span></div>
 
-  <script src="/static/app.js?v=25"></script>
+  <script src="/static/app.js?v=26"></script>
 </body>
 </html>

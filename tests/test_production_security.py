@@ -26,10 +26,32 @@ from handlers import (
     main_menu_inline_keyboard,
     payment_methods_keyboard,
     plans_keyboard,
+    format_admin_server_status,
 )
 from vpn import H1CloudVpnProvider
 
 TOKEN = '123456:TEST_ONLY'
+
+
+def test_admin_server_status_is_exactly_the_compact_six_server_list():
+    servers = [
+        {"name": "🇺🇸 США 2", "available": True, "latency_ms": 97, "host": "hidden"},
+        {"name": "🇳🇱 Нидерланды", "available": True, "latency_ms": 119},
+        {"name": "🇫🇮 Финляндия", "available": True, "latency_ms": 159},
+        {"name": "🇵🇱 Польша", "available": True, "latency_ms": 117},
+        {"name": "🇵🇰 Пакистан", "available": True, "latency_ms": 127},
+        {"name": "🇺🇸 США 1", "available": True, "latency_ms": 167},
+        {"name": "Лишний технический узел", "available": True, "latency_ms": 1},
+    ]
+    assert format_admin_server_status(servers) == (
+        "🖥 <b>Состояние серверов</b>\n"
+        "✅ <b>🇳🇱 Нидерланды</b> · 119 мс\n"
+        "✅ <b>🇫🇮 Финляндия</b> · 159 мс\n"
+        "✅ <b>🇵🇱 Польша</b> · 117 мс\n"
+        "✅ <b>🇵🇰 Пакистан</b> · 127 мс\n"
+        "✅ <b>🇺🇸 США 1</b> · 167 мс\n"
+        "✅ <b>🇺🇸 США 2</b> · 97 мс"
+    )
 
 
 def test_existing_channel_member_receives_one_trial_and_notification(tmp_path, monkeypatch):
@@ -493,6 +515,55 @@ def test_reply_keyboard_navigation_replaces_screen_and_removes_button_message(tm
         assert sent_markup.inline_keyboard[-1][0].text == '⬅️ Назад'
         assert sent_markup.inline_keyboard[-1][0].callback_data == 'home'
         assert (await db.get_user(42))['last_menu_message_id'] == 88
+
+    asyncio.run(run())
+
+
+def test_inline_navigation_sends_fresh_screen_and_reuses_saved_banner_file_id(tmp_path, monkeypatch):
+    monkeypatch.setenv('BOT_TOKEN', TOKEN)
+
+    async def run():
+        config = replace(
+            Config.from_env(),
+            db_path=str(tmp_path/'fresh-navigation.db'),
+            main_menu_banner_file_id='',
+        )
+        db = Database(config.db_path)
+        await db.init()
+        await db.ensure_user(42, 'user', 'User')
+        await db.set_last_menu_message(42, 77)
+        sent_photo = SimpleNamespace(
+            message_id=88,
+            photo=[SimpleNamespace(file_id='telegram-banner-file-id')],
+        )
+        bot = SimpleNamespace(
+            delete_message=AsyncMock(),
+            send_photo=AsyncMock(return_value=sent_photo),
+        )
+        actor = SimpleNamespace(id=42, username='user', first_name='User')
+        message = SimpleNamespace(bot=bot, chat=SimpleNamespace(id=42))
+        callback = SimpleNamespace(
+            from_user=actor,
+            message=message,
+            data='menu:profile',
+            answer=AsyncMock(),
+        )
+        router = build_router(config, db, EmojiBank(()), SimpleNamespace(service_ready=False))
+        handler = next(
+            item.callback for item in router.callback_query.handlers
+            if item.callback.__name__ == 'menu_profile'
+        )
+
+        await handler(callback)
+        bot.delete_message.assert_awaited_once_with(chat_id=42, message_id=77)
+        assert bot.send_photo.await_count == 1
+        assert (tmp_path/'main_menu_banner_file_id.txt').read_text(encoding='utf-8') == 'telegram-banner-file-id'
+        assert (await db.get_user(42))['last_menu_message_id'] == 88
+
+        await handler(callback)
+        assert bot.send_photo.await_count == 2
+        assert bot.send_photo.await_args.kwargs['photo'] == 'telegram-banner-file-id'
+        assert bot.delete_message.await_args.kwargs['message_id'] == 88
 
     asyncio.run(run())
 
