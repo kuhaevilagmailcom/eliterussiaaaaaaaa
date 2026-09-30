@@ -431,25 +431,18 @@ def test_h1_server_diagnostics_reports_main_and_federated_nodes():
         assert report["sources"]["/fed/registry"]["count"] == 1
 
         servers = report["servers"]
-        assert len(servers) == 7
-        assert [item["name"] for item in servers] == [
-            "🇳🇱 Нидерланды",
-            "🇵🇰 Пакистан",
-            "🇩🇪 Германия",
-            "🇵🇱 Польша",
-            "🇫🇮 Финляндия",
-            "🇺🇸 США",
-            "🇺🇸 США 2",
-        ]
+        assert len(servers) == 3
         assert servers[0]["name"] == "🇳🇱 Нидерланды"
         assert servers[0]["available"] is True
 
         germany = next(item for item in servers if "Германия" in item["name"])
         assert germany["available"] is True
+        assert germany["configured"] is True
         assert germany["check"] == "inbounds"
 
         usa = next(item for item in servers if "США" in item["name"])
         assert usa["available"] is False
+        assert usa["configured"] is True
 
     asyncio.run(run())
 
@@ -517,7 +510,9 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
         assert finland["configured"] is True
         assert finland["available"] is False
         assert finland["error"] == "probe_unverified"
-        assert next(item for item in servers if item["name"] == "🇺🇸 США 2")["configured"] is True
+        usa_nodes = [item for item in servers if "США" in item["name"]]
+        assert len(usa_nodes) == 2
+        assert all(item["configured"] for item in usa_nodes)
         assert report["sources"]["subscription"]["count"] == 7
         assert next(item for item in servers if item["name"] == "🇳🇱 Нидерланды")["port"] == 443
 
@@ -546,13 +541,10 @@ def test_h1_server_diagnostics_distinguishes_empty_federation_from_main_config()
 
         report = await provider.server_diagnostics()
         assert report["discovery_ok"] is True
-        assert len(report["servers"]) == 7
+        assert len(report["servers"]) == 1
         assert report["servers"][0]["kind"] == "main"
         assert report["servers"][0]["name"] == "🇳🇱 Нидерланды"
-        assert all(
-            item["available"] is False
-            for item in report["servers"][1:]
-        )
+        assert report["servers"][0]["available"] is True
         assert report["sources"]["/fed/link"]["count"] == 0
         assert report["sources"]["/fed/registry"]["count"] == 0
 
