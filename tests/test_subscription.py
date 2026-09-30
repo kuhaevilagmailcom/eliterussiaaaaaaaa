@@ -541,11 +541,34 @@ def test_h1_server_diagnostics_distinguishes_empty_federation_from_main_config()
 
         report = await provider.server_diagnostics()
         assert report["discovery_ok"] is True
-        assert len(report["servers"]) == 1
+        assert len(report["servers"]) == 5
+        assert [item["name"] for item in report["servers"]] == [
+            "🇳🇱 Нидерланды",
+            "🇩🇪 Германия",
+            "🇫🇮 Финляндия",
+            "🇱🇹 Литва",
+            "🇺🇸 США",
+        ]
         assert report["servers"][0]["kind"] == "main"
-        assert report["servers"][0]["name"] == "🇳🇱 Нидерланды"
         assert report["servers"][0]["available"] is True
+        assert all(
+            item["configured"] is True
+            for item in report["servers"]
+        )
         assert report["sources"]["/fed/link"]["count"] == 0
         assert report["sources"]["/fed/registry"]["count"] == 0
 
     asyncio.run(run())
+
+
+
+def test_h1_node_labels_include_flags_and_variants():
+    assert H1CloudVpnProvider._diagnostic_node_label(
+        {"id": "29588", "name": "Finland-3"}
+    ) == "🇫🇮 Финляндия-3"
+    assert H1CloudVpnProvider._diagnostic_node_label(
+        {"id": "29584", "name": "Germany-bots-2"}
+    ) == "🇩🇪 Германия-боты-2"
+    assert H1CloudVpnProvider._diagnostic_node_label(
+        {"id": "x", "name": "Poland-Premium"}
+    ) == "🇵🇱 Польша-Премиум"
