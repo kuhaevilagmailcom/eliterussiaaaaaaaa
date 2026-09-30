@@ -438,8 +438,8 @@ def main_menu_inline_keyboard(
     *,
     active: bool = False,
 ) -> Any:
-    """Reference-style menu: regular emoji, blue navigation, green subscription."""
-    kb = InlineKeyboardBuilder()
+    """Reference-style main menu: exactly one full-width button per row."""
+    rows: list[list[InlineKeyboardButton]] = []
 
     def menu_button(
         text: str,
@@ -457,60 +457,60 @@ def main_menu_inline_keyboard(
         )
 
     if miniapp_url:
-        kb.row(
+        rows.append([
             menu_button(
                 "📱 Открыть приложение",
                 web_app=WebAppInfo(url=miniapp_url),
             )
-        )
+        ])
 
-    kb.row(
+    rows.append([
         menu_button(
             "📊 Моя подписка" if active else "💳 Купить подписку",
             callback_data="menu:connect" if active else "plans",
             style="success",
         )
-    )
-    kb.row(
+    ])
+    rows.append([
         menu_button(
             "🎁 Подарить другу",
             callback_data="menu:gift",
         )
-    )
-    kb.row(
+    ])
+    rows.append([
         menu_button(
             "👥 Пригласить друга",
             callback_data="menu:friends",
         )
-    )
-    kb.row(
+    ])
+    rows.append([
         menu_button(
             "🎟 Промокод",
             callback_data="menu:promo",
         )
-    )
-    kb.row(
+    ])
+    rows.append([
         menu_button(
             "🆘 Поддержка",
             callback_data="menu:support",
         )
-    )
-    kb.row(
+    ])
+    rows.append([
         menu_button(
             "ℹ️ О сервисе",
             callback_data="menu:info",
         )
-    )
+    ])
 
     if admin_role:
-        kb.row(
+        rows.append([
             menu_button(
                 "🛡 Админ-панель",
                 callback_data="admin:home",
             )
-        )
+        ])
 
-    return kb.as_markup()
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def plans_keyboard(config: Config) -> Any:
     kb = InlineKeyboardBuilder()
