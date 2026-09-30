@@ -431,7 +431,14 @@ def test_h1_server_diagnostics_reports_main_and_federated_nodes():
         assert report["sources"]["/fed/registry"]["count"] == 1
 
         servers = report["servers"]
-        assert len(servers) == 3
+        assert len(servers) == 5
+        assert [item["name"] for item in servers] == [
+            "🇳🇱 Нидерланды",
+            "🇩🇪 Германия",
+            "🇫🇮 Финляндия",
+            "🇱🇹 Литва",
+            "🇺🇸 США",
+        ]
         assert servers[0]["name"] == "🇳🇱 Нидерланды"
         assert servers[0]["available"] is True
 
@@ -500,8 +507,9 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
             }
         )
         servers = report["servers"]
-        assert len(servers) == 7
+        assert len(servers) == 8
         assert all(item["configured"] for item in servers)
+        assert any(item["name"] == "🇱🇹 Литва" for item in servers)
         germany = next(item for item in servers if "Германия" in item["name"])
         assert germany["available"] is True
         assert germany["host"] == "de5.h1cloud.net"
