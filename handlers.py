@@ -438,7 +438,7 @@ def main_menu_inline_keyboard(
     *,
     active: bool = False,
 ) -> Any:
-    """Reference-style main menu: exactly one full-width button per row."""
+    """Reference-style main menu: 2 large rows, 2 compact buttons, then large rows."""
     rows: list[list[InlineKeyboardButton]] = []
 
     def menu_button(
@@ -446,7 +446,7 @@ def main_menu_inline_keyboard(
         *,
         callback_data: str | None = None,
         web_app: WebAppInfo | None = None,
-        style: str | None = "primary",
+        style: str = "primary",
     ) -> InlineKeyboardButton:
         return blue_inline_button(
             text,
@@ -456,11 +456,13 @@ def main_menu_inline_keyboard(
             style=style,
         )
 
+    # Two large buttons at the top.
     if miniapp_url:
         rows.append([
             menu_button(
                 "📱 Открыть приложение",
                 web_app=WebAppInfo(url=miniapp_url),
+                style="primary",
             )
         ])
 
@@ -471,34 +473,41 @@ def main_menu_inline_keyboard(
             style="success",
         )
     ])
+
+    # One compact row with two buttons, like the reference layout.
     rows.append([
         menu_button(
             "🎁 Подарить другу",
             callback_data="menu:gift",
-        )
+            style="primary",
+        ),
+        menu_button(
+            "🎟 Промокод",
+            callback_data="menu:promo",
+            style="primary",
+        ),
     ])
+
+    # Large buttons again.
     rows.append([
         menu_button(
             "👥 Пригласить друга",
             callback_data="menu:friends",
-        )
-    ])
-    rows.append([
-        menu_button(
-            "🎟 Промокод",
-            callback_data="menu:promo",
+            style="primary",
         )
     ])
     rows.append([
         menu_button(
             "🆘 Поддержка",
             callback_data="menu:support",
+            style="primary",
         )
     ])
     rows.append([
         menu_button(
             "ℹ️ О сервисе",
             callback_data="menu:info",
+            style="primary",
         )
     ])
 
@@ -507,6 +516,7 @@ def main_menu_inline_keyboard(
             menu_button(
                 "🛡 Админ-панель",
                 callback_data="admin:home",
+                style="primary",
             )
         ])
 
