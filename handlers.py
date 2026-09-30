@@ -1819,7 +1819,7 @@ def build_router(
                 style="danger",
             )
         )
-        kb.row(admin_inline_button("⬅️ Обращения", callback_data="admin:support", style=None))
+        kb.row(admin_inline_button("⬅️ Обращения", callback_data="admin:support", style="primary"))
         return kb.as_markup()
 
     async def show_support_ticket(message: Message, actor, ticket_id: int, *, admin: bool = False) -> None:
@@ -3537,7 +3537,7 @@ def build_router(
                 "🏠 Главное меню",
                 callback_data="home",
                 premium_icon=False,
-                style=None,
+                style="primary",
             ),
         )
         return kb.as_markup()
@@ -3875,14 +3875,14 @@ def build_router(
                 admin_inline_button(
                     "⬅️ Назад",
                     callback_data=f"admin:users:{page - 1}",
-                    style=None,
+                    style="primary",
                 )
             )
         nav.append(
             admin_inline_button(
                 f"📄 {page + 1}/{pages}",
                 callback_data=f"admin:users:{page}",
-                style=None,
+                style="primary",
             )
         )
         if page + 1 < pages:
@@ -3890,7 +3890,7 @@ def build_router(
                 admin_inline_button(
                     "Дальше ➡️",
                     callback_data=f"admin:users:{page + 1}",
-                    style=None,
+                    style="primary",
                 )
             )
         kb.row(*nav)
@@ -3899,7 +3899,7 @@ def build_router(
             admin_inline_button("🔎 Поиск", callback_data="admin:usersearch"),
             admin_inline_button("🔄 Обновить", callback_data=f"admin:users:{page}"),
         )
-        kb.row(admin_inline_button("🏠 Админка", callback_data="admin:home", style=None))
+        kb.row(admin_inline_button("🏠 Админка", callback_data="admin:home", style="primary"))
 
         lines = [
             "👥 <b>Пользователи</b>",
@@ -4005,7 +4005,7 @@ def build_router(
                 admin_inline_button(
                     "👁 Ограниченная",
                     callback_data=f"admin:role:{telegram_id}:limited",
-                    style=None,
+                    style="primary",
                 ),
             )
             if target_role:
@@ -4018,8 +4018,8 @@ def build_router(
                 )
 
         kb.row(
-            admin_inline_button("⬅️ Пользователи", callback_data="admin:users", style=None),
-            admin_inline_button("🏠 Админка", callback_data="admin:home", style=None),
+            admin_inline_button("⬅️ Пользователи", callback_data="admin:users", style="primary"),
+            admin_inline_button("🏠 Админка", callback_data="admin:home", style="primary"),
         )
 
         source = str(user.get("attribution_source") or "прямой").strip()
@@ -4175,11 +4175,11 @@ def build_router(
         if role in {"owner", "full"}:
             kb.row(
                 admin_inline_button("🔄 Обновить", callback_data="admin:servers"),
-                admin_inline_button("⚙️ Система", callback_data="admin:system", style=None),
+                admin_inline_button("⚙️ Система", callback_data="admin:system", style="primary"),
             )
         else:
             kb.row(admin_inline_button("🔄 Обновить", callback_data="admin:servers"))
-        kb.row(admin_inline_button("🏠 Админка", callback_data="admin:home", style=None))
+        kb.row(admin_inline_button("🏠 Админка", callback_data="admin:home", style="primary"))
 
         try:
             sample_users = await db.list_active_users_for_vpn_sync(limit=1)
