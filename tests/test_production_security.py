@@ -453,7 +453,7 @@ def test_reply_keyboard_navigation_replaces_screen_and_removes_button_message(tm
         sent_markup = bot.send_photo.await_args.kwargs['reply_markup']
         # A bottom ReplyKeyboard tap may recreate the tracked photo message,
         # but it must keep the destination screen's inline controls.
-        assert sent_markup.inline_keyboard[0][0].text == 'Купить VPN'
+        assert sent_markup.inline_keyboard[0][0].text == '💳 Купить VPN'
         assert sent_markup.inline_keyboard[0][0].callback_data == 'plans'
         assert sent_markup.inline_keyboard[-1][0].text == '⬅️ Назад'
         assert sent_markup.inline_keyboard[-1][0].callback_data == 'home'
