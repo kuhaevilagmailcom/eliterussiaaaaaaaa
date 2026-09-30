@@ -560,6 +560,7 @@
       (savings>0?(' Выгода тарифа '+savings.toLocaleString('ru-RU')+' ₽.'):'');
     $('#paymentPromoCode').value='';
     $('#paymentPromoResult').textContent='';
+    $('#paymentSheet').classList.remove('payment-pending');
     $('#checkPayment').hidden=true;
     $('#payStars').hidden=false;
     $('#paySbp').hidden=false;
@@ -632,6 +633,7 @@
       const result=await request('/api/miniapp/payment/sbp',{method:'POST',body:JSON.stringify({plan_code:state.selectedPlan.code,promo_code:state.promoCode,device_count:state.selectedDevices})});
       if(result.granted){notify();toast('Подписка активирована');closeSheets();await load(true);go('home');return}
       rememberPayment(result.payment_id);
+      $('#paymentSheet').classList.add('payment-pending');
       $('#checkPayment').hidden=false;
       if(tg?.openLink)tg.openLink(result.pay_url); else window.open(result.pay_url,'_blank');
       toast('После оплаты вернись и нажми «Проверить оплату»');

@@ -37,7 +37,8 @@ async function routeFiles(page, miniApp = false) {
       '/app': ['miniapp/web/index.html','text/html'],
       '/static/app.js': ['miniapp/web/app.js','application/javascript'],
       '/static/styles.css': ['miniapp/web/styles.css','text/css'],
-      '/static/assets/lucide.min.js': ['miniapp/web/assets/lucide.min.js','application/javascript']
+      '/static/assets/lucide.min.js': ['miniapp/web/assets/lucide.min.js','application/javascript'],
+      '/static/assets/Manrope-Variable.ttf': ['miniapp/web/assets/Manrope-Variable.ttf','font/ttf']
     } : {
       '/': ['miniapp/web/site/index.html','text/html'],
       '/agreement': ['miniapp/web/site/agreement.html','text/html'],
@@ -103,27 +104,53 @@ test('Mini App loads and navigates core screens', async ({page}) => {
 });
 
 
-test('Mini App payment sheet stays inside desktop viewport with reduced motion', async ({page}) => {
+test('Mini App checkout fills the viewport and keeps payment actions visible', async ({page}) => {
   const errors=[]; page.on('pageerror', error => errors.push(error.message));
-  await page.setViewportSize({width:390,height:844});
   await page.emulateMedia({reducedMotion:'reduce'});
   await routeFiles(page, true);
-  await page.goto('http://mgn.test/app');
+  for (const viewport of [{width:320,height:700},{width:390,height:844}]) {
+    await page.setViewportSize(viewport);
+    await page.goto('http://mgn.test/app');
 
-  await page.locator('[data-nav="plans"]:visible').first().click();
-  await page.locator('[data-buy="30"]').click();
-  const sheet=page.locator('#paymentSheet');
-  await expect(sheet).toBeVisible();
+    await page.locator('[data-nav="plans"]:visible').first().click();
+    await page.locator('[data-buy="30"]').click();
+    const sheet=page.locator('#paymentSheet');
+    await expect(sheet).toBeVisible();
 
-  const box=await sheet.boundingBox();
-  expect(box).not.toBeNull();
-  expect(box.x).toBeGreaterThanOrEqual(0);
-  expect(box.y).toBeGreaterThanOrEqual(0);
-  expect(box.x+box.width).toBeLessThanOrEqual(390);
-  expect(box.y+box.height).toBeLessThanOrEqual(844);
+    const box=await sheet.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box.x).toBe(0);
+    expect(box.y).toBe(0);
+    expect(box.width).toBe(viewport.width);
+    expect(box.height).toBe(viewport.height);
 
-  const center=box.x+box.width/2;
-  expect(Math.abs(center-195)).toBeLessThanOrEqual(3);
+    const center=box.x+box.width/2;
+    expect(Math.abs(center-viewport.width/2)).toBeLessThanOrEqual(3);
+    for (const selector of ['#payStars','#paySbp']) {
+      const action=page.locator(selector);
+      await expect(action).toBeVisible();
+      const actionBox=await action.boundingBox();
+      expect(actionBox.y+actionBox.height).toBeLessThanOrEqual(viewport.height);
+    }
+    await expect(page.locator('#payStars b')).toHaveText('Telegram Stars');
+    await expect(page.locator('#paymentSheet')).toHaveCSS('font-family',/Manrope/);
+
+    await page.evaluate(() => {
+      document.querySelector('#paymentSheet').classList.add('payment-pending');
+      document.querySelector('#checkPayment').hidden=false;
+    });
+    await expect(page.locator('#checkPayment')).toBeVisible();
+    const checkBox=await page.locator('#checkPayment').boundingBox();
+    expect(checkBox.y+checkBox.height).toBeLessThanOrEqual(viewport.height);
+
+    if (process.env.MGN_CHECKOUT_SCREENSHOT && viewport.width===390) {
+      await page.evaluate(() => {
+        document.querySelector('#paymentSheet').classList.remove('payment-pending');
+        document.querySelector('#checkPayment').hidden=true;
+      });
+      await page.screenshot({path:process.env.MGN_CHECKOUT_SCREENSHOT});
+    }
+  }
   expect(errors).toEqual([]);
 });
 
