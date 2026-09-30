@@ -41,6 +41,19 @@ LOCATION_LABELS = {
     "MGN-US": "🇺🇸 США",
     "MGN-PL": "🇵🇱 Польша",
     "MGN-PK": "🇵🇰 Пакистан",
+    "MGN-SE": "🇸🇪 Швеция",
+    "MGN-CH": "🇨🇭 Швейцария",
+    "MGN-ES": "🇪🇸 Испания",
+    "MGN-EE": "🇪🇪 Эстония",
+    "MGN-MD": "🇲🇩 Молдова",
+    "MGN-TR": "🇹🇷 Турция",
+    "MGN-AL": "🇦🇱 Албания",
+    "MGN-GE": "🇬🇪 Грузия",
+    "MGN-RU": "🇷🇺 Москва",
+    "MGN-MSK": "🇷🇺 Москва",
+    "MGN-IN": "🇮🇳 Индия",
+    "MGN-BY": "🇧🇾 Беларусь",
+    "MGN-IL": "🇮🇱 Израиль",
 }
 
 
@@ -659,18 +672,54 @@ class H1CloudVpnProvider(VpnProvider):
             )
         return selected
 
+    @staticmethod
+    def _federation_collection(
+        data: dict[str, Any] | None,
+        *keys: str,
+    ) -> list[Any]:
+        """Read H1 federation lists across old/new response envelopes."""
+        if not isinstance(data, dict):
+            return []
+
+        queue: list[dict[str, Any]] = [data]
+        visited: set[int] = set()
+        while queue:
+            current = queue.pop(0)
+            marker = id(current)
+            if marker in visited:
+                continue
+            visited.add(marker)
+
+            for key in keys:
+                value = current.get(key)
+                if isinstance(value, list):
+                    return list(value)
+
+            for key in ("data", "result", "payload", "federation"):
+                nested = current.get(key)
+                if isinstance(nested, dict):
+                    queue.append(nested)
+                elif isinstance(nested, list):
+                    return list(nested)
+        return []
+
     async def _federated_nodes(self) -> list[dict[str, Any]]:
-        """Merge every known H1 federation store instead of treating lagg as fallback-only."""
+        """Merge every H1 federation store and tolerate response-shape changes."""
         nodes: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
 
-        def add_node(item: dict[str, Any], proxy_kind: str) -> None:
-            node_id = self._node_id(item)
+        def add_value(value: Any, proxy_kind: str) -> None:
+            if isinstance(value, dict):
+                node = dict(value)
+                node_id = self._node_id(node)
+            else:
+                node_id = str(value or "").strip()
+                node = {"id": node_id}
+
             key = (proxy_kind, node_id)
             if not node_id or key in seen:
                 return
             seen.add(key)
-            node = dict(item)
             node["proxy_kind"] = proxy_kind
             nodes.append(node)
 
@@ -678,14 +727,18 @@ class H1CloudVpnProvider(VpnProvider):
             try:
                 data = await asyncio.wait_for(
                     self._request("GET", "/fed/link"),
-                    timeout=1.5,
+                    timeout=2.5,
                 )
-                raw = data.get("links") if isinstance(data, dict) else None
-                if isinstance(raw, list):
-                    for value in raw:
-                        node_id = str(value or "").strip()
-                        if node_id:
-                            add_node({"id": node_id}, "lproxy")
+                raw = self._federation_collection(
+                    data,
+                    "links",
+                    "nodes",
+                    "items",
+                    "servers",
+                    "services",
+                )
+                for value in raw:
+                    add_value(value, "lproxy")
             except Exception as exc:
                 logger.warning(
                     "H1Cloud /fed/link unavailable: %s",
@@ -696,13 +749,17 @@ class H1CloudVpnProvider(VpnProvider):
             try:
                 data = await asyncio.wait_for(
                     self._request("GET", "/fed/registry"),
-                    timeout=1.5,
+                    timeout=2.5,
                 )
-                raw = data.get("nodes") if isinstance(data, dict) else None
-                if isinstance(raw, list):
-                    for item in raw:
-                        if isinstance(item, dict):
-                            add_node(item, "proxy")
+                raw = self._federation_collection(
+                    data,
+                    "nodes",
+                    "items",
+                    "servers",
+                    "links",
+                )
+                for value in raw:
+                    add_value(value, "proxy")
             except Exception as exc:
                 logger.warning(
                     "H1Cloud /fed/registry unavailable: %s",
@@ -713,24 +770,24 @@ class H1CloudVpnProvider(VpnProvider):
             try:
                 data = await asyncio.wait_for(
                     self._request("GET", "/fed/lagg", allow_missing=True),
-                    timeout=2.5,
+                    timeout=4.0,
                 )
-                raw = data.get("nodes") if isinstance(data, dict) else None
-                if isinstance(raw, list):
-                    for item in raw:
-                        if isinstance(item, dict):
-                            add_node(item, "lproxy")
+                raw = self._federation_collection(
+                    data,
+                    "nodes",
+                    "items",
+                    "servers",
+                    "links",
+                )
+                for value in raw:
+                    add_value(value, "lproxy")
             except Exception as exc:
                 logger.warning(
                     "H1Cloud /fed/lagg unavailable: %s",
                     str(exc).strip() or type(exc).__name__,
                 )
 
-        await asyncio.gather(
-            load_linked(),
-            load_registry(),
-            load_lagg(),
-        )
+        await asyncio.gather(load_linked(), load_registry(), load_lagg())
 
         logger.info(
             "H1Cloud federation discovery: %s remote node(s): %s",
@@ -753,7 +810,16 @@ class H1CloudVpnProvider(VpnProvider):
 
     @staticmethod
     def _node_id(node: dict[str, Any]) -> str:
-        for key in ("node_id", "id", "server_id"):
+        for key in (
+            "node_id",
+            "id",
+            "server_id",
+            "sid",
+            "service_id",
+            "serviceId",
+            "billing_id",
+            "billingId",
+        ):
             value = node.get(key)
             if value is not None and str(value).strip():
                 return str(value).strip()
@@ -1429,77 +1495,51 @@ class H1CloudVpnProvider(VpnProvider):
             }
         ]
 
-        async def source(path: str, key: str) -> tuple[str, dict[str, Any] | None, int, str]:
-            data, elapsed, error = await timed_request(path, timeout=2.0)
-            count = 0
-            if isinstance(data, dict):
-                value = data.get(key)
-                if isinstance(value, list):
-                    count = len(value)
-            return path, data, count, error
+        async def source(
+            path: str,
+            *keys: str,
+        ) -> tuple[str, dict[str, Any] | None, list[Any], str]:
+            data, _elapsed, error = await timed_request(path, timeout=4.2)
+            raw = self._federation_collection(data, *keys)
+            return path, data, raw, error
 
         linked_result, registry_result, lagg_result = await asyncio.gather(
-            source("/fed/link", "links"),
-            source("/fed/registry", "nodes"),
-            source("/fed/lagg", "nodes"),
+            source("/fed/link", "links", "nodes", "items", "servers", "services"),
+            source("/fed/registry", "nodes", "items", "servers", "links"),
+            source("/fed/lagg", "nodes", "items", "servers", "links"),
         )
 
         source_rows: dict[str, dict[str, Any]] = {}
         nodes: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
 
-        path, linked_data, linked_count, linked_error = linked_result
-        source_rows[path] = {
-            "available": linked_data is not None,
-            "count": linked_count,
-            "error": linked_error,
-        }
-        raw_links = linked_data.get("links") if isinstance(linked_data, dict) else None
-        if isinstance(raw_links, list):
-            for value in raw_links:
+        def add_diag_node(value: Any, proxy_kind: str) -> None:
+            if isinstance(value, dict):
+                node = dict(value)
+                node_id = self._node_id(node)
+            else:
                 node_id = str(value or "").strip()
-                key = ("lproxy", node_id)
-                if node_id and key not in seen:
-                    seen.add(key)
-                    nodes.append({"id": node_id, "proxy_kind": "lproxy"})
+                node = {"id": node_id}
+            key = (proxy_kind, node_id)
+            if not node_id or key in seen:
+                return
+            seen.add(key)
+            node["proxy_kind"] = proxy_kind
+            nodes.append(node)
 
-        path, registry_data, registry_count, registry_error = registry_result
-        source_rows[path] = {
-            "available": registry_data is not None,
-            "count": registry_count,
-            "error": registry_error,
-        }
-        raw_nodes = registry_data.get("nodes") if isinstance(registry_data, dict) else None
-        if isinstance(raw_nodes, list):
-            for item in raw_nodes:
-                if not isinstance(item, dict):
-                    continue
-                node_id = self._node_id(item)
-                key = ("proxy", node_id)
-                if node_id and key not in seen:
-                    seen.add(key)
-                    node = dict(item)
-                    node["proxy_kind"] = "proxy"
-                    nodes.append(node)
-
-        path, lagg_data, lagg_count, lagg_error = lagg_result
-        source_rows[path] = {
-            "available": lagg_data is not None,
-            "count": lagg_count,
-            "error": lagg_error,
-        }
-        raw_lagg = lagg_data.get("nodes") if isinstance(lagg_data, dict) else None
-        if isinstance(raw_lagg, list):
-            for item in raw_lagg:
-                if not isinstance(item, dict):
-                    continue
-                node_id = self._node_id(item)
-                key = ("lproxy", node_id)
-                if node_id and key not in seen:
-                    seen.add(key)
-                    node = dict(item)
-                    node["proxy_kind"] = "lproxy"
-                    nodes.append(node)
+        for result, kind in (
+            (linked_result, "lproxy"),
+            (registry_result, "proxy"),
+            (lagg_result, "lproxy"),
+        ):
+            path, data, raw, error = result
+            source_rows[path] = {
+                "available": data is not None,
+                "count": len(raw),
+                "error": error,
+            }
+            for value in raw:
+                add_diag_node(value, kind)
 
         async def inspect_remote(node: dict[str, Any]) -> dict[str, Any]:
             node_id = self._node_id(node)
@@ -1518,6 +1558,7 @@ class H1CloudVpnProvider(VpnProvider):
                     "id": node_id,
                     "proxy_kind": kind,
                     "available": True,
+                    "configured": True,
                     "latency_ms": health_ms,
                     "check": "health",
                     "error": "",
@@ -1539,6 +1580,7 @@ class H1CloudVpnProvider(VpnProvider):
                     "id": node_id,
                     "proxy_kind": kind,
                     "available": True,
+                    "configured": True,
                     "latency_ms": inbound_ms,
                     "check": "inbounds",
                     "error": "",
@@ -1552,6 +1594,7 @@ class H1CloudVpnProvider(VpnProvider):
                     "id": node_id,
                     "proxy_kind": kind,
                     "available": False,
+                    "configured": True,
                     "latency_ms": max(health_ms, inbound_ms),
                     "check": "health+inbounds",
                     "error": error or health_error or "unavailable",
@@ -1638,95 +1681,34 @@ class H1CloudVpnProvider(VpnProvider):
                 "error": "",
             }
 
-        # Админка должна показывать полный каталог MGN VPN всегда, даже когда
-        # H1 federation временно не отдал узел или его проверка ушла в timeout.
-        # Доступность влияет только на статус, но никогда не скрывает сервер.
-        canonical: dict[str, dict[str, Any]] = {
-            code: {
-                "kind": "main" if code == "nl" else "federation",
-                "name": label,
-                "id": code,
-                "host": "",
-                "port": 0,
-                "proxy_kind": "direct" if code == "nl" else "federation",
-                "available": False,
-                "configured": False,
-                "latency_ms": None,
-                "check": "not_checked",
-                "error": "",
-            }
-            for code, label in CANONICAL_SERVERS
-        }
-
-        def server_code(item: dict[str, Any]) -> str:
-            identity = " ".join(
-                str(item.get(key) or "")
-                for key in ("name", "host", "id", "proxy_kind")
-            )
-            label = _location_label(identity)
-            if "США 2" in label:
-                return "us2"
-            if "США" in label:
-                return "us"
-            if "Нидерланды" in label:
-                return "nl"
-            if "Пакистан" in label:
-                return "pk"
-            if "Германия" in label:
-                return "de"
-            if "Польша" in label:
-                return "pl"
-            if "Финляндия" in label:
-                return "fi"
-            return ""
-
-        us_seen = 0
+        # Keep the real H1 inventory. The old fixed 7-country catalog silently
+        # dropped every newer H1 location, making the admin panel disagree with
+        # the subscription and with H1's own availability checks.
         for item in servers:
-            code = server_code(item)
-            if code == "us":
-                us_seen += 1
-                if us_seen >= 2:
-                    code = "us2"
-            if not code:
-                continue
-            merged = dict(item)
-            merged["name"] = dict(CANONICAL_SERVERS)[code]
-            merged["catalog_id"] = code
-            merged["configured"] = True
-            canonical[code] = merged
+            item.setdefault("configured", bool(item.get("available")))
 
-        # Реальная подписка важнее federation discovery: если VLESS присутствует,
-        # сервер точно настроен для пользователя, даже когда /fed/link пуст.
-        us_link_count = 0
-        for link in subscription_links:
-            label = _location_label(link)
-            code = ""
-            if "США 2" in label:
-                code = "us2"
-            elif "США" in label:
-                us_link_count += 1
-                code = "us2" if us_link_count >= 2 else "us"
-            elif "Нидерланды" in label:
-                code = "nl"
-            elif "Пакистан" in label:
-                code = "pk"
-            elif "Германия" in label:
-                code = "de"
-            elif "Польша" in label:
-                code = "pl"
-            elif "Финляндия" in label:
-                code = "fi"
-            if not code:
-                continue
+        existing_endpoints: dict[tuple[str, int], int] = {}
+        for index, item in enumerate(servers):
+            host = str(item.get("host") or "").lower().rstrip(".")
+            port = int(item.get("port") or 0)
+            if host and port:
+                existing_endpoints[(host, port)] = index
 
+        for link_index, link in enumerate(subscription_links, start=1):
             host = ""
             port = 0
+            fragment = ""
             try:
                 parsed = urlsplit(link)
-                host = str(parsed.hostname or "")
+                host = str(parsed.hostname or "").lower().rstrip(".")
                 port = int(parsed.port or 0)
+                fragment = unquote(str(parsed.fragment or "")).split("|", 1)[0].strip()
             except (TypeError, ValueError):
                 pass
+
+            label = _location_label(link)
+            if not label:
+                label = fragment or host or f"VLESS {link_index}"
 
             latency: float | None = None
             if host and port:
@@ -1735,25 +1717,74 @@ class H1CloudVpnProvider(VpnProvider):
                 except Exception:
                     latency = None
 
-            current = dict(canonical[code])
-            current.update(
-                {
-                    "name": dict(CANONICAL_SERVERS)[code],
-                    "catalog_id": code,
-                    "configured": True,
-                    "host": host or current.get("host", ""),
-                    "port": port or int(current.get("port") or 0),
-                    "available": latency is not None,
-                    "latency_ms": int(latency) if latency is not None else None,
-                    "check": "vless_tcp" if latency is not None else "subscription",
-                    # Конфиг существует; отсутствие TCP-ответа с BotHost не доказывает,
-                    # что он не работает у пользователя.
-                    "error": "" if latency is not None else "probe_unverified",
-                }
-            )
-            canonical[code] = current
+            endpoint = (host, port)
+            existing_index = existing_endpoints.get(endpoint) if host and port else None
+            payload = {
+                "kind": "main" if host == main_host.lower().rstrip(".") else "federation",
+                "name": label,
+                "id": f"sub:{link_index}",
+                "host": host,
+                "port": port,
+                "proxy_kind": "subscription",
+                "available": latency is not None,
+                "configured": True,
+                "latency_ms": int(latency) if latency is not None else None,
+                "check": "vless_tcp" if latency is not None else "subscription",
+                "error": "" if latency is not None else "probe_unverified",
+            }
 
-        servers = [canonical[code] for code, _label in CANONICAL_SERVERS]
+            if existing_index is not None:
+                current = dict(servers[existing_index])
+                current.update(
+                    {
+                        "host": host,
+                        "port": port,
+                        "configured": True,
+                        "available": bool(current.get("available")) or latency is not None,
+                        "latency_ms": (
+                            current.get("latency_ms")
+                            if current.get("available")
+                            else payload["latency_ms"]
+                        ),
+                        "check": (
+                            current.get("check")
+                            if current.get("available")
+                            else payload["check"]
+                        ),
+                        "error": (
+                            ""
+                            if current.get("available") or latency is not None
+                            else "probe_unverified"
+                        ),
+                    }
+                )
+                if not str(current.get("name") or "").strip():
+                    current["name"] = label
+                servers[existing_index] = current
+            else:
+                servers.append(payload)
+                if host and port:
+                    existing_endpoints[endpoint] = len(servers) - 1
+
+        # Federation stores can expose the same physical node through both
+        # proxy and lproxy. Collapse only exact endpoint/id duplicates; never
+        # collapse different VLESS endpoints from the same country.
+        deduped: list[dict[str, Any]] = []
+        seen_inventory: set[tuple[str, str, int]] = set()
+        for item in servers:
+            host = str(item.get("host") or "").lower().rstrip(".")
+            port = int(item.get("port") or 0)
+            node_id = str(item.get("id") or "")
+            if host and port:
+                key = ("endpoint", host, port)
+            else:
+                key = ("node", node_id, 0)
+            if key in seen_inventory:
+                continue
+            seen_inventory.add(key)
+            deduped.append(item)
+
+        servers = deduped
 
         return {
             "provider": self.mode_name,
@@ -1988,7 +2019,7 @@ class H1CloudVpnProvider(VpnProvider):
         # make a newly added country (for example Germany) invisible in Happ.
         # Failures of one country never invalidate links returned by another.
         try:
-            nodes = await asyncio.wait_for(self._federated_nodes(), timeout=1.8)
+            nodes = await asyncio.wait_for(self._federated_nodes(), timeout=4.5)
         except Exception as exc:
             logger.warning(
                 "H1Cloud linked-node discovery failed for %s (%s)",
