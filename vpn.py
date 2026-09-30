@@ -1972,11 +1972,49 @@ class H1CloudVpnProvider(VpnProvider):
             )
         )
 
-        allowed_codes = {code for code, _label in BASE_MGN_SERVERS}
-        servers = [
-            item for item in deduped
-            if base_code(item) in allowed_codes
-        ]
+        base_labels = dict(BASE_MGN_SERVERS)
+        grouped: dict[str, list[dict[str, Any]]] = {
+            code: [] for code, _label in BASE_MGN_SERVERS
+        }
+        for item in deduped:
+            code = base_code(item)
+            if code in grouped:
+                grouped[code].append(item)
+
+        servers: list[dict[str, Any]] = []
+        for code, canonical_name in BASE_MGN_SERVERS:
+            candidates = grouped.get(code) or []
+            if candidates:
+                candidates.sort(
+                    key=lambda item: (
+                        0 if item.get("available") else 1,
+                        int(item.get("latency_ms") or 999999),
+                        0 if item.get("host") else 1,
+                    )
+                )
+                chosen = dict(candidates[0])
+                chosen["name"] = canonical_name
+                chosen["configured"] = True
+                servers.append(chosen)
+                continue
+
+            # This should be rare because the fallback catalog above already
+            # creates missing entries, but keep the admin inventory stable.
+            servers.append(
+                {
+                    "kind": "main" if code == "nl" else "federation",
+                    "name": base_labels[code],
+                    "id": f"base:{code}",
+                    "host": "",
+                    "port": 0,
+                    "proxy_kind": "direct" if code == "nl" else "federation",
+                    "available": False,
+                    "configured": True,
+                    "latency_ms": None,
+                    "check": "catalog_fallback",
+                    "error": "temporarily_not_reported",
+                }
+            )
 
         return {
             "provider": self.mode_name,
