@@ -5,7 +5,7 @@ import aiosqlite
 import pytest
 
 from db import Database, from_iso, to_iso, utcnow
-from catalog import rub_to_stars
+from catalog import plan_total_price_rub, rub_to_stars
 
 
 def run(coro):
@@ -812,5 +812,105 @@ def test_giveaway_participants_page_marks_current_winner(tmp_path):
         )
         assert total == 2
         assert [int(item["is_winner"]) for item in rows] == [1, 0]
+
+    run(scenario())
+
+
+
+def test_subscription_device_pricing_is_50_rub_per_extra_device():
+    assert plan_total_price_rub(None, "30", 1) == 99
+    assert plan_total_price_rub(None, "30", 2) == 149
+    assert plan_total_price_rub(None, "30", 3) == 199
+    assert plan_total_price_rub(None, "30", 4) == 249
+    assert plan_total_price_rub(None, "30", 5) == 299
+
+
+def test_subscription_purchase_sets_selected_device_count(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "device-checkout.sqlite3"))
+        await db.init()
+        await db.ensure_user(901, "devices", "Devices")
+
+        await db.create_sbp_payment(
+            payment_id="buy-3",
+            order_id="buy-3-order",
+            telegram_id=901,
+            target_telegram_id=901,
+            plan_code="30",
+            amount_rub=199,
+            original_amount_rub=199,
+            device_count=3,
+            previous_device_count=1,
+        )
+        assert await db.settle_sbp_payment("buy-3")
+        user = await db.get_user(901)
+        assert user["max_devices"] == 3
+        assert user["bonus_devices"] == 2
+
+        before = from_iso(user["subscription_until"])
+        await db.create_sbp_payment(
+            payment_id="renew-2",
+            order_id="renew-2-order",
+            telegram_id=901,
+            target_telegram_id=901,
+            plan_code="30",
+            amount_rub=149,
+            original_amount_rub=149,
+            device_count=2,
+            previous_device_count=3,
+        )
+        assert await db.settle_sbp_payment("renew-2")
+        reduced = await db.get_user(901)
+        assert reduced["max_devices"] == 2
+        assert reduced["bonus_devices"] == 1
+        assert from_iso(reduced["subscription_until"]) >= before + timedelta(days=30)
+
+        await db.create_sbp_payment(
+            payment_id="renew-4",
+            order_id="renew-4-order",
+            telegram_id=901,
+            target_telegram_id=901,
+            plan_code="30",
+            amount_rub=249,
+            original_amount_rub=249,
+            device_count=4,
+            previous_device_count=2,
+        )
+        assert await db.settle_sbp_payment("renew-4")
+        expanded = await db.get_user(901)
+        assert expanded["max_devices"] == 4
+        assert expanded["bonus_devices"] == 3
+
+    run(scenario())
+
+
+def test_subscription_refund_restores_previous_device_count(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "device-refund.sqlite3"))
+        await db.init()
+        await db.ensure_user(902, "refund", "Refund")
+        for _ in range(2):
+            await db.grant_extra_device(902)
+        await db.extend_subscription(902, 30, "1 месяц", 1)
+
+        await db.create_sbp_payment(
+            payment_id="renew-to-5",
+            order_id="renew-to-5-order",
+            telegram_id=902,
+            target_telegram_id=902,
+            plan_code="30",
+            amount_rub=299,
+            original_amount_rub=299,
+            device_count=5,
+            previous_device_count=3,
+        )
+        assert await db.settle_sbp_payment("renew-to-5")
+        assert (await db.get_user(902))["max_devices"] == 5
+
+        reversed_access = await db.reverse_sbp_access("renew-to-5", "refunded")
+        assert reversed_access and reversed_access["changed"] is True
+        restored = await db.get_user(902)
+        assert restored["max_devices"] == 3
+        assert restored["bonus_devices"] == 2
 
     run(scenario())
