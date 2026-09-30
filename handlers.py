@@ -437,51 +437,76 @@ def main_menu_inline_keyboard(
     *,
     active: bool = False,
 ) -> Any:
+    """Large, simple public menu: regular emoji only, no custom icons or styles."""
     kb = InlineKeyboardBuilder()
+
+    def menu_button(
+        text: str,
+        *,
+        callback_data: str | None = None,
+        web_app: WebAppInfo | None = None,
+    ) -> InlineKeyboardButton:
+        return blue_inline_button(
+            text,
+            callback_data=callback_data,
+            web_app=web_app,
+            premium_icon=False,
+            style=None,
+        )
+
     if miniapp_url:
         kb.row(
-            blue_inline_button(
-                "Открыть приложение",
+            menu_button(
+                "📱 Открыть приложение",
                 web_app=WebAppInfo(url=miniapp_url),
-                icon_index=9,
             )
         )
+
     kb.row(
-        blue_inline_button(
-            "Моя подписка" if active else "Купить подписку",
+        menu_button(
+            "📊 Моя подписка" if active else "💳 Купить подписку",
             callback_data="menu:connect" if active else "plans",
-            icon_index=1 if not active else 2,
         )
     )
     kb.row(
-        blue_inline_button(
-            "Подарить другу",
+        menu_button(
+            "🎁 Подарить другу",
             callback_data="menu:gift",
-            icon_index=4,
         )
     )
     kb.row(
-        blue_inline_button(
-            "Реферальная система",
+        menu_button(
+            "👥 Пригласить друга",
             callback_data="menu:friends",
-            icon_index=8,
         )
     )
     kb.row(
-        blue_inline_button(
-            "О сервисе",
-            callback_data="menu:info",
-            icon_index=5,
+        menu_button(
+            "🎟 Промокод",
+            callback_data="menu:promo",
         )
     )
+    kb.row(
+        menu_button(
+            "🆘 Поддержка",
+            callback_data="menu:support",
+        )
+    )
+    kb.row(
+        menu_button(
+            "ℹ️ О сервисе",
+            callback_data="menu:info",
+        )
+    )
+
     if admin_role:
         kb.row(
-            blue_inline_button(
+            menu_button(
                 "🛡 Админ-панель",
                 callback_data="admin:home",
-                icon_index=10,
             )
         )
+
     return kb.as_markup()
 
 def plans_keyboard(config: Config) -> Any:
@@ -1842,23 +1867,16 @@ def build_router(
         kb = InlineKeyboardBuilder()
         kb.row(
             blue_inline_button(
-                "Поддержка",
-                callback_data="menu:support",
-                icon_index=6,
-            )
-        )
-        kb.row(
-            blue_inline_button(
-                "Канал",
+                "📣 Канал",
                 url=config.channel_url,
-                icon_index=8,
+                premium_icon=False,
             )
         )
         kb.row(
             blue_inline_button(
-                "Политика конфиденциальности",
+                "📄 Политика конфиденциальности",
                 url=privacy_policy_url(),
-                icon_index=11,
+                premium_icon=False,
             )
         )
         add_nav_buttons(kb, back_data="home")
@@ -1881,11 +1899,10 @@ def build_router(
             await db.clear_support_session(callback.from_user.id)
         await safe_callback_answer(callback, )
         if callback.message:
-            e = emoji.icon(6, pack=PACK_NEWS)
             await send_screen(
                 callback.message,
                 callback.from_user,
-                f"{e} <b>Поддержка</b>\n\n"
+                "🆘 <b>Поддержка</b>\n\n"
                 "Опишите проблему одним сообщением. Обращение получат администраторы; "
                 "в нём будут видны ваш username, Telegram ID, дата и время.",
                 reply_markup=support_keyboard(),
@@ -3364,13 +3381,18 @@ def build_router(
     async def information_screen(message: Message) -> None:
         await ensure_actor(message.from_user)
         kb = InlineKeyboardBuilder()
-        kb.row(blue_inline_button("Поддержка", callback_data="menu:support", icon_index=6))
-        kb.row(blue_inline_button("Канал", url=config.channel_url, icon_index=8))
         kb.row(
             blue_inline_button(
-                "Политика конфиденциальности",
+                "📣 Канал",
+                url=config.channel_url,
+                premium_icon=False,
+            )
+        )
+        kb.row(
+            blue_inline_button(
+                "📄 Политика конфиденциальности",
                 url=privacy_policy_url(),
-                icon_index=11,
+                premium_icon=False,
             )
         )
         add_nav_buttons(kb, back_data="home")
@@ -3383,11 +3405,10 @@ def build_router(
 
     @router.message(F.text.in_({"🆘 Поддержка", "🆘 Помощь", "Поддержка", "Помощь"}))
     async def help_screen(message: Message) -> None:
-        e = emoji.icon(6, pack=PACK_NEWS)
         await send_screen(
             message,
             message.from_user,
-            f"{e} <b>Поддержка</b>\n\n"
+            "🆘 <b>Поддержка</b>\n\n"
             "Создайте обращение и опишите проблему одним сообщением. "
             "Администратор сможет ответить вам прямо через бота.",
             reply_markup=support_keyboard(),
