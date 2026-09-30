@@ -45,6 +45,43 @@ def test_new_user_channel_verification_is_persisted(tmp_path):
     run(scenario())
 
 
+def test_trial_is_granted_once_and_expiry_notice_is_idempotent(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "trial.sqlite3"))
+        await db.init()
+        await db.ensure_user(91, "trial_user", "Trial")
+
+        granted = await db.grant_trial_once(91)
+        assert granted is not None
+        assert granted["trial_used"] == 1
+        assert granted["plan_name"] == "Пробный доступ"
+        until = from_iso(granted["subscription_until"])
+        assert until is not None
+        assert utcnow() + timedelta(hours=23, minutes=59) < until <= utcnow() + timedelta(days=1, minutes=1)
+        assert await db.grant_trial_once(91) is None
+        assert await db.list_pending_trial_grant_notifications() == [91]
+        assert await db.claim_trial_grant_notification(91)
+        assert not await db.claim_trial_grant_notification(91)
+        assert await db.list_pending_trial_grant_notifications() == []
+
+        # Trial users receive the dedicated expiry flow, not the ordinary
+        # immediate "1 day remaining" paid-subscription reminder.
+        assert await db.list_due_expiry_notifications() == []
+
+        async with aiosqlite.connect(db.path) as connection:
+            await connection.execute(
+                "UPDATE users SET subscription_until=? WHERE telegram_id=?",
+                (to_iso(utcnow() - timedelta(seconds=1)), 91),
+            )
+            await connection.commit()
+        assert await db.list_expired_trial_notifications() == [91]
+        assert await db.claim_trial_expiry_notification(91)
+        assert not await db.claim_trial_expiry_notification(91)
+        assert await db.list_expired_trial_notifications() == []
+
+    run(scenario())
+
+
 def test_referral_rewards_are_atomic_and_capped(tmp_path):
     async def scenario():
         db = Database(str(tmp_path / "mgn.sqlite3"))

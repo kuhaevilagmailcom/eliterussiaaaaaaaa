@@ -955,11 +955,42 @@ def build_router(
             return True
         return status == "restricted" and bool(getattr(member, "is_member", False))
 
+    async def grant_trial_after_verification(bot, user_id: int) -> dict[str, Any] | None:
+        user = await db.grant_trial_once(user_id)
+        if not user:
+            return None
+        try:
+            await asyncio.wait_for(provider.provision(user), timeout=10.0)
+        except Exception as exc:
+            logger.warning(
+                "Trial provisioning deferred for %s: %s", user_id, type(exc).__name__
+            )
+        keyboard = InlineKeyboardBuilder()
+        keyboard.row(
+            blue_inline_button("Моя подписка", callback_data="menu:connect", icon_index=2)
+        )
+        if not await db.claim_trial_grant_notification(user_id):
+            return user
+        try:
+            await bot.send_message(
+                user_id,
+                "🎁 <b>У вас есть пробная подписка на один день</b>\n\n"
+                "VPN уже активирован. Нажмите «Моя подписка», чтобы подключить устройство.",
+                reply_markup=keyboard.as_markup(),
+            )
+        except Exception as exc:
+            await db.release_trial_grant_notification(user_id)
+            logger.warning(
+                "Could not send trial notification to %s: %s", user_id, type(exc).__name__
+            )
+        return user
+
     async def require_channel_membership(message: Message, actor, user: dict[str, Any]) -> bool:
         if user.get("channel_verified_at") or is_owner(int(actor.id)):
             return True
         if await is_channel_member(message.bot, int(actor.id)):
             await db.mark_channel_verified(int(actor.id))
+            await grant_trial_after_verification(message.bot, int(actor.id))
             return True
         await message.answer(
             "📣 <b>Подпишитесь на канал MGN VPN</b>\n\n"
@@ -1631,6 +1662,7 @@ def build_router(
             )
             return
         await db.mark_channel_verified(callback.from_user.id)
+        await grant_trial_after_verification(callback.bot, callback.from_user.id)
         await safe_callback_answer(callback, "Подписка подтверждена")
         if callback.message:
             await show_home(

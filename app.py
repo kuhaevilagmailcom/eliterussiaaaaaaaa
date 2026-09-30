@@ -188,6 +188,145 @@ async def send_expiry_notifications_once(bot: Bot, db: Database, config: Config)
     return sent
 
 
+def _required_channel_id(channel_url: str) -> str | int | None:
+    value = str(channel_url or "").strip()
+    if re.fullmatch(r"-100\d{6,}", value):
+        return int(value)
+    match = re.fullmatch(r"@([A-Za-z0-9_]{5,32})", value)
+    if match:
+        return "@" + match.group(1)
+    match = re.fullmatch(r"https?://t\.me/([A-Za-z0-9_]{5,32})/?", value)
+    return "@" + match.group(1) if match else None
+
+
+async def _is_channel_member(bot: Bot, channel_id: str | int, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Trial membership check failed for %s: %s", user_id, type(exc).__name__
+        )
+        return False
+    status = str(getattr(member, "status", "")).lower()
+    return status in {"creator", "administrator", "member"} or (
+        status == "restricted" and bool(getattr(member, "is_member", False))
+    )
+
+
+async def _notify_trial_granted(bot: Bot, db: Database, user_id: int) -> bool:
+    if not await db.claim_trial_grant_notification(user_id):
+        return False
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Моя подписка", callback_data="menu:connect")
+    ]])
+    try:
+        await bot.send_message(
+            user_id,
+            "🎁 <b>У вас есть пробная подписка на один день</b>\n\n"
+            "VPN уже активирован. Нажмите «Моя подписка», чтобы подключить устройство.",
+            reply_markup=keyboard,
+        )
+        return True
+    except Exception:
+        await db.release_trial_grant_notification(user_id)
+        raise
+
+
+async def distribute_existing_trials_once(
+    bot: Bot,
+    db: Database,
+    config: Config,
+    provider: VpnProvider,
+) -> tuple[int, int]:
+    """Grant trials to existing inactive users who are still channel members."""
+    channel_id = _required_channel_id(config.channel_url)
+    if channel_id is None:
+        logging.getLogger(__name__).error("CHANNEL_URL cannot be used for trial distribution")
+        return 0, 0
+    granted = checked = 0
+    after_id = 0
+    while True:
+        candidates = await db.list_trial_candidates(after_id=after_id, limit=100)
+        if not candidates:
+            break
+        for user_id in candidates:
+            after_id = user_id
+            checked += 1
+            if not await _is_channel_member(bot, channel_id, user_id):
+                continue
+            user = await db.grant_trial_once(user_id)
+            if not user:
+                continue
+            try:
+                await asyncio.wait_for(provider.provision(user), timeout=10.0)
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Trial provisioning deferred for %s: %s", user_id, type(exc).__name__
+                )
+            try:
+                await _notify_trial_granted(bot, db, user_id)
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Could not notify trial user %s: %s", user_id, type(exc).__name__
+                )
+            granted += 1
+            await asyncio.sleep(0.05)
+    return granted, checked
+
+
+async def trial_distribution_loop(
+    bot: Bot,
+    db: Database,
+    config: Config,
+    provider: VpnProvider,
+) -> None:
+    logger = logging.getLogger(__name__)
+    while True:
+        try:
+            granted, checked = await distribute_existing_trials_once(bot, db, config, provider)
+            logger.info("Trial distribution complete: %s granted, %s checked", granted, checked)
+        except Exception:
+            logger.exception("Trial distribution pass failed")
+        await asyncio.sleep(6 * 60 * 60)
+
+
+async def send_expired_trial_notifications_once(bot: Bot, db: Database) -> int:
+    sent = 0
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Купить VPN", callback_data="plans")
+    ]])
+    for user_id in await db.list_expired_trial_notifications():
+        if not await db.claim_trial_expiry_notification(user_id):
+            continue
+        try:
+            await bot.send_message(
+                user_id,
+                "⏳ <b>Пробная подписка закончилась</b>\n\n"
+                "Хотите купить VPN и продолжить пользоваться сервисом?",
+                reply_markup=keyboard,
+            )
+            sent += 1
+        except Exception as exc:
+            await db.release_trial_expiry_notification(user_id)
+            logging.getLogger(__name__).warning(
+                "Could not send expired trial notice to %s: %s", user_id, type(exc).__name__
+            )
+    return sent
+
+
+async def retry_trial_grant_notifications_once(bot: Bot, db: Database) -> int:
+    sent = 0
+    for user_id in await db.list_pending_trial_grant_notifications():
+        try:
+            if await _notify_trial_granted(bot, db, user_id):
+                sent += 1
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Could not retry trial notice for %s: %s", user_id, type(exc).__name__
+            )
+    return sent
+
+
 async def expiry_notification_loop(bot: Bot, db: Database, config: Config) -> None:
     logger = logging.getLogger(__name__)
     while True:
@@ -195,6 +334,12 @@ async def expiry_notification_loop(bot: Bot, db: Database, config: Config) -> No
             sent = await send_expiry_notifications_once(bot, db, config)
             if sent:
                 logger.info("Subscription expiry reminders sent: %s", sent)
+            trial_sent = await send_expired_trial_notifications_once(bot, db)
+            if trial_sent:
+                logger.info("Expired trial notifications sent: %s", trial_sent)
+            grant_sent = await retry_trial_grant_notifications_once(bot, db)
+            if grant_sent:
+                logger.info("Retried trial grant notifications sent: %s", grant_sent)
         except Exception:
             logger.exception("Subscription expiry reminder pass failed")
         await asyncio.sleep(60 * 60)
@@ -544,6 +689,7 @@ async def main() -> None:
         payment_reconciliation_loop(bot, config, db, provider)
     )
     expiry_task = asyncio.create_task(expiry_notification_loop(bot, db, config))
+    trial_task = asyncio.create_task(trial_distribution_loop(bot, db, config, provider))
     server_alert_task = asyncio.create_task(
         server_status_alert_loop(bot, config, db, provider)
     )
@@ -589,6 +735,7 @@ async def main() -> None:
         backup_task.cancel()
         payment_task.cancel()
         expiry_task.cancel()
+        trial_task.cancel()
         server_alert_task.cancel()
         giveaway_task.cancel()
         if federation_task:
@@ -603,6 +750,10 @@ async def main() -> None:
             pass
         try:
             await expiry_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await trial_task
         except asyncio.CancelledError:
             pass
         try:

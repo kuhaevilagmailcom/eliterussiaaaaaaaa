@@ -13,7 +13,7 @@ import aiosqlite
 import pytest
 from aiohttp import ClientSession, web
 
-from app import notify_admins_restarted
+from app import distribute_existing_trials_once, notify_admins_restarted
 from config import Config
 from db import Database, utcnow, from_iso
 from miniapp import MiniAppServer, validate_init_data
@@ -30,6 +30,39 @@ from handlers import (
 from vpn import H1CloudVpnProvider
 
 TOKEN = '123456:TEST_ONLY'
+
+
+def test_existing_channel_member_receives_one_trial_and_notification(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", TOKEN)
+
+    async def run():
+        config = replace(
+            Config.from_env(),
+            db_path=str(tmp_path / "existing-trial.db"),
+            channel_url="https://t.me/mgnvpnn",
+        )
+        db = Database(config.db_path)
+        await db.init()
+        await db.ensure_user(701, "member", "Member")
+        bot = SimpleNamespace(
+            get_chat_member=AsyncMock(return_value=SimpleNamespace(status="member")),
+            send_message=AsyncMock(),
+        )
+        provider = SimpleNamespace(provision=AsyncMock())
+
+        granted, checked = await distribute_existing_trials_once(
+            bot, db, config, provider
+        )
+        assert (granted, checked) == (1, 1)
+        user = await db.get_user(701)
+        assert user["trial_used"] == 1
+        assert user["plan_name"] == "Пробный доступ"
+        assert bot.send_message.await_count == 1
+        assert bot.send_message.await_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "menu:connect"
+
+        assert await distribute_existing_trials_once(bot, db, config, provider) == (0, 0)
+
+    asyncio.run(run())
 
 
 def signed(user=None, age=0):

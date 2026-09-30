@@ -135,6 +135,16 @@ class Database:
                     PRIMARY KEY (telegram_id, subscription_until, days_before)
                 );
 
+                CREATE TABLE IF NOT EXISTS trial_expiry_notifications (
+                    telegram_id INTEGER PRIMARY KEY,
+                    sent_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS trial_grant_notifications (
+                    telegram_id INTEGER PRIMARY KEY,
+                    sent_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS traffic_daily (
                     telegram_id INTEGER NOT NULL,
                     day TEXT NOT NULL,
@@ -607,6 +617,120 @@ class Database:
             )
             await db.commit()
         return await self.get_user(int(telegram_id))
+
+    async def grant_trial_once(self, telegram_id: int) -> dict[str, Any] | None:
+        """Atomically grant one trial day only to an inactive, unused account."""
+        now = utcnow()
+        until = now + timedelta(days=1)
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE users
+                SET trial_used=1, subscription_until=?, plan_name='Пробный доступ',
+                    traffic_limit_gb=0
+                WHERE telegram_id=? AND trial_used=0
+                  AND (subscription_until IS NULL OR subscription_until<=?)
+                """,
+                (to_iso(until), int(telegram_id), to_iso(now)),
+            )
+            await db.commit()
+        if cursor.rowcount != 1:
+            return None
+        return await self.get_user(int(telegram_id))
+
+    async def list_trial_candidates(
+        self,
+        *,
+        after_id: int = 0,
+        limit: int = 100,
+    ) -> list[int]:
+        limit = max(1, min(int(limit), 500))
+        async with aiosqlite.connect(self.path) as db:
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT telegram_id FROM users
+                    WHERE telegram_id>? AND trial_used=0
+                      AND (subscription_until IS NULL OR subscription_until<=?)
+                    ORDER BY telegram_id LIMIT ?
+                    """,
+                    (int(after_id), to_iso(utcnow()), limit),
+                )
+            ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    async def list_expired_trial_notifications(self, limit: int = 200) -> list[int]:
+        limit = max(1, min(int(limit), 1000))
+        async with aiosqlite.connect(self.path) as db:
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT u.telegram_id FROM users u
+                    LEFT JOIN trial_expiry_notifications n
+                      ON n.telegram_id=u.telegram_id
+                    WHERE u.trial_used=1
+                      AND u.plan_name='Пробный доступ'
+                      AND u.subscription_until IS NOT NULL
+                      AND u.subscription_until<=?
+                      AND n.telegram_id IS NULL
+                    ORDER BY u.telegram_id LIMIT ?
+                    """,
+                    (to_iso(utcnow()), limit),
+                )
+            ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    async def list_pending_trial_grant_notifications(self, limit: int = 200) -> list[int]:
+        limit = max(1, min(int(limit), 1000))
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT u.telegram_id FROM users u
+                    LEFT JOIN trial_grant_notifications n ON n.telegram_id=u.telegram_id
+                    WHERE u.trial_used=1 AND u.plan_name='Пробный доступ'
+                      AND u.subscription_until>?
+                      AND n.telegram_id IS NULL
+                    ORDER BY u.telegram_id LIMIT ?
+                    """,
+                    (to_iso(utcnow()), limit),
+                )
+            ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    async def claim_trial_grant_notification(self, telegram_id: int) -> bool:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            cursor = await db.execute(
+                "INSERT OR IGNORE INTO trial_grant_notifications (telegram_id, sent_at) VALUES (?, ?)",
+                (int(telegram_id), to_iso(utcnow())),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
+    async def release_trial_grant_notification(self, telegram_id: int) -> None:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute(
+                "DELETE FROM trial_grant_notifications WHERE telegram_id=?",
+                (int(telegram_id),),
+            )
+            await db.commit()
+
+    async def claim_trial_expiry_notification(self, telegram_id: int) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                "INSERT OR IGNORE INTO trial_expiry_notifications (telegram_id, sent_at) VALUES (?, ?)",
+                (int(telegram_id), to_iso(utcnow())),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
+    async def release_trial_expiry_notification(self, telegram_id: int) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "DELETE FROM trial_expiry_notifications WHERE telegram_id=?",
+                (int(telegram_id),),
+            )
+            await db.commit()
 
     async def attribution_stats(self, source: str) -> dict[str, Any]:
         source = str(source or "").strip().lower()
@@ -2451,6 +2575,7 @@ class Database:
                     WHERE u.subscription_until IS NOT NULL
                       AND u.subscription_until > ?
                       AND u.subscription_until <= ?
+                      AND u.plan_name!='Пробный доступ'
                     ORDER BY u.subscription_until, u.telegram_id
                     LIMIT ?
                     """,
