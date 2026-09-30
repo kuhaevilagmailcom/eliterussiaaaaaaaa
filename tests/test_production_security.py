@@ -754,7 +754,7 @@ def test_admin_buttons_never_use_premium_custom_emoji(monkeypatch):
             callback_data="menu:support",
             icon_index=1,
         )
-        assert normal.icon_custom_emoji_id == "123456789"
+        assert normal.icon_custom_emoji_id is None
     finally:
         handlers._button_emoji_bank = old_bank
 
@@ -777,3 +777,31 @@ def test_admin_user_status_buttons_support_native_styles():
     assert inactive.style == "danger"
     assert active.icon_custom_emoji_id is None
     assert inactive.icon_custom_emoji_id is None
+
+
+def test_public_buttons_default_to_plain_emoji_only():
+    import handlers
+
+    inline = handlers.blue_inline_button(
+        "🆘 Поддержка",
+        callback_data="menu:support",
+    )
+    copied = handlers.copy_inline_button(
+        "📋 Скопировать",
+        "https://mgnvpn.ru/sub/test",
+    )
+    reply = handlers.main_keyboard()
+
+    assert inline.icon_custom_emoji_id is None
+    assert inline.style is None
+    assert copied.icon_custom_emoji_id is None
+    assert all(
+        button.icon_custom_emoji_id is None
+        for row in reply.keyboard
+        for button in row
+    )
+    assert all(
+        button.style is None
+        for row in reply.keyboard
+        for button in row
+    )
