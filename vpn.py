@@ -1784,6 +1784,14 @@ class H1CloudVpnProvider(VpnProvider):
             seen_inventory.add(key)
             deduped.append(item)
 
+        name_counts: dict[str, int] = {}
+        for item in deduped:
+            base_name = str(item.get("name") or "").strip() or "H1Cloud"
+            name_counts[base_name] = name_counts.get(base_name, 0) + 1
+            occurrence = name_counts[base_name]
+            if occurrence > 1:
+                item["name"] = f"{base_name} · {occurrence}"
+
         servers = deduped
 
         return {
