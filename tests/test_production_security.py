@@ -17,7 +17,16 @@ from app import notify_admins_restarted
 from config import Config
 from db import Database, utcnow, from_iso
 from miniapp import MiniAppServer, validate_init_data
-from handlers import build_router, connection_keyboard, main_keyboard, main_menu_inline_keyboard
+from handlers import (
+    build_router,
+    connection_keyboard,
+    device_payment_keyboard,
+    gift_plans_keyboard,
+    main_keyboard,
+    main_menu_inline_keyboard,
+    payment_methods_keyboard,
+    plans_keyboard,
+)
 from vpn import H1CloudVpnProvider
 
 TOKEN = '123456:TEST_ONLY'
@@ -53,7 +62,7 @@ def test_canonical_config_and_back(monkeypatch):
     assert buttons[2][0].copy_text.text == 'https://mgnvpn.ru/sub/'+'a'*32
     assert buttons[3][0].callback_data == 'plans'
     assert buttons[4][0].callback_data == 'menu:devices'
-    assert buttons[5][0].text == 'Назад'
+    assert buttons[5][0].text == '⬅️ Назад'
     assert buttons[5][0].icon_custom_emoji_id is None
 
 
@@ -110,7 +119,7 @@ def test_main_inline_menu_switches_to_purchase_without_subscription():
 def test_main_reply_keyboard_has_only_vpn_and_home():
     keyboard = main_keyboard(EmojiBank(()), custom_icons=False, active=True, admin=True)
     assert [[button.text for button in row] for row in keyboard.keyboard] == [
-        ["VPN", "Главное меню"]
+        ["🌐 VPN", "🏠 Главное меню"]
     ]
 
 
@@ -446,7 +455,7 @@ def test_reply_keyboard_navigation_replaces_screen_and_removes_button_message(tm
         # but it must keep the destination screen's inline controls.
         assert sent_markup.inline_keyboard[0][0].text == 'Купить VPN'
         assert sent_markup.inline_keyboard[0][0].callback_data == 'plans'
-        assert sent_markup.inline_keyboard[-1][0].text == 'Назад'
+        assert sent_markup.inline_keyboard[-1][0].text == '⬅️ Назад'
         assert sent_markup.inline_keyboard[-1][0].callback_data == 'home'
         assert (await db.get_user(42))['last_menu_message_id'] == 88
 
@@ -801,7 +810,7 @@ def test_public_buttons_default_to_plain_emoji_only():
     reply = handlers.main_keyboard()
 
     assert inline.icon_custom_emoji_id is None
-    assert inline.style is None
+    assert inline.style == 'primary'
     assert copied.icon_custom_emoji_id is None
     assert all(
         button.icon_custom_emoji_id is None
@@ -809,7 +818,7 @@ def test_public_buttons_default_to_plain_emoji_only():
         for button in row
     )
     assert all(
-        button.style is None
+        button.style == "primary"
         for row in reply.keyboard
         for button in row
     )
@@ -824,3 +833,24 @@ def test_main_menu_matches_reference_row_layout():
     assert [len(row) for row in markup.inline_keyboard] == [1, 1, 2, 1, 1, 1, 1]
     assert markup.inline_keyboard[2][0].text.startswith("🎁")
     assert markup.inline_keyboard[2][1].text.startswith("🎟")
+
+
+def test_user_section_buttons_are_colored_and_have_regular_emoji(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", TOKEN)
+    config = Config.from_env()
+
+    markups = [
+        connection_keyboard("https://mgnvpn.ru/sub/" + "a" * 32),
+        plans_keyboard(config),
+        gift_plans_keyboard(config),
+        device_payment_keyboard(),
+        payment_methods_keyboard(config, "30"),
+    ]
+
+    for markup in markups:
+        for row in markup.inline_keyboard:
+            for button in row:
+                assert button.icon_custom_emoji_id is None
+                assert button.style in {"primary", "success", "danger"}
+                assert button.text
+                assert button.text[0] and not button.text[0].isalnum()
