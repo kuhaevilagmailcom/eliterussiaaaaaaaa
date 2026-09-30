@@ -2075,7 +2075,7 @@ class H1CloudVpnProvider(VpnProvider):
 
         if remote_nodes:
             tasks = [asyncio.create_task(load_remote(node)) for node in remote_nodes]
-            done, pending = await asyncio.wait(tasks, timeout=7.8)
+            done, pending = await asyncio.wait(tasks, timeout=6.2)
             for task in pending:
                 task.cancel()
             for task in done:
@@ -2085,7 +2085,17 @@ class H1CloudVpnProvider(VpnProvider):
                     pass
 
         if links:
-            links = await self._rank_live_vless_links(links)
+            try:
+                links = await asyncio.wait_for(
+                    self._rank_live_vless_links(links),
+                    timeout=1.6,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "H1Cloud endpoint ranking timed out for %s; preserving all %s link(s)",
+                    name,
+                    len(links),
+                )
 
         if not links:
             raise RuntimeError("H1Cloud returned no VLESS links")
