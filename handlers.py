@@ -79,6 +79,7 @@ REPLY_NAVIGATION_TEXTS = frozenset(
         "🏠 Главное",
         "🏠 Главное меню",
         "VPN",
+        "🌐 VPN",
         "Подключить VPN",
         "Подключиться",
         "🔗 Подключить VPN",
@@ -304,11 +305,12 @@ def main_keyboard(
 
 
 def _button_has_leading_symbol(text: str) -> bool:
-    value = str(text or "").lstrip()
+    value = str(text or "").strip()
     if not value:
         return False
-    first = value[0]
-    return unicodedata.category(first) in {"So", "Sk"}
+    if "\ufe0f" in value:
+        return True
+    return any(unicodedata.category(char) in {"So", "Sk"} for char in value)
 
 
 def _regular_button_text(text: str) -> str:
@@ -3355,7 +3357,7 @@ def build_router(
                 show_alert=True,
             )
 
-    @router.message(F.text.in_({"VPN", "🔗 Подключить VPN", "🔗 Подключиться", "Подключить VPN", "Подключиться"}))
+    @router.message(F.text.in_({"VPN", "🌐 VPN", "🔗 Подключить VPN", "🔗 Подключиться", "Подключить VPN", "Подключиться"}))
     async def connect(message: Message) -> None:
         user = await ensure_actor(message.from_user)
         if not is_active(user):
