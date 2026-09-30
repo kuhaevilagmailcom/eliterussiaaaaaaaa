@@ -24,10 +24,11 @@ logger = logging.getLogger(__name__)
 
 BASE_MGN_SERVERS: tuple[tuple[str, str], ...] = (
     ("nl", "🇳🇱 Нидерланды"),
-    ("de", "🇩🇪 Германия"),
     ("fi", "🇫🇮 Финляндия"),
-    ("lt", "🇱🇹 Литва"),
-    ("us", "🇺🇸 США"),
+    ("pl", "🇵🇱 Польша"),
+    ("pk", "🇵🇰 Пакистан"),
+    ("us1", "🇺🇸 США 1"),
+    ("us2", "🇺🇸 США 2"),
 )
 
 LOCATION_LABELS = {
@@ -37,7 +38,7 @@ LOCATION_LABELS = {
     "MGN-DE": "🇩🇪 Германия",
     "MGN-FI": "🇫🇮 Финляндия",
     "MGN-LT": "🇱🇹 Литва",
-    "MGN-US": "🇺🇸 США",
+    "MGN-US": "🇺🇸 США 1",
     "MGN-PL": "🇵🇱 Польша",
     "MGN-PK": "🇵🇰 Пакистан",
     "MGN-SE": "🇸🇪 Швеция",
@@ -70,7 +71,7 @@ def _location_label(value: str) -> str:
         ("LT3.H1CLOUD.NET", "🇱🇹 Литва"),
         ("US2.H1CLOUD.NET", "🇺🇸 США 2"),
         ("USA2", "🇺🇸 США 2"),
-        ("US3.H1CLOUD.NET", "🇺🇸 США"),
+        ("US3.H1CLOUD.NET", "🇺🇸 США 1"),
         ("PL-D1.H1CLOUD.NET", "🇵🇱 Польша"),
         ("PAKISTAN", "🇵🇰 Пакистан"),
         ("KARACHI", "🇵🇰 Пакистан"),
@@ -1911,17 +1912,30 @@ class H1CloudVpnProvider(VpnProvider):
                 str(item.get(key) or "")
                 for key in ("name", "host", "id")
             )
+            upper_identity = identity.upper()
             label = _location_label(identity) or _flagged_h1_node_name(identity)
+
             if "Нидерланды" in label:
                 return "nl"
-            if "Германия" in label:
-                return "de"
             if "Финляндия" in label:
                 return "fi"
-            if "Литва" in label:
-                return "lt"
+            if "Польша" in label:
+                return "pl"
+            if "Пакистан" in label:
+                return "pk"
+
+            # Keep the two US locations separate. Explicit US2 markers win;
+            # any other configured US node is the first US location.
+            if (
+                "США 2" in label
+                or "MGN-US2" in upper_identity
+                or "MGN-USA2" in upper_identity
+                or "US2.H1CLOUD.NET" in upper_identity
+                or "USA2" in upper_identity
+            ):
+                return "us2"
             if "США" in label:
-                return "us"
+                return "us1"
             return ""
 
         present_base = {
@@ -1958,7 +1972,11 @@ class H1CloudVpnProvider(VpnProvider):
             )
         )
 
-        servers = deduped
+        allowed_codes = {code for code, _label in BASE_MGN_SERVERS}
+        servers = [
+            item for item in deduped
+            if base_code(item) in allowed_codes
+        ]
 
         return {
             "provider": self.mode_name,
