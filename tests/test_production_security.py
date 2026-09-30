@@ -54,6 +54,21 @@ def test_admin_server_status_is_exactly_the_compact_six_server_list():
     )
 
 
+def test_admin_server_status_does_not_show_unknown_as_red():
+    servers = [
+        {"name": "🇳🇱 Нидерланды", "available": True, "latency_ms": 120},
+        {"name": "🇫🇮 Финляндия", "available": None, "latency_ms": None},
+        {"name": "🇵🇱 Польша", "available": False, "latency_ms": None},
+        {"name": "🇵🇰 Пакистан", "available": True, "latency_ms": None},
+        {"name": "🇺🇸 США 1", "available": True, "latency_ms": 160},
+        {"name": "🇺🇸 США 2", "available": True, "latency_ms": None},
+    ]
+    rendered = format_admin_server_status(servers)
+    assert "⚪ <b>🇫🇮 Финляндия</b>" in rendered
+    assert "❌ <b>🇵🇱 Польша</b>" in rendered
+    assert "✅ <b>🇵🇰 Пакистан</b>" in rendered
+
+
 def test_existing_channel_member_receives_one_trial_and_notification(tmp_path, monkeypatch):
     monkeypatch.setenv("BOT_TOKEN", TOKEN)
 
