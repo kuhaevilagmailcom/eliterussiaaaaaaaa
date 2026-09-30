@@ -726,7 +726,7 @@ class MiniAppServer:
                 self.config,
                 order_id=order_id,
                 amount=Decimal(amount),
-                description=f"MGN VPN {plan['name']} · {device_count} устр.",
+                description=f"MGN VPN {plan['name']}",
                 user_id=user_id,
             )
             payment_id = str(payment["payment_id"])
