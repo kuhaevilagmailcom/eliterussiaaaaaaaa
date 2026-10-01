@@ -2576,6 +2576,181 @@ class Database:
             "star_revenue": int(star_revenue),
         }
 
+    async def admin_timeseries(self, days: int = 14) -> list[dict[str, Any]]:
+        """Return a compact, secret-free daily series for the Mini App dashboard."""
+        days = max(7, min(int(days), 31))
+        start = (utcnow() - timedelta(days=days - 1)).date()
+        start_iso = start.isoformat()
+        series = {
+            (start + timedelta(days=offset)).isoformat(): {
+                "date": (start + timedelta(days=offset)).isoformat(),
+                "users": 0,
+                "payments": 0,
+                "rub": 0,
+                "stars": 0,
+            }
+            for offset in range(days)
+        }
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            users = await (await db.execute(
+                """
+                SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS amount
+                FROM users WHERE created_at>=?
+                GROUP BY day
+                """,
+                (start_iso,),
+            )).fetchall()
+            sbp = await (await db.execute(
+                """
+                SELECT substr(COALESCE(paid_at, created_at), 1, 10) AS day,
+                       COUNT(*) AS payments, COALESCE(SUM(amount_rub), 0) AS rub
+                FROM sbp_payments
+                WHERE status='paid' AND plan_code!='device'
+                  AND COALESCE(paid_at, created_at)>=?
+                GROUP BY day
+                """,
+                (start_iso,),
+            )).fetchall()
+            stars = await (await db.execute(
+                """
+                SELECT substr(created_at, 1, 10) AS day,
+                       COUNT(*) AS payments, COALESCE(SUM(stars), 0) AS stars
+                FROM star_payments
+                WHERE plan_code!='device' AND created_at>=?
+                GROUP BY day
+                """,
+                (start_iso,),
+            )).fetchall()
+        for row in users:
+            if row["day"] in series:
+                series[row["day"]]["users"] = int(row["amount"] or 0)
+        for row in sbp:
+            if row["day"] in series:
+                series[row["day"]]["payments"] += int(row["payments"] or 0)
+                series[row["day"]]["rub"] = int(row["rub"] or 0)
+        for row in stars:
+            if row["day"] in series:
+                series[row["day"]]["payments"] += int(row["payments"] or 0)
+                series[row["day"]]["stars"] = int(row["stars"] or 0)
+        return list(series.values())
+
+    async def admin_plan_breakdown(self) -> list[dict[str, Any]]:
+        now = to_iso(utcnow())
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(
+                """
+                SELECT COALESCE(NULLIF(plan_name, ''), 'Без тарифа') AS name,
+                       COUNT(*) AS users
+                FROM users
+                WHERE subscription_until IS NOT NULL AND subscription_until>?
+                GROUP BY name
+                ORDER BY users DESC, name
+                LIMIT 8
+                """,
+                (now,),
+            )).fetchall()
+        return [{"name": str(row["name"]), "users": int(row["users"])} for row in rows]
+
+    async def admin_users_page(
+        self,
+        *,
+        query: str = "",
+        status: str = "all",
+        page: int = 0,
+        page_size: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Search users for the Mini App without exposing VPN credentials."""
+        page = max(0, int(page))
+        page_size = max(1, min(int(page_size), 50))
+        status = status if status in {"all", "active", "paid", "granted"} else "all"
+        query = str(query or "").strip()[:64]
+        now = to_iso(utcnow())
+        self_paid = """
+            (EXISTS (
+                SELECT 1 FROM sbp_payments s
+                WHERE s.status='paid' AND s.telegram_id=u.telegram_id
+                  AND COALESCE(s.target_telegram_id, s.telegram_id)=u.telegram_id
+                  AND s.plan_code!='device'
+            ) OR EXISTS (
+                SELECT 1 FROM star_payments sp
+                WHERE sp.buyer_telegram_id=u.telegram_id
+                  AND sp.target_telegram_id=u.telegram_id
+                  AND sp.plan_code!='device'
+            ))
+        """
+        granted = f"""
+            (EXISTS (SELECT 1 FROM admin_subscription_grants g WHERE g.telegram_id=u.telegram_id)
+             AND NOT {self_paid})
+        """
+        where: list[str] = []
+        params: list[Any] = []
+        if query:
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = f"%{escaped}%"
+            where.append(
+                "(CAST(u.telegram_id AS TEXT) LIKE ? ESCAPE '\\' OR "
+                "COALESCE(u.username, '') COLLATE NOCASE LIKE ? ESCAPE '\\' OR "
+                "COALESCE(u.first_name, '') COLLATE NOCASE LIKE ? ESCAPE '\\')"
+            )
+            params.extend((like, like, like))
+        if status == "active":
+            where.append("u.subscription_until IS NOT NULL AND u.subscription_until>?")
+            params.append(now)
+        elif status == "paid":
+            where.append(self_paid)
+        elif status == "granted":
+            where.append(granted)
+        where_sql = " WHERE " + " AND ".join(f"({item})" for item in where) if where else ""
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            total = int((await (await db.execute(
+                f"SELECT COUNT(*) FROM users u{where_sql}",
+                tuple(params),
+            )).fetchone())[0])
+            rows = await (await db.execute(
+                f"""
+                SELECT u.telegram_id, u.username, u.first_name, u.created_at,
+                       u.subscription_until, u.plan_name, u.max_devices,
+                       CASE WHEN u.subscription_until IS NOT NULL AND u.subscription_until>? THEN 1 ELSE 0 END AS active,
+                       CASE WHEN {self_paid} THEN 1 ELSE 0 END AS paid,
+                       CASE WHEN {granted} THEN 1 ELSE 0 END AS granted
+                FROM users u{where_sql}
+                ORDER BY u.created_at DESC, u.telegram_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (now, *params, page_size, page * page_size),
+            )).fetchall()
+        return [dict(row) for row in rows], total
+
+    async def admin_recent_payments(self, limit: int = 30) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 100))
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(
+                """
+                SELECT p.method, p.telegram_id, p.plan_code, p.rub, p.stars,
+                       p.status, p.created_at, u.username, u.first_name
+                FROM (
+                    SELECT 'СБП' AS method,
+                           COALESCE(target_telegram_id, telegram_id) AS telegram_id,
+                           plan_code, amount_rub AS rub, 0 AS stars,
+                           status, COALESCE(paid_at, created_at) AS created_at
+                    FROM sbp_payments
+                    UNION ALL
+                    SELECT 'Stars' AS method, target_telegram_id AS telegram_id,
+                           plan_code, 0 AS rub, stars, 'paid' AS status, created_at
+                    FROM star_payments
+                ) p
+                LEFT JOIN users u ON u.telegram_id=p.telegram_id
+                ORDER BY p.created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )).fetchall()
+        return [dict(row) for row in rows]
+
     async def business_analytics(self) -> dict[str, Any]:
         """Business KPIs for the Telegram admin dashboard."""
         now = utcnow()

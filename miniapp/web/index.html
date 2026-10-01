@@ -8,7 +8,7 @@
   <title>MGN VPN</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="/static/assets/lucide.min.js?v=1"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=26">
+  <link rel="stylesheet" href="/static/styles.css?v=27">
 </head>
 <body>
   <section id="appError" class="app-error" hidden role="status">
@@ -184,6 +184,7 @@
           <div><small>УПРАВЛЕНИЕ</small><h3>Аккаунт</h3></div>
         </div>
         <div class="menu-list profile-menu">
+          <button type="button" id="adminEntry" class="admin-entry" data-nav="admin" hidden><span class="icon-box"><i data-lucide="chart-no-axes-combined"></i></span><span><b>Админ-панель</b><small>Пользователи, оплаты и серверы</small></span><i data-lucide="chevron-right"></i></button>
           <button type="button" data-nav="plans"><span class="icon-box"><i data-lucide="crown"></i></span><span><b>Подписка</b><small>Тариф, продление и оплата</small></span><i data-lucide="chevron-right"></i></button>
           <button type="button" data-nav="referrals"><span class="icon-box"><i data-lucide="user-plus"></i></span><span><b>Пригласить друзей</b><small>Получать бонусы за приглашения</small></span><i data-lucide="chevron-right"></i></button>
           <button type="button" data-nav="bonuses"><span class="icon-box"><i data-lucide="ticket-percent"></i></span><span><b>Промокод</b><small>Скидка или бесплатные дни</small></span><i data-lucide="chevron-right"></i></button>
@@ -194,6 +195,64 @@
         <div class="profile-id">
           <span>Telegram ID</span>
           <button type="button" id="copyId"><code id="profileId">—</code><i data-lucide="copy"></i></button>
+        </div>
+      </section>
+
+      <section class="page inner-page admin-page" data-page="admin" aria-labelledby="adminTitle">
+        <header class="admin-head">
+          <div><span class="eyebrow">MGN CONTROL</span><h1 id="adminTitle">Админ-панель</h1><p>Актуальные данные сервиса без лишнего шума.</p></div>
+          <span class="admin-role" id="adminRole">ADMIN</span>
+        </header>
+        <nav class="admin-tabs" aria-label="Разделы админ-панели">
+          <button type="button" class="active" data-admin-tab="overview">Обзор</button>
+          <button type="button" data-admin-tab="users">Люди</button>
+          <button type="button" data-admin-tab="payments">Оплаты</button>
+          <button type="button" data-admin-tab="servers">Серверы</button>
+        </nav>
+
+        <div class="admin-panel active" data-admin-panel="overview">
+          <div class="admin-kpis">
+            <article><small>Пользователи</small><b id="adminUsersTotal">—</b><em id="adminUsersNew">—</em></article>
+            <article><small>Активные VPN</small><b id="adminActiveTotal">—</b><em id="adminExpires">—</em></article>
+            <article><small>Оплатили сами</small><b id="adminPaidTotal">—</b><em id="adminPaidActive">—</em></article>
+            <article class="accent"><small>Выручка СБП</small><b id="adminRevenue">—</b><em id="adminRevenueMonth">—</em></article>
+          </div>
+          <article class="admin-card chart-card">
+            <div class="admin-card-head"><div><small>14 ДНЕЙ</small><h2>Регистрации</h2></div><span id="adminChartTotal">0</span></div>
+            <div class="admin-chart" id="adminChart" aria-label="График регистраций"></div>
+            <div class="chart-axis"><span id="adminChartStart">—</span><span id="adminChartEnd">—</span></div>
+          </article>
+          <article class="admin-card">
+            <div class="admin-card-head"><div><small>ПОДПИСКИ</small><h2>Структура базы</h2></div></div>
+            <div class="admin-breakdown" id="adminBreakdown"><p class="admin-empty">Загрузка…</p></div>
+          </article>
+        </div>
+
+        <div class="admin-panel" data-admin-panel="users">
+          <label class="admin-search"><i data-lucide="search"></i><input id="adminUserSearch" maxlength="64" autocomplete="off" placeholder="ID, имя или @username"></label>
+          <div class="admin-filters" id="adminUserFilters">
+            <button type="button" class="active" data-user-filter="all">Все</button><button type="button" data-user-filter="active">Активные</button><button type="button" data-user-filter="paid">Платные</button><button type="button" data-user-filter="granted">Выданные</button>
+          </div>
+          <article class="admin-card table-card">
+            <div class="admin-card-head"><div><small>ПОЛЬЗОВАТЕЛИ</small><h2 id="adminUsersCaption">Загрузка…</h2></div></div>
+            <div class="admin-table" id="adminUsersTable"></div>
+            <div class="admin-pagination"><button type="button" id="adminUsersPrev" aria-label="Назад"><i data-lucide="chevron-left"></i></button><span id="adminUsersPage">1 / 1</span><button type="button" id="adminUsersNext" aria-label="Дальше"><i data-lucide="chevron-right"></i></button></div>
+          </article>
+        </div>
+
+        <div class="admin-panel" data-admin-panel="payments">
+          <div class="admin-kpis payments-kpis">
+            <article class="accent"><small>СБП всего</small><b id="adminRubTotal">—</b><em id="adminRubMonth">—</em></article>
+            <article><small>Stars всего</small><b id="adminStarsTotal">—</b><em id="adminStarsMonth">—</em></article>
+          </div>
+          <article class="admin-card table-card"><div class="admin-card-head"><div><small>ПОСЛЕДНИЕ</small><h2>Транзакции</h2></div></div><div class="admin-table" id="adminPaymentsTable"><p class="admin-empty">Загрузка…</p></div></article>
+        </div>
+
+        <div class="admin-panel" data-admin-panel="servers">
+          <article class="admin-card server-card">
+            <div class="admin-card-head"><div><small>H1CLOUD</small><h2>Состояние серверов</h2></div><button type="button" id="adminServersRefresh" aria-label="Обновить"><i data-lucide="refresh-cw"></i></button></div>
+            <div class="admin-servers" id="adminServers"><p class="admin-empty">Проверяем узлы…</p></div>
+          </article>
         </div>
       </section>
 

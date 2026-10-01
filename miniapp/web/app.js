@@ -22,6 +22,7 @@
     promoPercent:0,
     sbpPayment:null,
     supportTicketId:null,
+    admin:{tab:'overview',loaded:{},userFilter:'all',userPage:0,userPages:1,searchTimer:null},
     busy:false,
   };
 
@@ -464,6 +465,9 @@
     renderBonuses();
     renderClients();
     renderAgreement();
+    const adminEnabled=!!state.data?.admin?.enabled;
+    $('#adminEntry').hidden=!adminEnabled;
+    $('#adminRole').textContent=String(state.data?.admin?.role||'admin').toUpperCase();
     icons();
     const loader=$('#loader');
     loader.classList.add('hidden');
@@ -473,7 +477,115 @@
     }
   }
 
+  const adminNumber=value=>Number(value||0).toLocaleString('ru-RU');
+  const adminMoney=value=>adminNumber(value)+' ₽';
+  const adminShortDate=value=>{
+    try{return new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit'}).format(new Date(value))}catch(_){return '—'}
+  };
+
+  function renderAdminOverview(data){
+    const o=data.overview||{},a=data.analytics||{},series=data.timeseries||[],plans=data.plans||[];
+    $('#adminUsersTotal').textContent=adminNumber(o.total);
+    $('#adminUsersNew').textContent='+'+adminNumber(o.new_7d)+' за 7 дней';
+    $('#adminActiveTotal').textContent=adminNumber(o.active);
+    $('#adminExpires').textContent=adminNumber(a.expires_3d)+' истекают за 3 дня';
+    $('#adminPaidTotal').textContent=adminNumber(o.paid_total);
+    $('#adminPaidActive').textContent=adminNumber(o.active_paid)+' активны';
+    $('#adminRevenue').textContent=adminMoney(o.sbp_revenue);
+    $('#adminRevenueMonth').textContent=adminMoney(a.rub_month)+' за 30 дней';
+    const max=Math.max(1,...series.map(item=>Number(item.users||0)));
+    $('#adminChart').innerHTML=series.map(item=>
+      '<i class="admin-bar" style="--bar-height:'+Math.max(3,Math.round(Number(item.users||0)/max*100))+'%" data-value="'+adminNumber(item.users)+'" title="'+esc(item.date)+': '+adminNumber(item.users)+'"></i>'
+    ).join('');
+    $('#adminChartTotal').textContent='+'+adminNumber(series.reduce((sum,item)=>sum+Number(item.users||0),0));
+    $('#adminChartStart').textContent=series.length?adminShortDate(series[0].date):'—';
+    $('#adminChartEnd').textContent=series.length?adminShortDate(series[series.length-1].date):'—';
+    const planMax=Math.max(1,...plans.map(item=>Number(item.users||0)));
+    $('#adminBreakdown').innerHTML=plans.length?plans.map(item=>
+      '<div class="admin-breakdown-row"><b>'+esc(item.name)+'</b><span>'+adminNumber(item.users)+'</span><i style="--fill:'+Math.round(Number(item.users||0)/planMax*100)+'%"></i></div>'
+    ).join(''):'<p class="admin-empty">Активных подписок пока нет</p>';
+  }
+
+  async function loadAdminOverview(force=false){
+    if(state.admin.loaded.overview&&!force)return;
+    try{
+      renderAdminOverview(await request('/api/miniapp/admin/overview?_='+Date.now()));
+      state.admin.loaded.overview=true;
+    }catch(error){toast(error.message);if(error.message==='Доступ запрещён')go('home')}
+  }
+
+  function renderAdminUsers(data){
+    state.admin.userPages=Number(data.pages||1);
+    state.admin.userPage=Number(data.page||0);
+    $('#adminUsersCaption').textContent=adminNumber(data.total)+' в выборке';
+    $('#adminUsersPage').textContent=(state.admin.userPage+1)+' / '+state.admin.userPages;
+    $('#adminUsersPrev').disabled=state.admin.userPage<=0;
+    $('#adminUsersNext').disabled=state.admin.userPage>=state.admin.userPages-1;
+    $('#adminUsersTable').innerHTML=(data.users||[]).length?(data.users||[]).map(user=>{
+      const name=user.first_name||user.username||('ID '+user.telegram_id);
+      const handle=user.username?'@'+user.username:'ID '+user.telegram_id;
+      const tags=(user.paid?'<span class="admin-tag paid">ОПЛАТИЛ</span>':'')+(user.granted?'<span class="admin-tag granted">ВЫДАНО</span>':'')+(user.active?'<span class="admin-tag online">АКТИВНА</span>':'<span class="admin-tag offline">НЕТ VPN</span>');
+      return '<div class="admin-row"><div class="admin-row-main"><b>'+esc(name)+'</b><small>'+esc(handle)+' · '+esc(String(user.telegram_id))+'</small><div class="admin-tags">'+tags+'</div></div><div class="admin-row-side"><b>'+esc(user.plan_name||'Без тарифа')+'</b><small>'+(user.active?'до '+fmtDate(user.subscription_until):'с '+fmtDate(user.created_at))+'</small></div></div>';
+    }).join(''):'<p class="admin-empty">Ничего не найдено</p>';
+    icons();
+  }
+
+  async function loadAdminUsers(page=state.admin.userPage){
+    const q=$('#adminUserSearch').value.trim();
+    try{
+      const url='/api/miniapp/admin/users?status='+encodeURIComponent(state.admin.userFilter)+'&page='+Math.max(0,page)+'&q='+encodeURIComponent(q)+'&_='+Date.now();
+      renderAdminUsers(await request(url));
+      state.admin.loaded.users=true;
+    }catch(error){toast(error.message)}
+  }
+
+  function renderAdminPayments(data){
+    const s=data.summary||{};
+    $('#adminRubTotal').textContent=adminMoney(s.rub_total);
+    $('#adminRubMonth').textContent=adminMoney(s.rub_month)+' за 30 дней';
+    $('#adminStarsTotal').textContent=adminNumber(s.stars_total)+' ★';
+    $('#adminStarsMonth').textContent=adminNumber(s.stars_month)+' ★ за 30 дней';
+    const rows=data.payments||[];
+    $('#adminPaymentsTable').innerHTML=rows.length?rows.map(item=>{
+      const name=item.first_name||(item.username?'@'+item.username:'ID '+item.telegram_id);
+      const amount=item.method==='СБП'?adminMoney(item.rub):adminNumber(item.stars)+' ★';
+      const paid=item.status==='paid';
+      return '<div class="admin-row"><div class="admin-row-main"><b>'+esc(name)+'</b><small>'+esc(item.method)+' · '+esc(item.plan_code||'—')+' · '+adminShortDate(item.created_at)+'</small></div><div class="admin-row-side"><b>'+amount+'</b><span class="admin-tag '+(paid?'paid':'granted')+'">'+(paid?'ОПЛАЧЕНО':'ОЖИДАЕТ')+'</span></div></div>';
+    }).join(''):'<p class="admin-empty">Платежей пока нет</p>';
+  }
+
+  async function loadAdminPayments(force=false){
+    if(state.admin.loaded.payments&&!force)return;
+    try{renderAdminPayments(await request('/api/miniapp/admin/payments?_='+Date.now()));state.admin.loaded.payments=true}catch(error){toast(error.message)}
+  }
+
+  function renderAdminServers(data){
+    const rows=data.servers||[];
+    $('#adminServers').innerHTML=rows.length?rows.map(item=>
+      '<div class="admin-server '+(item.available?'online':'offline')+'"><i class="admin-server-dot"></i><b>'+esc(item.name)+'</b><span>'+(item.latency_ms===null?'—':adminNumber(item.latency_ms)+' мс')+'</span></div>'
+    ).join(''):'<p class="admin-empty">Серверы не найдены</p>';
+  }
+
+  async function loadAdminServers(force=false){
+    if(state.admin.loaded.servers&&!force)return;
+    $('#adminServers').innerHTML='<p class="admin-empty">Проверяем шесть узлов H1Cloud…</p>';
+    try{renderAdminServers(await request('/api/miniapp/admin/servers?_='+Date.now()));state.admin.loaded.servers=true}catch(error){$('#adminServers').innerHTML='<p class="admin-empty">'+esc(error.message)+'</p>'}
+  }
+
+  function openAdminTab(tab){
+    if(!['overview','users','payments','servers'].includes(tab))tab='overview';
+    state.admin.tab=tab;
+    $$('[data-admin-tab]').forEach(el=>el.classList.toggle('active',el.dataset.adminTab===tab));
+    $$('[data-admin-panel]').forEach(el=>el.classList.toggle('active',el.dataset.adminPanel===tab));
+    if(tab==='overview')loadAdminOverview();
+    if(tab==='users')loadAdminUsers();
+    if(tab==='payments')loadAdminPayments();
+    if(tab==='servers')loadAdminServers();
+    icons();haptic();
+  }
+
   function go(page){
+    if(page==='admin'&&!state.data?.admin?.enabled){toast('Доступ запрещён');page='home'}
     if(!$('.page[data-page="'+page+'"]'))page='home';
     if(page===state.page&&$('.page[data-page="'+page+'"]')?.classList.contains('active'))return;
     if(ROOT_PAGES.has(page))state.previousRoot=page;
@@ -498,6 +610,7 @@
     haptic();
     icons();
     if(page==='support')loadSupport();
+    if(page==='admin')openAdminTab(state.admin.tab||'overview');
     requestAnimationFrame(()=>animatePage(activePage));
   }
 
@@ -921,6 +1034,20 @@
     const result=$('#supportResult');
     if(result)result.textContent='';
   });
+  $$('[data-admin-tab]').forEach(btn=>btn.addEventListener('click',()=>openAdminTab(btn.dataset.adminTab)));
+  $('#adminUserFilters').addEventListener('click',event=>{
+    const button=event.target.closest('[data-user-filter]');if(!button)return;
+    state.admin.userFilter=button.dataset.userFilter;state.admin.userPage=0;
+    $$('[data-user-filter]').forEach(el=>el.classList.toggle('active',el===button));
+    loadAdminUsers(0);
+  });
+  $('#adminUserSearch').addEventListener('input',()=>{
+    clearTimeout(state.admin.searchTimer);state.admin.userPage=0;
+    state.admin.searchTimer=setTimeout(()=>loadAdminUsers(0),280);
+  });
+  $('#adminUsersPrev').onclick=()=>loadAdminUsers(state.admin.userPage-1);
+  $('#adminUsersNext').onclick=()=>loadAdminUsers(state.admin.userPage+1);
+  $('#adminServersRefresh').onclick=()=>loadAdminServers(true);
 
   document.addEventListener('pointerdown',event=>{
     const el=event.target.closest('button,[data-nav],.plan-card');

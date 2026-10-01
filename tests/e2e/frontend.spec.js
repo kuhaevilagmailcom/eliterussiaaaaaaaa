@@ -26,12 +26,20 @@ async function routeFiles(page, miniApp = false) {
     if (url.pathname === '/api/miniapp/promo/quote') return route.fulfill({json:{
       code:'MGN20',type:'discount',value:20,original_price:100,discount:20,final_price:80,device_count:1
     }});
+    if (url.pathname === '/api/miniapp/admin/overview') return route.fulfill({json:{
+      role:'owner',overview:{total:128,active:91,paid_total:74,active_paid:62,sbp_revenue:14800,new_7d:12},
+      analytics:{expires_3d:7,rub_month:14800},timeseries:Array.from({length:14},(_,i)=>({date:`2026-09-${String(i+10).padStart(2,'0')}`,users:i%4,rub:i*100,stars:0,payments:i%3})),plans:[{name:'30 дней',users:60},{name:'90 дней',users:31}]
+    }});
+    if (url.pathname === '/api/miniapp/admin/users') return route.fulfill({json:{users:[{telegram_id:42,first_name:'Тест',username:'test',created_at:'2026-09-01T00:00:00Z',subscription_until:'2027-01-01T00:00:00Z',plan_name:'30 дней',active:1,paid:1,granted:0}],total:1,page:0,page_size:20,pages:1}});
+    if (url.pathname === '/api/miniapp/admin/payments') return route.fulfill({json:{summary:{rub_total:14800,stars_total:200,rub_month:14800,stars_month:200},payments:[{method:'СБП',telegram_id:42,plan_code:'30',rub:100,stars:0,status:'paid',created_at:'2026-09-26T00:00:00Z',first_name:'Тест'}]}});
+    if (url.pathname === '/api/miniapp/admin/servers') return route.fulfill({json:{servers:['🇳🇱 Нидерланды','🇫🇮 Финляндия','🇵🇱 Польша','🇵🇰 Пакистан','🇺🇸 США 1','🇺🇸 США 2'].map(name=>({name,available:true,latency_ms:100}))}});
     if (url.pathname === '/api/miniapp/me') return route.fulfill({ json: {
       user: {id:42,first_name:'Тест',username:'test',telegram_id:42,referrals:0,referral_rewards:0},
       subscription: {active:true,plan:'1 месяц',until:'2027-01-01T00:00:00+00:00',remaining_seconds:2592000,max_devices:1},
       vpn: {ready:true, ok:true, server:'MGN VPN', subscription_url:'https://mgn.test/sub/token', traffic_used_gb:0, traffic_limit_gb:0, devices:[]},
       plans: [{code:'30',name:'1 месяц',days:30,devices:1,rub:100,stars:63,savings:0}],
       payments: {sbp_enabled:true}, capabilities:{device_list:true,device_removal:false,device_reset:true},
+      admin: {enabled:true,role:'owner'},
       clients:[
         {name:'Happ',platform:'Android · iOS',redirect_url:'https://mgn.test/client/happ/token',supports_subscription_import:true},
         {name:'INCY',platform:'Android · iOS',redirect_url:'https://mgn.test/client/incy/token',supports_subscription_import:true}
@@ -207,4 +215,20 @@ test('Mini App saves a discount promo from Bonuses and carries it into checkout'
   const iconRect=await icon.boundingBox();
   const labelRect=await label.boundingBox();
   expect(labelRect.x-(iconRect.x+iconRect.width)).toBeGreaterThanOrEqual(5);
+});
+
+test('Mini App admin dashboard is available to an owner and stays compact', async ({page}) => {
+  const errors=[]; page.on('pageerror', error => errors.push(error.message));
+  await page.setViewportSize({width:390,height:844}); await routeFiles(page, true); await page.goto('http://mgn.test/app');
+  await page.locator('[data-nav="profile"]').first().click();
+  await expect(page.locator('#adminEntry')).toBeVisible();
+  await page.locator('#adminEntry').click();
+  await expect(page.locator('[data-page="admin"]')).toHaveClass(/active/);
+  await expect(page.locator('#adminUsersTotal')).toHaveText('128');
+  await page.locator('[data-admin-tab="users"]').click();
+  await expect(page.locator('#adminUsersTable')).toContainText('Тест');
+  await page.locator('[data-admin-tab="servers"]').click();
+  await expect(page.locator('#adminServers')).toContainText('Нидерланды');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  expect(errors).toEqual([]);
 });

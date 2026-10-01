@@ -42,7 +42,7 @@ from legal import (
     agreement_html,
     privacy_html,
 )
-from vpn import VpnProvider, VpnState, prettify_subscription_payload
+from vpn import BASE_MGN_SERVERS, VpnProvider, VpnState, prettify_subscription_payload
 from vpn_clients import client_registry, get_client
 
 
@@ -282,6 +282,21 @@ class MiniAppServer:
             tg_user.get("first_name") or "Пользователь",
         )
         return user_id, tg_user, row
+
+    async def _admin_role(self, user_id: int) -> str | None:
+        if int(user_id) in set(self.config.admin_ids):
+            return "owner"
+        role = await self.db.get_admin_role(int(user_id))
+        return role if role in {"full", "limited"} else None
+
+    async def _admin_auth(self, request: web.Request) -> tuple[int, dict, dict, str]:
+        user_id, tg_user, row = await self._auth(request)
+        role = await self._admin_role(user_id)
+        if not role:
+            logger.warning("Mini App admin access denied for user %s", user_id)
+            raise _json_error(403, "Доступ запрещён")
+        self._rate_limit(f"miniapp-admin:{user_id}", limit=60, window_seconds=60.0)
+        return user_id, tg_user, row, role
 
     async def _username(self) -> str:
         if not self._bot_username:
@@ -1059,6 +1074,7 @@ class MiniAppServer:
 
     async def me(self, request: web.Request) -> web.Response:
         uid, tg_user, row = await self._auth(request)
+        admin_role = await self._admin_role(uid)
         state, vpn_ok = await self._load_state(row)
         local_day = utcnow().astimezone(self.config.display_tz).date().isoformat()
         if _active(row) and vpn_ok:
@@ -1128,6 +1144,10 @@ class MiniAppServer:
                     "device_removal": bool(self.provider.capabilities.supports_device_removal),
                     "device_reset": bool(self.provider.capabilities.supports_device_reset),
                 },
+                "admin": {
+                    "enabled": bool(admin_role),
+                    "role": admin_role or "",
+                },
                 "clients": client_registry(subscription_url) if subscription_url else [],
                 "shop": {
                     "extra_device_price_rub": int(EXTRA_DEVICE_PRICE_RUB),
@@ -1146,6 +1166,96 @@ class MiniAppServer:
                 },
             }
         )
+
+    async def admin_overview(self, request: web.Request) -> web.Response:
+        _uid, _tg_user, _row, role = await self._admin_auth(request)
+        overview, analytics, timeseries, plans = await asyncio.gather(
+            self.db.admin_overview(),
+            self.db.business_analytics(),
+            self.db.admin_timeseries(14),
+            self.db.admin_plan_breakdown(),
+        )
+        return web.json_response({
+            "role": role,
+            "overview": overview,
+            "analytics": analytics,
+            "timeseries": timeseries,
+            "plans": plans,
+            "generated_at": utcnow().isoformat(),
+        })
+
+    async def admin_users(self, request: web.Request) -> web.Response:
+        await self._admin_auth(request)
+        query = str(request.query.get("q") or "").strip()
+        if len(query) > 64:
+            raise _json_error(400, "Слишком длинный запрос")
+        status = str(request.query.get("status") or "all")
+        if status not in {"all", "active", "paid", "granted"}:
+            raise _json_error(400, "Неизвестный фильтр")
+        try:
+            page = int(request.query.get("page") or 0)
+        except ValueError as exc:
+            raise _json_error(400, "Некорректная страница") from exc
+        page = max(0, min(page, 100000))
+        users, total = await self.db.admin_users_page(
+            query=query,
+            status=status,
+            page=page,
+            page_size=20,
+        )
+        return web.json_response({
+            "users": users,
+            "total": total,
+            "page": page,
+            "page_size": 20,
+            "pages": max(1, (total + 19) // 20),
+        })
+
+    async def admin_payments(self, request: web.Request) -> web.Response:
+        await self._admin_auth(request)
+        overview, analytics, payments = await asyncio.gather(
+            self.db.admin_overview(),
+            self.db.business_analytics(),
+            self.db.admin_recent_payments(40),
+        )
+        return web.json_response({
+            "summary": {
+                "rub_total": overview["sbp_revenue"],
+                "stars_total": overview["star_revenue"],
+                "rub_month": analytics["rub_month"],
+                "stars_month": analytics["stars_month"],
+            },
+            "payments": payments,
+        })
+
+    async def admin_servers(self, request: web.Request) -> web.Response:
+        await self._admin_auth(request)
+        sample_users = await self.db.list_active_users_for_vpn_sync(limit=1)
+        sample_user = sample_users[0] if sample_users else None
+        try:
+            report = await asyncio.wait_for(
+                self.provider.server_diagnostics(sample_user),
+                timeout=18.0,
+            )
+        except asyncio.TimeoutError as exc:
+            raise _json_error(503, "Диагностика серверов не успела завершиться") from exc
+        except Exception as exc:
+            logger.exception("Mini App admin server diagnostics failed: %s", type(exc).__name__)
+            raise _json_error(503, "Не удалось проверить серверы") from exc
+        by_name = {
+            str(item.get("name") or "").strip(): item
+            for item in list(report.get("servers") or [])
+        }
+        servers = []
+        for _server_id, name in BASE_MGN_SERVERS:
+            item = by_name.get(name)
+            latency = item.get("latency_ms") if item else None
+            servers.append({
+                "name": name,
+                "available": bool(item and item.get("available")),
+                "latency_ms": int(latency) if isinstance(latency, (int, float)) else None,
+            })
+        return web.json_response({"servers": servers, "generated_at": utcnow().isoformat()})
 
     async def stars_invoice(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
@@ -1775,6 +1885,10 @@ class MiniAppServer:
             self.public_payment_check,
         )
         app.router.add_get("/api/miniapp/me", self.me)
+        app.router.add_get("/api/miniapp/admin/overview", self.admin_overview)
+        app.router.add_get("/api/miniapp/admin/users", self.admin_users)
+        app.router.add_get("/api/miniapp/admin/payments", self.admin_payments)
+        app.router.add_get("/api/miniapp/admin/servers", self.admin_servers)
         app.router.add_post("/api/miniapp/payment/stars", self.stars_invoice)
         app.router.add_post("/api/miniapp/payment/sbp", self.sbp_create)
         app.router.add_get("/api/miniapp/payment/sbp/{payment_id}", self.sbp_check)
