@@ -281,6 +281,8 @@ class MiniAppServer:
             tg_user.get("username"),
             tg_user.get("first_name") or "Пользователь",
         )
+        if bool(row.get("is_blocked")) and not await self._admin_role(user_id):
+            raise _json_error(403, "Доступ к MGN VPN временно заблокирован")
         return user_id, tg_user, row
 
     async def _admin_role(self, user_id: int) -> str | None:
@@ -854,6 +856,8 @@ class MiniAppServer:
         user = await self.db.get_user_by_sub_token(token)
         if user is None:
             raise web.HTTPNotFound(text="Subscription not found")
+        if bool(user.get("is_blocked")):
+            raise web.HTTPForbidden(text="Subscription blocked")
         if not _active(user):
             raise web.HTTPForbidden(text="Subscription expired")
 
@@ -1076,6 +1080,8 @@ class MiniAppServer:
         uid, tg_user, row = await self._auth(request)
         admin_role = await self._admin_role(uid)
         state, vpn_ok = await self._load_state(row)
+        if state.devices:
+            await self.db.record_device_snapshot(uid, list(state.devices))
         local_day = utcnow().astimezone(self.config.display_tz).date().isoformat()
         if _active(row) and vpn_ok:
             await self.db.record_traffic_sample(
@@ -1124,6 +1130,7 @@ class MiniAppServer:
                     "traffic_limit_gb": round(float(state.traffic_limit_gb or 0), 2),
                     "traffic_history": traffic_history,
                     "devices": state.devices,
+                    "device_history": await self.db.list_device_history(uid),
                 },
                 "plans": [
                     {
@@ -1211,6 +1218,119 @@ class MiniAppServer:
             "pages": max(1, (total + 19) // 20),
         })
 
+    async def admin_user_detail(self, request: web.Request) -> web.Response:
+        await self._admin_auth(request)
+        raw_id = str(request.match_info.get("user_id") or "")
+        if not raw_id.isdigit():
+            raise _json_error(404, "Пользователь не найден")
+        user_id = int(raw_id)
+        detail = await self.db.admin_user_detail(user_id)
+        if not detail:
+            raise _json_error(404, "Пользователь не найден")
+        row = await self.db.get_user(user_id)
+        devices: list[dict] = await self.db.list_device_history(user_id)
+        if row and _active(row) and not row.get("is_blocked"):
+            try:
+                state = await asyncio.wait_for(self.provider.get_state(row), timeout=8.0)
+                await self.db.record_device_snapshot(user_id, list(state.devices or []))
+                devices = await self.db.list_device_history(user_id)
+            except Exception as exc:
+                logger.info("Admin user live state unavailable for %s: %s", user_id, type(exc).__name__)
+        detail["devices"] = devices
+        return web.json_response(detail)
+
+    async def admin_user_action(self, request: web.Request) -> web.Response:
+        actor_id, _tg_user, _actor_row, role = await self._admin_auth(request)
+        if role not in {"owner", "full"}:
+            raise _json_error(403, "Нужен полный доступ администратора")
+        raw_id = str(request.match_info.get("user_id") or "")
+        if not raw_id.isdigit():
+            raise _json_error(404, "Пользователь не найден")
+        target_id = int(raw_id)
+        if target_id == actor_id:
+            raise _json_error(409, "Нельзя изменять собственный доступ из Mini App")
+        row = await self.db.get_user(target_id)
+        if not row:
+            raise _json_error(404, "Пользователь не найден")
+        data = await self._json_body(request)
+        action = str(data.get("action") or "")
+        details: dict[str, Any] = {}
+        try:
+            if action in {"add_days", "remove_days"}:
+                days = int(data.get("days") or 0)
+                if not 1 <= days <= 365:
+                    raise _json_error(400, "Можно изменить от 1 до 365 дней")
+                delta = days if action == "add_days" else -days
+                updated = await self.db.adjust_subscription_days(target_id, delta)
+                details = {"days": delta}
+                if getattr(self.provider, "service_ready", True):
+                    await asyncio.wait_for(self.provider.provision(updated), timeout=30.0)
+            elif action == "set_devices":
+                limit = int(data.get("limit") or 0)
+                if not 1 <= limit <= MAX_DEVICES:
+                    raise _json_error(400, "Лимит устройств должен быть от 1 до 5")
+                updated = await self.db.set_device_limit(target_id, limit)
+                details = {"limit": limit}
+                if getattr(self.provider, "service_ready", True):
+                    await asyncio.wait_for(self.provider.provision(updated), timeout=30.0)
+            elif action in {"block", "unblock"}:
+                blocked = action == "block"
+                await asyncio.wait_for(self.provider.set_suspended(row, blocked), timeout=30.0)
+                updated = await self.db.set_user_blocked(target_id, blocked, actor_id)
+                details = {"blocked": blocked}
+            elif action == "reset_devices":
+                if not self.provider.capabilities.supports_device_reset:
+                    raise _json_error(409, "Провайдер не поддерживает сброс устройств")
+                await asyncio.wait_for(self.provider.reset_devices(row), timeout=30.0)
+                updated = row
+            elif action == "regenerate_link":
+                old_token = str(row.get("sub_token") or "")
+                old_vpn_client_id = row.get("vpn_client_id")
+                is_h1 = getattr(self.provider, "mode_name", "") == "h1cloud"
+                if is_h1:
+                    # Expire the old H1 identity first so previously imported
+                    # VLESS configs stop working. If creating the replacement
+                    # fails, restore both DB identity and the old H1 access.
+                    await asyncio.wait_for(self.provider.set_suspended(row, True), timeout=30.0)
+                    try:
+                        updated = await self.db.rotate_vpn_identity(target_id)
+                        await asyncio.wait_for(self.provider.provision(updated), timeout=30.0)
+                    except Exception:
+                        await self.db.restore_vpn_identity(
+                            target_id,
+                            sub_token=old_token,
+                            vpn_client_id=old_vpn_client_id,
+                        )
+                        try:
+                            await asyncio.wait_for(self.provider.set_suspended(row, False), timeout=30.0)
+                        except Exception as rollback_exc:
+                            logger.error(
+                                "Could not restore old H1 identity for %s after regeneration failure: %s",
+                                target_id,
+                                type(rollback_exc).__name__,
+                            )
+                        raise
+                else:
+                    if self.provider.capabilities.supports_device_reset:
+                        await asyncio.wait_for(self.provider.reset_devices(row), timeout=30.0)
+                    updated = await self.db.rotate_subscription_token(target_id)
+                details = {"identity_rotated": True}
+                await self.invalidate_subscription_cache(old_token)
+            else:
+                raise _json_error(400, "Неизвестное действие")
+        except web.HTTPException:
+            raise
+        except (TypeError, ValueError):
+            raise _json_error(400, "Некорректные параметры")
+        except asyncio.TimeoutError as exc:
+            raise _json_error(503, "H1Cloud не успел подтвердить изменение") from exc
+        except Exception as exc:
+            logger.warning("Mini App admin action %s failed for %s: %s", action, target_id, type(exc).__name__)
+            raise _json_error(503, "Не удалось применить изменение") from exc
+        await self.db.add_admin_audit(actor_id, target_id, action, json.dumps(details, ensure_ascii=False))
+        await self._sync_bot_subscription_menu(updated)
+        return web.json_response({"ok": True, "detail": await self.db.admin_user_detail(target_id)})
+
     async def admin_payments(self, request: web.Request) -> web.Response:
         await self._admin_auth(request)
         overview, analytics, payments = await asyncio.gather(
@@ -1255,7 +1375,20 @@ class MiniAppServer:
                 "available": bool(item and item.get("available")),
                 "latency_ms": int(latency) if isinstance(latency, (int, float)) else None,
             })
-        return web.json_response({"servers": servers, "generated_at": utcnow().isoformat()})
+        health_rows, notifications = await asyncio.gather(
+            self.db.list_server_health(),
+            self.db.recent_smart_notifications(30),
+        )
+        health_by_name = {str(item.get("name") or ""): item for item in health_rows}
+        for item in servers:
+            health = health_by_name.get(str(item["name"]))
+            item["quarantined"] = bool(health and health.get("quarantined"))
+            item["failure_streak"] = int(health.get("failure_streak") or 0) if health else 0
+        return web.json_response({
+            "servers": servers,
+            "notifications": notifications,
+            "generated_at": utcnow().isoformat(),
+        })
 
     async def stars_invoice(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
@@ -1887,6 +2020,8 @@ class MiniAppServer:
         app.router.add_get("/api/miniapp/me", self.me)
         app.router.add_get("/api/miniapp/admin/overview", self.admin_overview)
         app.router.add_get("/api/miniapp/admin/users", self.admin_users)
+        app.router.add_get("/api/miniapp/admin/users/{user_id}", self.admin_user_detail)
+        app.router.add_post("/api/miniapp/admin/users/{user_id}/actions", self.admin_user_action)
         app.router.add_get("/api/miniapp/admin/payments", self.admin_payments)
         app.router.add_get("/api/miniapp/admin/servers", self.admin_servers)
         app.router.add_post("/api/miniapp/payment/stars", self.stars_invoice)
