@@ -988,3 +988,92 @@ def test_user_section_buttons_are_colored_and_have_regular_emoji(monkeypatch):
                 assert button.style in {"primary", "success", "danger"}
                 assert button.text
                 assert button.text[0] and not button.text[0].isalnum()
+
+
+def test_smart_notifications_use_safe_keys_and_cover_abandoned_stars(tmp_path):
+    async def run():
+        db = Database(str(tmp_path / "smart-notifications.db"))
+        await db.init()
+        await db.ensure_user(7001, "smart_user", "Smart")
+        now = utcnow()
+        async with aiosqlite.connect(db.path, timeout=15.0) as conn:
+            await conn.execute(
+                "UPDATE users SET plan_name=?, subscription_until=? WHERE telegram_id=?",
+                ("1 месяц", (now - timedelta(minutes=5)).isoformat(), 7001),
+            )
+            await conn.commit()
+        await db.create_payment_intent(
+            intent_id="stars-abandoned-1",
+            buyer_id=7001,
+            target_id=7001,
+            product_code="30",
+            original_amount_rub=99,
+            discount_amount_rub=0,
+            final_amount_rub=99,
+            currency="XTR",
+            currency_amount=62,
+        )
+        async with aiosqlite.connect(db.path, timeout=15.0) as conn:
+            created = (now - timedelta(minutes=25)).isoformat()
+            await conn.execute(
+                "UPDATE payment_intents SET status='expired', created_at=?, expires_at=? WHERE intent_id=?",
+                (created, (now - timedelta(minutes=5)).isoformat(), "stars-abandoned-1"),
+            )
+            await conn.commit()
+
+        candidates = await db.smart_notification_candidates(limit=50)
+        selected = [item for item in candidates if int(item.get("telegram_id") or 0) == 7001]
+        assert {item["kind"] for item in selected} >= {"expired", "abandoned_payment"}
+        for item in selected:
+            assert all(ch.islower() or ch.isdigit() or ch in ":_-" for ch in item["event_key"])
+            assert await db.claim_smart_notification(
+                item["event_key"], 7001, item["kind"]
+            ) is True
+            assert await db.claim_smart_notification(
+                item["event_key"], 7001, item["kind"]
+            ) is False
+
+    asyncio.run(run())
+
+
+def test_vpn_identity_rotation_changes_both_ids_and_supports_rollback(tmp_path):
+    async def run():
+        db = Database(str(tmp_path / "identity-rotation.db"))
+        await db.init()
+        before = await db.ensure_user(7002, "rotate_user", "Rotate")
+        rotated = await db.rotate_vpn_identity(7002)
+        assert rotated["sub_token"] != before["sub_token"]
+        assert rotated["vpn_client_id"] != before["vpn_client_id"]
+
+        restored = await db.restore_vpn_identity(
+            7002,
+            sub_token=before["sub_token"],
+            vpn_client_id=before["vpn_client_id"],
+        )
+        assert restored["sub_token"] == before["sub_token"]
+        assert restored["vpn_client_id"] == before["vpn_client_id"]
+
+    asyncio.run(run())
+
+
+def test_device_history_marks_new_country_as_suspicious(tmp_path):
+    async def run():
+        db = Database(str(tmp_path / "device-history.db"))
+        await db.init()
+        await db.ensure_user(7003, "device_user", "Device")
+        await db.record_device_snapshot(
+            7003,
+            [{"id": "phone-1", "name": "iPhone", "platform": "iOS", "ip": "1.1.1.1", "country": "LV"}],
+        )
+        await db.record_device_snapshot(
+            7003,
+            [{"id": "pc-2", "name": "PC", "platform": "Windows", "ip": "2.2.2.2", "country": "DE"}],
+        )
+        history = await db.list_device_history(7003)
+        german = next(item for item in history if item["device_id"] == "pc-2")
+        assert german["suspicious"] == 1
+        candidates = await db.smart_notification_candidates(limit=50)
+        warning = next(item for item in candidates if item["kind"] == "suspicious_device" and item["telegram_id"] == 7003)
+        assert await db.claim_smart_notification(warning["event_key"], 7003, warning["kind"])
+
+    asyncio.run(run())
