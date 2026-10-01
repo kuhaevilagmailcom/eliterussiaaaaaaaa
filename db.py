@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import secrets
 import re
 from datetime import datetime, timedelta, timezone
@@ -348,6 +349,63 @@ class Database:
                     expires_at TEXT,
                     paid_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS smart_notifications (
+                    event_key TEXT PRIMARY KEY,
+                    telegram_id INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'claimed'
+                        CHECK(status IN ('claimed', 'sent', 'failed')),
+                    payload TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    sent_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_smart_notifications_user
+                ON smart_notifications(telegram_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS device_history (
+                    telegram_id INTEGER NOT NULL,
+                    device_key TEXT NOT NULL,
+                    device_id TEXT NOT NULL DEFAULT '',
+                    name TEXT NOT NULL DEFAULT 'Устройство',
+                    platform TEXT NOT NULL DEFAULT '',
+                    ip_address TEXT NOT NULL DEFAULT '',
+                    country TEXT NOT NULL DEFAULT '',
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    suspicious INTEGER NOT NULL DEFAULT 0,
+                    notified_at TEXT,
+                    PRIMARY KEY (telegram_id, device_key)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_device_history_user_seen
+                ON device_history(telegram_id, last_seen_at DESC);
+
+                CREATE TABLE IF NOT EXISTS admin_audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    actor_id INTEGER NOT NULL,
+                    target_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    details TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_admin_audit_target
+                ON admin_audit_log(target_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS server_health_state (
+                    server_key TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    available INTEGER,
+                    latency_ms INTEGER,
+                    failure_streak INTEGER NOT NULL DEFAULT 0,
+                    recovery_streak INTEGER NOT NULL DEFAULT 0,
+                    quarantined INTEGER NOT NULL DEFAULT 0,
+                    changed_at TEXT NOT NULL,
+                    checked_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -391,6 +449,17 @@ class Database:
                     "UPDATE users SET bot_started_at=created_at "
                     "WHERE bot_started_at IS NULL"
                 )
+            for name, declaration in (
+                ("last_activity_at", "TEXT"),
+                ("is_blocked", "INTEGER NOT NULL DEFAULT 0"),
+                ("blocked_at", "TEXT"),
+                ("blocked_by", "INTEGER"),
+            ):
+                if name not in columns:
+                    await db.execute(f"ALTER TABLE users ADD COLUMN {name} {declaration}")
+            await db.execute(
+                "UPDATE users SET last_activity_at=COALESCE(last_activity_at, bot_started_at, created_at)"
+            )
             await db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_vpn_client_id "
                 "ON users(vpn_client_id) WHERE vpn_client_id IS NOT NULL"
@@ -470,6 +539,16 @@ class Database:
                 "WHERE status='created' AND expires_at<=?",
                 (to_iso(utcnow()),),
             )
+            promo_columns = {
+                row[1]
+                for row in await (
+                    await db.execute("PRAGMA table_info(service_promo_codes)")
+                ).fetchall()
+            }
+            if "target_telegram_id" not in promo_columns:
+                await db.execute(
+                    "ALTER TABLE service_promo_codes ADD COLUMN target_telegram_id INTEGER"
+                )
             await db.execute(
                 "INSERT OR IGNORE INTO interaction_sessions "
                 "(telegram_id, mode, ticket_id, payload, updated_at) "
@@ -588,14 +667,15 @@ class Database:
             await db.execute(
                 """
                 INSERT INTO users (
-                    telegram_id, username, first_name, created_at, sub_token, vpn_client_id
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    telegram_id, username, first_name, created_at, sub_token,
+                    vpn_client_id, last_activity_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(telegram_id) DO UPDATE SET
                     username=excluded.username,
-                    first_name=excluded.first_name
-                WHERE users.username IS NOT excluded.username OR users.first_name IS NOT excluded.first_name
+                    first_name=excluded.first_name,
+                    last_activity_at=excluded.last_activity_at
                 """,
-                (telegram_id, username, first_name or "", now, token, vpn_client_id),
+                (telegram_id, username, first_name or "", now, token, vpn_client_id, now),
             )
             await db.commit()
         result = await self.get_user(telegram_id)
@@ -1369,6 +1449,8 @@ class Database:
             ).fetchone()
             if row is None or not int(row["active"]):
                 return None
+            if row["target_telegram_id"] is not None and int(row["target_telegram_id"]) != int(telegram_id):
+                return None
             expires = from_iso(row["expires_at"])
             if expires and expires <= utcnow():
                 return None
@@ -1405,11 +1487,14 @@ class Database:
             await db.execute("BEGIN IMMEDIATE")
             row = await (
                 await db.execute(
-                    "SELECT max_uses, used_count, per_user_limit, active, expires_at FROM service_promo_codes WHERE id=?",
+                    "SELECT max_uses, used_count, per_user_limit, active, expires_at, target_telegram_id FROM service_promo_codes WHERE id=?",
                     (promo_id,),
                 )
             ).fetchone()
             if row is None or not int(row[3]):
+                await db.rollback()
+                return False
+            if row[5] is not None and int(row[5]) != int(telegram_id):
                 await db.rollback()
                 return False
             expires = from_iso(row[4])
@@ -1517,6 +1602,9 @@ class Database:
                 )
             ).fetchone()
             if promo is None or user is None or promo["type"] != "free_days" or not int(promo["active"]):
+                await db.rollback()
+                return None
+            if promo["target_telegram_id"] is not None and int(promo["target_telegram_id"]) != int(telegram_id):
                 await db.rollback()
                 return None
             expires = from_iso(promo["expires_at"])
@@ -1900,6 +1988,8 @@ class Database:
         )).fetchone()
         if promo is None or promo["type"] != "discount" or not int(promo["active"]):
             raise ValueError("Promo is no longer available")
+        if promo["target_telegram_id"] is not None and int(promo["target_telegram_id"]) != int(buyer_id):
+            raise ValueError("Promo belongs to another user")
         expires = from_iso(promo["expires_at"])
         if expires and expires <= utcnow():
             raise ValueError("Promo has expired")
@@ -2696,7 +2786,7 @@ class Database:
             )
             params.extend((like, like, like))
         if status == "active":
-            where.append("u.subscription_until IS NOT NULL AND u.subscription_until>?")
+            where.append("u.is_blocked=0 AND u.subscription_until IS NOT NULL AND u.subscription_until>?")
             params.append(now)
         elif status == "paid":
             where.append(self_paid)
@@ -2713,7 +2803,8 @@ class Database:
                 f"""
                 SELECT u.telegram_id, u.username, u.first_name, u.created_at,
                        u.subscription_until, u.plan_name, u.max_devices,
-                       CASE WHEN u.subscription_until IS NOT NULL AND u.subscription_until>? THEN 1 ELSE 0 END AS active,
+                       u.last_activity_at, u.is_blocked,
+                       CASE WHEN u.is_blocked=0 AND u.subscription_until IS NOT NULL AND u.subscription_until>? THEN 1 ELSE 0 END AS active,
                        CASE WHEN {self_paid} THEN 1 ELSE 0 END AS paid,
                        CASE WHEN {granted} THEN 1 ELSE 0 END AS granted
                 FROM users u{where_sql}
@@ -2748,6 +2839,366 @@ class Database:
                 LIMIT ?
                 """,
                 (limit,),
+            )).fetchall()
+        return [dict(row) for row in rows]
+
+    async def claim_smart_notification(
+        self, event_key: str, telegram_id: int, kind: str, payload: str = "{}"
+    ) -> bool:
+        if not re.fullmatch(r"[a-z0-9:_-]{3,160}", event_key):
+            raise ValueError("invalid notification key")
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            cursor = await db.execute(
+                "INSERT OR IGNORE INTO smart_notifications "
+                "(event_key, telegram_id, kind, status, payload, created_at) "
+                "VALUES (?, ?, ?, 'claimed', ?, ?)",
+                (event_key, int(telegram_id), str(kind)[:40], str(payload)[:2000], to_iso(utcnow())),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
+    async def finish_smart_notification(self, event_key: str, *, sent: bool) -> None:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            if sent:
+                await db.execute(
+                    "UPDATE smart_notifications SET status='sent', sent_at=? WHERE event_key=?",
+                    (to_iso(utcnow()), event_key),
+                )
+            else:
+                await db.execute("DELETE FROM smart_notifications WHERE event_key=?", (event_key,))
+            await db.commit()
+
+    async def smart_notification_candidates(self, limit: int = 150) -> list[dict[str, Any]]:
+        """Return bounded service-notification candidates; claiming prevents duplicates."""
+        limit = max(1, min(int(limit), 500))
+        now = utcnow()
+        now_iso = to_iso(now)
+        abandoned_after = to_iso(now - timedelta(minutes=20))
+        abandoned_before = to_iso(now - timedelta(hours=24))
+        trial_horizon = to_iso(now + timedelta(hours=6))
+        inactive_before = to_iso(now - timedelta(days=14))
+        renewal_horizon = to_iso(now + timedelta(hours=24))
+        results: list[dict[str, Any]] = []
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            expired = await (await db.execute(
+                """
+                SELECT telegram_id, first_name, subscription_until
+                FROM users
+                WHERE is_blocked=0 AND plan_name!='Пробный доступ'
+                  AND subscription_until IS NOT NULL AND subscription_until<=?
+                  AND subscription_until>=?
+                ORDER BY subscription_until LIMIT ?
+                """,
+                (now_iso, to_iso(now - timedelta(days=3)), limit),
+            )).fetchall()
+            abandoned = await (await db.execute(
+                """
+                SELECT telegram_id, payment_id, amount_rub, plan_code, created_at
+                FROM sbp_payments
+                WHERE status IN ('created','creating','awaiting_payment','processing')
+                  AND created_at<=? AND created_at>=?
+                ORDER BY created_at LIMIT ?
+                """,
+                (abandoned_after, abandoned_before, limit),
+            )).fetchall()
+            abandoned_stars = await (await db.execute(
+                """
+                SELECT buyer_telegram_id AS telegram_id, intent_id AS payment_id,
+                       final_amount_rub AS amount_rub, product_code AS plan_code, created_at
+                FROM payment_intents
+                WHERE status IN ('created','expired')
+                  AND created_at<=? AND created_at>=?
+                ORDER BY created_at LIMIT ?
+                """,
+                (abandoned_after, abandoned_before, limit),
+            )).fetchall()
+            trials = await (await db.execute(
+                """
+                SELECT telegram_id, first_name, subscription_until
+                FROM users WHERE is_blocked=0 AND plan_name='Пробный доступ'
+                  AND subscription_until>? AND subscription_until<=?
+                ORDER BY subscription_until LIMIT ?
+                """,
+                (now_iso, trial_horizon, limit),
+            )).fetchall()
+            inactive = await (await db.execute(
+                """
+                SELECT telegram_id, first_name, last_activity_at
+                FROM users WHERE is_blocked=0 AND bot_started_at IS NOT NULL
+                  AND last_activity_at IS NOT NULL AND last_activity_at<=?
+                ORDER BY last_activity_at LIMIT ?
+                """,
+                (inactive_before, limit),
+            )).fetchall()
+            renewal = await (await db.execute(
+                """
+                SELECT telegram_id, first_name, subscription_until
+                FROM users u WHERE is_blocked=0 AND plan_name!='Пробный доступ'
+                  AND subscription_until>? AND subscription_until<=?
+                  AND (EXISTS (
+                    SELECT 1 FROM sbp_payments s WHERE s.status='paid'
+                      AND s.telegram_id=u.telegram_id
+                      AND COALESCE(s.target_telegram_id,s.telegram_id)=u.telegram_id
+                      AND s.plan_code!='device'
+                  ) OR EXISTS (
+                    SELECT 1 FROM star_payments sp
+                    WHERE sp.buyer_telegram_id=u.telegram_id
+                      AND sp.target_telegram_id=u.telegram_id AND sp.plan_code!='device'
+                  ))
+                ORDER BY subscription_until LIMIT ?
+                """,
+                (now_iso, renewal_horizon, limit),
+            )).fetchall()
+            suspicious = await (await db.execute(
+                """
+                SELECT telegram_id, device_key, name, platform, ip_address, country, last_seen_at
+                FROM device_history WHERE suspicious=1 AND notified_at IS NULL
+                ORDER BY last_seen_at LIMIT ?
+                """,
+                (limit,),
+            )).fetchall()
+        def event_key(kind: str, *parts: object) -> str:
+            raw = "|".join(str(part) for part in parts)
+            digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+            return f"{kind}:{digest}"
+
+        for row in expired:
+            item = dict(row); item.update(kind="expired", event_key=event_key("expired", row["telegram_id"], row["subscription_until"])); results.append(item)
+        for row in [*abandoned, *abandoned_stars]:
+            item = dict(row); item.update(kind="abandoned_payment", event_key=event_key("payment", row["telegram_id"], row["payment_id"])); results.append(item)
+        for row in trials:
+            item = dict(row); item.update(kind="trial_ending", event_key=event_key("trial-ending", row["telegram_id"], row["subscription_until"])); results.append(item)
+        month = now.strftime("%Y-%m")
+        for row in inactive:
+            item = dict(row); item.update(kind="inactive", event_key=event_key("inactive", row["telegram_id"], month)); results.append(item)
+        for row in renewal:
+            item = dict(row); item.update(kind="renewal_discount", event_key=event_key("renewal", row["telegram_id"], row["subscription_until"])); results.append(item)
+        for row in suspicious:
+            item = dict(row); item.update(kind="suspicious_device", event_key=event_key("device", row["telegram_id"], row["device_key"])); results.append(item)
+        return results[:limit]
+
+    async def mark_device_notified(self, telegram_id: int, device_key: str) -> None:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute(
+                "UPDATE device_history SET notified_at=? WHERE telegram_id=? AND device_key=?",
+                (to_iso(utcnow()), int(telegram_id), str(device_key)),
+            )
+            await db.commit()
+
+    async def record_device_snapshot(self, telegram_id: int, devices: list[dict[str, Any]]) -> None:
+        now = to_iso(utcnow())
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            existing_rows = await (await db.execute(
+                "SELECT device_key, country FROM device_history WHERE telegram_id=?",
+                (int(telegram_id),),
+            )).fetchall()
+            existing_keys = {str(row[0]) for row in existing_rows}
+            known_countries = {str(row[1]).strip().lower() for row in existing_rows if str(row[1]).strip()}
+            await db.execute("UPDATE device_history SET active=0 WHERE telegram_id=?", (int(telegram_id),))
+            for index, raw in enumerate(list(devices or [])[:20]):
+                device_id = str(raw.get("id") or "")[:160]
+                fingerprint = str(raw.get("fingerprint") or "")[:160]
+                name = str(raw.get("name") or "Устройство")[:120]
+                platform = str(raw.get("platform") or "")[:80]
+                ip_address = str(raw.get("ip_address") or raw.get("ip") or "")[:64]
+                country = str(raw.get("country") or raw.get("location") or "")[:80]
+                basis = fingerprint or device_id or f"{name}|{platform}|{index}"
+                device_key = hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]
+                is_new = device_key not in existing_keys
+                suspicious = int(bool(is_new and existing_keys and country and known_countries and country.lower() not in known_countries))
+                last_seen = str(raw.get("last_seen") or now)[:64]
+                await db.execute(
+                    """
+                    INSERT INTO device_history (
+                        telegram_id, device_key, device_id, name, platform,
+                        ip_address, country, first_seen_at, last_seen_at, active, suspicious
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    ON CONFLICT(telegram_id, device_key) DO UPDATE SET
+                        device_id=excluded.device_id, name=excluded.name,
+                        platform=excluded.platform, ip_address=excluded.ip_address,
+                        country=excluded.country, last_seen_at=excluded.last_seen_at,
+                        active=1, suspicious=MAX(device_history.suspicious, excluded.suspicious)
+                    """,
+                    (int(telegram_id), device_key, device_id, name, platform, ip_address, country, now, last_seen, suspicious),
+                )
+            await db.commit()
+
+    async def list_device_history(self, telegram_id: int, limit: int = 30) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(
+                "SELECT device_key, device_id, name, platform, ip_address, country, "
+                "first_seen_at, last_seen_at, active, suspicious FROM device_history "
+                "WHERE telegram_id=? ORDER BY active DESC, last_seen_at DESC LIMIT ?",
+                (int(telegram_id), max(1, min(int(limit), 100))),
+            )).fetchall()
+        return [dict(row) for row in rows]
+
+    async def add_admin_audit(self, actor_id: int, target_id: int, action: str, details: str = "{}") -> None:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute(
+                "INSERT INTO admin_audit_log (actor_id,target_id,action,details,created_at) VALUES (?,?,?,?,?)",
+                (int(actor_id), int(target_id), str(action)[:64], str(details)[:2000], to_iso(utcnow())),
+            )
+            await db.commit()
+
+    async def admin_user_detail(self, telegram_id: int) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            user = await (await db.execute(
+                "SELECT telegram_id,username,first_name,created_at,last_activity_at,subscription_until,"
+                "plan_name,max_devices,trial_used,is_blocked,blocked_at,attribution_source "
+                "FROM users WHERE telegram_id=?",
+                (int(telegram_id),),
+            )).fetchone()
+            if user is None:
+                return None
+            payments = await (await db.execute(
+                """
+                SELECT method, amount, currency, plan_code, status, created_at FROM (
+                  SELECT 'СБП' method, amount_rub amount, 'RUB' currency, plan_code, status,
+                         COALESCE(paid_at,created_at) created_at
+                  FROM sbp_payments WHERE COALESCE(target_telegram_id,telegram_id)=?
+                  UNION ALL
+                  SELECT 'Stars', stars, 'XTR', plan_code, 'paid', created_at
+                  FROM star_payments WHERE target_telegram_id=?
+                ) ORDER BY created_at DESC LIMIT 20
+                """,
+                (int(telegram_id), int(telegram_id)),
+            )).fetchall()
+            promos = await (await db.execute(
+                """
+                SELECT p.code,p.type,p.value,pu.used_at FROM promo_uses pu
+                JOIN service_promo_codes p ON p.id=pu.promo_id
+                WHERE pu.telegram_id=? ORDER BY pu.used_at DESC LIMIT 15
+                """,
+                (int(telegram_id),),
+            )).fetchall()
+            audit = await (await db.execute(
+                "SELECT actor_id,action,details,created_at FROM admin_audit_log "
+                "WHERE target_id=? ORDER BY created_at DESC LIMIT 30",
+                (int(telegram_id),),
+            )).fetchall()
+            notifications = await (await db.execute(
+                "SELECT kind,status,created_at,sent_at FROM smart_notifications "
+                "WHERE telegram_id=? ORDER BY created_at DESC LIMIT 20",
+                (int(telegram_id),),
+            )).fetchall()
+        return {"user": dict(user), "payments": [dict(x) for x in payments], "promos": [dict(x) for x in promos], "audit": [dict(x) for x in audit], "notifications": [dict(x) for x in notifications]}
+
+    async def set_user_blocked(self, telegram_id: int, blocked: bool, actor_id: int) -> dict[str, Any]:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            cursor = await db.execute(
+                "UPDATE users SET is_blocked=?, blocked_at=?, blocked_by=? WHERE telegram_id=?",
+                (int(bool(blocked)), to_iso(utcnow()) if blocked else None, int(actor_id) if blocked else None, int(telegram_id)),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(telegram_id)
+            await db.commit()
+        return await self.get_user(int(telegram_id))
+
+    async def rotate_subscription_token(self, telegram_id: int) -> dict[str, Any]:
+        token = secrets.token_urlsafe(24)
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            cursor = await db.execute("UPDATE users SET sub_token=? WHERE telegram_id=?", (token, int(telegram_id)))
+            if cursor.rowcount != 1:
+                raise KeyError(telegram_id)
+            await db.commit()
+        return await self.get_user(int(telegram_id))
+
+    async def rotate_vpn_identity(self, telegram_id: int) -> dict[str, Any]:
+        """Rotate both the public subscription token and private H1 identity."""
+        token = secrets.token_urlsafe(24)
+        vpn_client_id = secrets.token_hex(16)
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            cursor = await db.execute(
+                "UPDATE users SET sub_token=?, vpn_client_id=? WHERE telegram_id=?",
+                (token, vpn_client_id, int(telegram_id)),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(telegram_id)
+            await db.commit()
+        return await self.get_user(int(telegram_id))
+
+    async def restore_vpn_identity(
+        self, telegram_id: int, *, sub_token: str, vpn_client_id: str | None
+    ) -> dict[str, Any]:
+        """Rollback an identity rotation if H1 provisioning fails."""
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            cursor = await db.execute(
+                "UPDATE users SET sub_token=?, vpn_client_id=? WHERE telegram_id=?",
+                (str(sub_token), vpn_client_id, int(telegram_id)),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(telegram_id)
+            await db.commit()
+        return await self.get_user(int(telegram_id))
+
+    async def ensure_personal_renewal_promo(self, telegram_id: int) -> dict[str, Any]:
+        now = utcnow(); expires = to_iso(now + timedelta(days=3))
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute(
+                "SELECT * FROM service_promo_codes WHERE target_telegram_id=? AND type='discount' "
+                "AND active=1 AND (expires_at IS NULL OR expires_at>?) ORDER BY id DESC LIMIT 1",
+                (int(telegram_id), to_iso(now)),
+            )).fetchone()
+            if row:
+                return dict(row)
+            code = f"RETURN15-{str(telegram_id)[-6:]}-{secrets.token_hex(2).upper()}"
+            cursor = await db.execute(
+                "INSERT INTO service_promo_codes (code,type,value,max_uses,per_user_limit,expires_at,active,applicable_plans,created_by,created_at,target_telegram_id) "
+                "VALUES (?, 'discount', 15, 1, 1, ?, 1, 'all', 0, ?, ?)",
+                (code, expires, to_iso(now), int(telegram_id)),
+            )
+            await db.commit()
+            row = await (await db.execute("SELECT * FROM service_promo_codes WHERE id=?", (cursor.lastrowid,))).fetchone()
+        return dict(row)
+
+    async def record_server_health(self, server_key: str, name: str, available: bool | None, latency_ms: int | None) -> dict[str, Any]:
+        now = to_iso(utcnow())
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            current = await (await db.execute("SELECT * FROM server_health_state WHERE server_key=?", (server_key,))).fetchone()
+            old = dict(current) if current else None
+            failures = int(old.get("failure_streak") or 0) if old else 0
+            recoveries = int(old.get("recovery_streak") or 0) if old else 0
+            quarantined = bool(old.get("quarantined")) if old else False
+            if available is False:
+                failures += 1; recoveries = 0
+                if failures >= 3: quarantined = True
+            elif available is True:
+                recoveries += 1; failures = 0
+                if quarantined and recoveries >= 2: quarantined = False
+            changed = bool(old is not None and bool(old.get("quarantined")) != quarantined)
+            changed_at = now if changed or old is None else str(old["changed_at"])
+            await db.execute(
+                """
+                INSERT INTO server_health_state (server_key,name,available,latency_ms,failure_streak,recovery_streak,quarantined,changed_at,checked_at)
+                VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(server_key) DO UPDATE SET
+                name=excluded.name,available=excluded.available,latency_ms=excluded.latency_ms,
+                failure_streak=excluded.failure_streak,recovery_streak=excluded.recovery_streak,
+                quarantined=excluded.quarantined,changed_at=excluded.changed_at,checked_at=excluded.checked_at
+                """,
+                (server_key, name[:120], None if available is None else int(available), latency_ms, failures, recoveries, int(quarantined), changed_at, now),
+            )
+            await db.commit()
+        return {"changed": changed, "quarantined": quarantined, "failure_streak": failures, "recovery_streak": recoveries}
+
+    async def list_server_health(self) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute("SELECT * FROM server_health_state ORDER BY name")).fetchall()
+        return [dict(row) for row in rows]
+
+    async def recent_smart_notifications(self, limit: int = 40) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(
+                "SELECT telegram_id,kind,status,created_at,sent_at FROM smart_notifications "
+                "ORDER BY created_at DESC LIMIT ?",
+                (max(1, min(int(limit), 100)),),
             )).fetchall()
         return [dict(row) for row in rows]
 
