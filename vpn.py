@@ -275,6 +275,9 @@ class VpnProvider:
     async def reset_devices(self, user: dict[str, Any]) -> VpnState:
         raise NotImplementedError
 
+    async def set_suspended(self, user: dict[str, Any], suspended: bool) -> None:
+        raise RuntimeError("VPN provider does not support account suspension")
+
     async def fetch_subscription(
         self,
         user: dict[str, Any],
@@ -1319,6 +1322,20 @@ class H1CloudVpnProvider(VpnProvider):
                         or item.get("lastSeen")
                         or item.get("updated_at")
                     ),
+                    "ip_address": str(
+                        item.get("ip_address")
+                        or item.get("ip")
+                        or item.get("last_ip")
+                        or item.get("lastIp")
+                        or ""
+                    ),
+                    "country": str(
+                        item.get("country")
+                        or item.get("country_code")
+                        or item.get("location")
+                        or item.get("region")
+                        or ""
+                    ),
                 }
             )
 
@@ -1497,6 +1514,42 @@ class H1CloudVpnProvider(VpnProvider):
 
         logger.info("H1Cloud remembered devices reset for %s", name)
         return await self.get_state(user)
+
+    async def set_suspended(self, user: dict[str, Any], suspended: bool) -> None:
+        """Suspend/resume the same H1 identity without deleting its history."""
+        if not suspended:
+            await self.provision(user)
+            return
+        name = self._name(user)
+        expires_at = int(datetime.now().timestamp()) - 60
+        await self._request(
+            "PATCH",
+            f"/clients/{quote(name, safe='')}",
+            json={"expires_at": expires_at},
+        )
+        try:
+            nodes = await asyncio.wait_for(self._federated_nodes(), timeout=4.5)
+        except Exception:
+            nodes = []
+
+        async def suspend_remote(node: dict[str, Any]) -> None:
+            prefix = self._node_prefix(node)
+            if not prefix:
+                return
+            try:
+                await asyncio.wait_for(
+                    self._request(
+                        "PATCH",
+                        f"{prefix}/clients/{quote(name, safe='')}",
+                        json={"expires_at": expires_at},
+                        allow_missing=True,
+                    ),
+                    timeout=5.0,
+                )
+            except Exception as exc:
+                logger.warning("H1Cloud remote suspension deferred for %s: %s", name, type(exc).__name__)
+
+        await asyncio.gather(*(suspend_remote(node) for node in nodes))
 
     async def health(self) -> dict[str, Any]:
         data = await self._request("GET", "/health")
@@ -2093,7 +2146,7 @@ class H1CloudVpnProvider(VpnProvider):
         return latency
 
     async def _rank_live_vless_links(self, links: list[str]) -> list[str]:
-        """Put verified endpoints first without ever deleting a user's configured country."""
+        """Rank live endpoints and temporarily quarantine repeatedly failed routes."""
         parsed_links: list[tuple[int, str, tuple[str, int] | None]] = []
         endpoints: set[tuple[str, int]] = set()
         for index, link in enumerate(links):
@@ -2130,9 +2183,10 @@ class H1CloudVpnProvider(VpnProvider):
                 verified.append((float(latency), index, link))
                 continue
 
-            # BotHost cannot prove that a route is unusable from the subscriber's
-            # phone/network. Never delete it. Repeated server-side failures only
-            # demote it behind routes we have just verified.
+            # One BotHost timeout is weak evidence. Quarantine only after three
+            # fresh failed probes and only while at least one route is verified.
+            # Every refresh still probes quarantined endpoints, so recovery is
+            # automatic on the first successful check.
             failure_streak = int(self._endpoint_failure_streak.get(endpoint, 0))
             uncertain.append((failure_streak, index, link))
 
@@ -2142,6 +2196,14 @@ class H1CloudVpnProvider(VpnProvider):
                 len(links),
             )
             return links
+
+        quarantined = [item for item in uncertain if item[0] >= 3]
+        uncertain = [item for item in uncertain if item[0] < 3]
+        if quarantined:
+            logger.warning(
+                "H1Cloud temporarily quarantined %s route(s) after repeated fresh failures",
+                len(quarantined),
+            )
 
         verified.sort(key=lambda item: (item[0], item[1]))
         uncertain.sort(key=lambda item: (item[0], item[1]))
