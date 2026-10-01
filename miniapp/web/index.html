@@ -8,7 +8,7 @@
   <title>MGN VPN</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="/static/assets/lucide.min.js?v=1"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=27">
+  <link rel="stylesheet" href="/static/styles.css?v=28">
 </head>
 <body>
   <section id="appError" class="app-error" hidden role="status">
@@ -253,7 +253,30 @@
             <div class="admin-card-head"><div><small>H1CLOUD</small><h2>Состояние серверов</h2></div><button type="button" id="adminServersRefresh" aria-label="Обновить"><i data-lucide="refresh-cw"></i></button></div>
             <div class="admin-servers" id="adminServers"><p class="admin-empty">Проверяем узлы…</p></div>
           </article>
+          <article class="admin-card table-card"><div class="admin-card-head"><div><small>СЕРВИСНЫЕ СОБЫТИЯ</small><h2>Журнал уведомлений</h2></div></div><div class="admin-table" id="adminNotificationLog"><p class="admin-empty">Загрузка…</p></div></article>
         </div>
+      </section>
+
+      <section class="page inner-page admin-page" data-page="admin-user" aria-labelledby="adminUserTitle">
+        <header class="admin-head"><div><span class="eyebrow">ПОЛЬЗОВАТЕЛЬ</span><h1 id="adminUserTitle">Загрузка…</h1><p id="adminUserHandle">—</p></div><span class="admin-role" id="adminUserStatus">—</span></header>
+        <div class="admin-kpis user-kpis">
+          <article><small>Подписка</small><b id="adminUserPlan">—</b><em id="adminUserUntil">—</em></article>
+          <article><small>Устройства</small><b id="adminUserDevices">—</b><em id="adminUserLastSeen">—</em></article>
+        </div>
+        <article class="admin-card admin-actions-card">
+          <div class="admin-card-head"><div><small>УПРАВЛЕНИЕ</small><h2>Доступ пользователя</h2></div></div>
+          <div class="admin-actions">
+            <button type="button" data-admin-action="add_days"><i data-lucide="calendar-plus"></i><span><b>Добавить дни</b><small>Продлить подписку</small></span></button>
+            <button type="button" data-admin-action="remove_days"><i data-lucide="calendar-minus"></i><span><b>Убрать дни</b><small>Сократить срок</small></span></button>
+            <button type="button" data-admin-action="set_devices"><i data-lucide="monitor-smartphone"></i><span><b>Лимит устройств</b><small>От 1 до 5</small></span></button>
+            <button type="button" data-admin-action="reset_devices"><i data-lucide="unlink"></i><span><b>Сбросить устройства</b><small>Отключить запомненные</small></span></button>
+            <button type="button" data-admin-action="regenerate_link"><i data-lucide="refresh-cw"></i><span><b>Пересоздать ссылку</b><small>Сменить URL и сбросить устройства</small></span></button>
+            <button type="button" class="danger" id="adminBlockUser" data-admin-action="block"><i data-lucide="ban"></i><span><b>Заблокировать</b><small>Остановить доступ в H1Cloud</small></span></button>
+          </div>
+        </article>
+        <article class="admin-card table-card"><div class="admin-card-head"><div><small>ИСТОРИЯ</small><h2>Устройства</h2></div></div><div class="admin-table" id="adminUserDeviceHistory"></div></article>
+        <article class="admin-card table-card"><div class="admin-card-head"><div><small>ФИНАНСЫ</small><h2>Оплаты и промокоды</h2></div></div><div class="admin-table" id="adminUserPayments"></div></article>
+        <article class="admin-card table-card"><div class="admin-card-head"><div><small>АУДИТ</small><h2>Действия администраторов</h2></div></div><div class="admin-table" id="adminUserAudit"></div></article>
       </section>
 
       <section class="page inner-page" data-page="referrals">
@@ -409,6 +432,6 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"><span><i></i></span></div>
 
-  <script src="/static/app.js?v=27"></script>
+  <script src="/static/app.js?v=28"></script>
 </body>
 </html>
