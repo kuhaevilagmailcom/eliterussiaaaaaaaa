@@ -368,12 +368,6 @@
       root.innerHTML=currentHtml+oldHtml;
       $$('[data-remove]',root).forEach(btn=>btn.onclick=()=>removeDevice(decodeURIComponent(btn.dataset.remove)));
     }
-    const inactive=history.filter(item=>!item.active).slice(0,5);
-    if(inactive.length){
-      root.insertAdjacentHTML('beforeend','<div class="device-history-title">История устройств</div>'+inactive.map(item=>
-        '<article class="device history '+(item.suspicious?'suspicious':'')+'"><span class="device-symbol"><i data-lucide="'+deviceIcon(item)+'"></i></span><span class="device-copy"><b>'+esc(item.name||'Устройство')+'</b><small>'+esc(item.platform||'MGN VPN')+(item.country?' · '+esc(item.country):'')+(item.ip_address?' · '+esc(item.ip_address):'')+' · '+fmtDate(item.last_seen_at)+'</small></span>'+(item.suspicious?'<span class="device-warning">!</span>':'')+'</article>'
-      ).join(''));
-    }
   }
 
   function renderTrafficHistory(){
@@ -622,7 +616,7 @@
       if(value===null)return;payload.limit=Number(value);
     }
     if(['block','reset_devices','regenerate_link'].includes(action)){
-      const labels={block:'Заблокировать пользователя и остановить VPN?',reset_devices:'Сбросить все запомненные устройства?',regenerate_link:'Сменить персональную ссылку и сбросить устройства?'};
+      const labels={block:'Заблокировать пользователя и остановить VPN?',reset_devices:'Сбросить все запомненные устройства?',regenerate_link:'Пересоздать VPN-конфигурацию? Старые подключения перестанут работать.'};
       if(!window.confirm(labels[action]))return;
     }
     state.busy=true;
