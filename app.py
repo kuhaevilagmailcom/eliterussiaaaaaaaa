@@ -326,6 +326,66 @@ async def send_expired_trial_notifications_once(bot: Bot, db: Database) -> int:
     return sent
 
 
+async def send_smart_notifications_once(bot: Bot, db: Database, config: Config) -> int:
+    """Deliver deduplicated lifecycle, payment, activity and security notices."""
+    logger = logging.getLogger(__name__)
+    sent = 0
+    for item in await db.smart_notification_candidates():
+        user_id = int(item["telegram_id"])
+        kind = str(item["kind"])
+        event_key = str(item["event_key"])
+        if not await db.claim_smart_notification(event_key, user_id, kind):
+            continue
+        button = InlineKeyboardButton(text="Открыть MGN VPN", web_app=WebAppInfo(url=config.miniapp_url))
+        if kind == "expired":
+            text = "🔴 <b>Подписка MGN VPN закончилась</b>\n\nПродлите доступ, чтобы снова подключиться к VPN."
+            button = InlineKeyboardButton(text="Купить VPN", callback_data="plans")
+        elif kind == "abandoned_payment":
+            text = "💳 <b>Оплата не была завершена</b>\n\nЕсли платёж не прошёл, откройте тарифы и попробуйте ещё раз. Деньги за незавершённый платёж не списываются."
+            button = InlineKeyboardButton(text="Вернуться к оплате", callback_data="plans")
+        elif kind == "trial_ending":
+            text = "⏳ <b>Пробный VPN закончится меньше чем через 6 часов</b>\n\nВыберите тариф заранее, чтобы подключение не прервалось."
+            button = InlineKeyboardButton(text="Выбрать тариф", callback_data="plans")
+        elif kind == "inactive":
+            text = "👋 <b>Давно не виделись</b>\n\nОткройте MGN VPN — проверим подписку и поможем подключить устройство."
+        elif kind == "renewal_discount":
+            promo = await db.ensure_personal_renewal_promo(user_id)
+            code = str(promo["code"])
+            text = (
+                "🎁 <b>Персональная скидка 15% на продление</b>\n\n"
+                f"Ваш код: <code>{code}</code>\n"
+                "Он действует 3 дня и доступен только вашему аккаунту."
+            )
+            button = InlineKeyboardButton(text="Продлить со скидкой", callback_data="plans")
+        elif kind == "suspicious_device":
+            name = str(item.get("name") or "Новое устройство")
+            location = str(item.get("country") or item.get("ip_address") or "неизвестная локация")
+            text = (
+                "⚠️ <b>Подозрительное подключение к VPN</b>\n\n"
+                f"Устройство: <b>{name}</b>\nЛокация: <b>{location}</b>\n\n"
+                "Если это не вы, немедленно сбросьте устройства."
+            )
+            button = InlineKeyboardButton(text="Проверить устройства", web_app=WebAppInfo(url=config.miniapp_url))
+        else:
+            await db.finish_smart_notification(event_key, sent=False)
+            continue
+        try:
+            await bot.send_message(
+                user_id,
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]]),
+            )
+            await db.finish_smart_notification(event_key, sent=True)
+            if kind == "suspicious_device":
+                await db.mark_device_notified(user_id, str(item["device_key"]))
+            sent += 1
+        except Exception as exc:
+            await db.finish_smart_notification(event_key, sent=False)
+            logger.warning("Smart notification %s failed for %s: %s", kind, user_id, type(exc).__name__)
+        await asyncio.sleep(0.04)
+    return sent
+
+
 async def retry_trial_grant_notifications_once(
     bot: Bot,
     db: Database,
@@ -356,6 +416,9 @@ async def expiry_notification_loop(bot: Bot, db: Database, config: Config) -> No
             grant_sent = await retry_trial_grant_notifications_once(bot, db, config)
             if grant_sent:
                 logger.info("Retried trial grant notifications sent: %s", grant_sent)
+            smart_sent = await send_smart_notifications_once(bot, db, config)
+            if smart_sent:
+                logger.info("Smart notifications sent: %s", smart_sent)
         except Exception:
             logger.exception("Subscription expiry reminder pass failed")
         await asyncio.sleep(60 * 60)
@@ -475,7 +538,9 @@ async def sync_active_vpn_users_once(
     async def sync_user(user: dict) -> bool:
         async with semaphore:
             try:
-                await asyncio.wait_for(provider.provision(user), timeout=50.0)
+                state = await asyncio.wait_for(provider.provision(user), timeout=50.0)
+                if state.devices:
+                    await db.record_device_snapshot(int(user["telegram_id"]), list(state.devices))
                 await miniapp.invalidate_subscription_cache(str(user.get("sub_token") or ""))
                 return True
             except Exception as exc:
@@ -556,9 +621,8 @@ async def server_status_alert_loop(
     db: Database,
     provider: VpnProvider,
 ) -> None:
-    """Notify all admins only when a known VPN server changes state."""
+    """Persist server health and notify after confirmed outage/recovery streaks."""
     logger = logging.getLogger(__name__)
-    previous: dict[str, bool] | None = None
 
     while True:
         try:
@@ -567,39 +631,39 @@ async def server_status_alert_loop(
                 timeout=15.0,
             )
             servers = list(report.get("servers") or [])
-            current: dict[str, bool] = {}
-            details: dict[str, dict] = {}
+            details: list[dict] = []
 
             for index, item in enumerate(servers, start=1):
                 key = str(item.get("id") or item.get("host") or f"server-{index}")
-                current[key] = bool(item.get("available"))
-                details[key] = {
-                    "name": str(item.get("name") or key),
-                    "available": bool(item.get("available")),
-                    "latency_ms": item.get("latency_ms"),
-                }
-
-            if previous is not None:
-                changed_keys = [
-                    key
-                    for key, state in current.items()
-                    if key in previous and previous[key] != state
-                ]
-                if changed_keys:
-                    await notify_server_changes(
-                        bot,
-                        config,
-                        db,
-                        changes=[details[key] for key in changed_keys],
-                        online=sum(1 for state in current.values() if state),
-                        total=len(current),
-                    )
-
-            previous = current
+                raw_available = item.get("available")
+                available = raw_available if isinstance(raw_available, bool) else None
+                latency = item.get("latency_ms")
+                transition = await db.record_server_health(
+                    key,
+                    str(item.get("name") or key),
+                    available,
+                    int(latency) if isinstance(latency, (int, float)) else None,
+                )
+                if transition["changed"]:
+                    details.append({
+                        "name": str(item.get("name") or key),
+                        "available": not bool(transition["quarantined"]),
+                        "latency_ms": latency,
+                    })
+            if details:
+                states = await db.list_server_health()
+                await notify_server_changes(
+                    bot,
+                    config,
+                    db,
+                    changes=details,
+                    online=sum(1 for row in states if not bool(row.get("quarantined"))),
+                    total=len(states),
+                )
         except Exception as exc:
             logger.warning("Server status alert pass failed: %s", type(exc).__name__)
 
-        await asyncio.sleep(120)
+        await asyncio.sleep(60)
 
 
 async def notify_admins_restarted(
