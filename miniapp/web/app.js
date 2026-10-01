@@ -22,7 +22,7 @@
     promoPercent:0,
     sbpPayment:null,
     supportTicketId:null,
-    admin:{tab:'overview',loaded:{},userFilter:'all',userPage:0,userPages:1,searchTimer:null},
+    admin:{tab:'overview',loaded:{},userFilter:'all',userPage:0,userPages:1,searchTimer:null,selectedUser:null},
     busy:false,
   };
 
@@ -335,28 +335,44 @@
     $('#buyDevicePrice').textContent='+1 устройство · '+Number(d.shop.extra_device_price_rub||50)+' ₽';
 
     const root=$('#deviceList');
+    const history=Array.isArray(d.vpn.device_history)?d.vpn.device_history:[];
     const canRemove=Boolean(d.capabilities?.device_removal);
     const canReset=Boolean(d.capabilities?.device_reset);
     const resetButton=$('#resetDevicesPage');
-    if(resetButton)resetButton.hidden=!(d.subscription.active&&canReset&&list.length);
+    const activeHistory=history.filter(item=>Boolean(item.active));
+    const historyOnly=history.filter(item=>!item.active);
+    const visible=history.length?activeHistory:list;
+    if(resetButton)resetButton.hidden=!(d.subscription.active&&canReset&&(list.length||activeHistory.length));
     if(!d.subscription.active){
       root.innerHTML='<div class="empty">После активации подписки здесь появятся подключённые устройства.</div>';
     }else if(!d.vpn.ready){
       root.innerHTML='<div class="empty">VPN-сервер ещё не подключён. Лимит устройств уже сохранён.</div>';
-    }else if(!list.length){
+    }else if(!visible.length&&!historyOnly.length){
       root.innerHTML='<div class="empty">Подключённых устройств пока нет. Они появятся после первого подключения к VPN.</div>';
     }else{
-      root.innerHTML=list.map((item,index)=>{
-        const id=String(item.id||item.device_id||'');
+      const renderDevice=(item,index,isHistory)=>{
+        const id=String(item.device_id||item.id||'');
         const name=esc(item.name||item.device_name||('Устройство '+(index+1)));
         const platform=esc(item.platform||item.os||'MGN VPN');
-        return '<article class="device">'+
+        const lastSeen=item.last_seen_at||item.last_seen;
+        const meta=[item.ip_address||item.ip,item.country].filter(Boolean).map(esc).join(' · ');
+        return '<article class="device '+(isHistory?'history ':'')+(item.suspicious?'suspicious':'')+'">'+
           '<span class="device-symbol"><i data-lucide="'+deviceIcon(item)+'"></i></span>'+
-          '<span class="device-copy"><b>'+name+'</b><small>'+platform+'</small></span>'+
-          (id&&canRemove?'<button type="button" class="device-remove" aria-label="Отключить устройство" data-remove="'+encodeURIComponent(id)+'"><i data-lucide="trash-2"></i></button>':'')+
+          '<span class="device-copy"><b>'+name+'</b><small>'+platform+(lastSeen?' · '+fmtDate(lastSeen):'')+'</small>'+(meta?'<small>'+meta+'</small>':'')+'</span>'+
+          (item.suspicious?'<span class="device-warning" title="Подозрительное подключение">!</span>':'')+
+          (id&&canRemove&&!isHistory?'<button type="button" class="device-remove" aria-label="Отключить устройство" data-remove="'+encodeURIComponent(id)+'"><i data-lucide="trash-2"></i></button>':'')+
         '</article>';
-      }).join('');
+      };
+      const currentHtml=visible.map((item,index)=>renderDevice(item,index,false)).join('');
+      const oldHtml=historyOnly.length?'<div class="device-history-title">История подключений</div>'+historyOnly.map((item,index)=>renderDevice(item,index,true)).join(''):'';
+      root.innerHTML=currentHtml+oldHtml;
       $$('[data-remove]',root).forEach(btn=>btn.onclick=()=>removeDevice(decodeURIComponent(btn.dataset.remove)));
+    }
+    const inactive=history.filter(item=>!item.active).slice(0,5);
+    if(inactive.length){
+      root.insertAdjacentHTML('beforeend','<div class="device-history-title">История устройств</div>'+inactive.map(item=>
+        '<article class="device history '+(item.suspicious?'suspicious':'')+'"><span class="device-symbol"><i data-lucide="'+deviceIcon(item)+'"></i></span><span class="device-copy"><b>'+esc(item.name||'Устройство')+'</b><small>'+esc(item.platform||'MGN VPN')+(item.country?' · '+esc(item.country):'')+(item.ip_address?' · '+esc(item.ip_address):'')+' · '+fmtDate(item.last_seen_at)+'</small></span>'+(item.suspicious?'<span class="device-warning">!</span>':'')+'</article>'
+      ).join(''));
     }
   }
 
@@ -524,8 +540,8 @@
     $('#adminUsersTable').innerHTML=(data.users||[]).length?(data.users||[]).map(user=>{
       const name=user.first_name||user.username||('ID '+user.telegram_id);
       const handle=user.username?'@'+user.username:'ID '+user.telegram_id;
-      const tags=(user.paid?'<span class="admin-tag paid">ОПЛАТИЛ</span>':'')+(user.granted?'<span class="admin-tag granted">ВЫДАНО</span>':'')+(user.active?'<span class="admin-tag online">АКТИВНА</span>':'<span class="admin-tag offline">НЕТ VPN</span>');
-      return '<div class="admin-row"><div class="admin-row-main"><b>'+esc(name)+'</b><small>'+esc(handle)+' · '+esc(String(user.telegram_id))+'</small><div class="admin-tags">'+tags+'</div></div><div class="admin-row-side"><b>'+esc(user.plan_name||'Без тарифа')+'</b><small>'+(user.active?'до '+fmtDate(user.subscription_until):'с '+fmtDate(user.created_at))+'</small></div></div>';
+      const tags=(user.paid?'<span class="admin-tag paid">ОПЛАТИЛ</span>':'')+(user.granted?'<span class="admin-tag granted">ВЫДАНО</span>':'')+(user.is_blocked?'<span class="admin-tag offline">БЛОК</span>':(user.active?'<span class="admin-tag online">АКТИВНА</span>':'<span class="admin-tag offline">НЕТ VPN</span>'));
+      return '<button type="button" class="admin-row admin-user-row" data-admin-user="'+Number(user.telegram_id)+'"><div class="admin-row-main"><b>'+esc(name)+'</b><small>'+esc(handle)+' · '+esc(String(user.telegram_id))+'</small><div class="admin-tags">'+tags+'</div></div><div class="admin-row-side"><b>'+esc(user.plan_name||'Без тарифа')+'</b><small>'+(user.active?'до '+fmtDate(user.subscription_until):'с '+fmtDate(user.created_at))+'</small></div></button>';
     }).join(''):'<p class="admin-empty">Ничего не найдено</p>';
     icons();
   }
@@ -562,8 +578,55 @@
   function renderAdminServers(data){
     const rows=data.servers||[];
     $('#adminServers').innerHTML=rows.length?rows.map(item=>
-      '<div class="admin-server '+(item.available?'online':'offline')+'"><i class="admin-server-dot"></i><b>'+esc(item.name)+'</b><span>'+(item.latency_ms===null?'—':adminNumber(item.latency_ms)+' мс')+'</span></div>'
+      '<div class="admin-server '+(item.available&&!item.quarantined?'online':'offline')+'"><i class="admin-server-dot"></i><b>'+esc(item.name)+(item.quarantined?' · исключён':'')+'</b><span>'+(item.latency_ms===null?'—':adminNumber(item.latency_ms)+' мс')+'</span></div>'
     ).join(''):'<p class="admin-empty">Серверы не найдены</p>';
+    const labels={expired:'Подписка закончилась',abandoned_payment:'Брошенный платёж',trial_ending:'Пробник заканчивается',inactive:'Долгая неактивность',renewal_discount:'Скидка на продление',suspicious_device:'Подозрительное устройство'};
+    const notices=data.notifications||[];
+    $('#adminNotificationLog').innerHTML=notices.length?notices.map(item=>'<div class="admin-row"><div class="admin-row-main"><b>'+esc(labels[item.kind]||item.kind)+'</b><small>ID '+Number(item.telegram_id)+' · '+fmtDate(item.sent_at||item.created_at)+'</small></div><span class="admin-tag '+(item.status==='sent'?'paid':'granted')+'">'+(item.status==='sent'?'ОТПРАВЛЕНО':'ОЖИДАЕТ')+'</span></div>').join(''):'<p class="admin-empty">Событий пока нет</p>';
+  }
+
+  function renderAdminUser(data){
+    const user=data.user||{},devices=data.devices||[];
+    state.admin.selectedUser=Number(user.telegram_id);
+    $('#adminUserTitle').textContent=user.first_name||user.username||('ID '+user.telegram_id);
+    $('#adminUserHandle').textContent=(user.username?'@'+user.username+' · ':'')+'ID '+user.telegram_id;
+    $('#adminUserStatus').textContent=user.is_blocked?'ЗАБЛОКИРОВАН':'АКТИВЕН';
+    $('#adminUserStatus').classList.toggle('danger',!!user.is_blocked);
+    $('#adminUserPlan').textContent=user.plan_name||'Нет подписки';
+    $('#adminUserUntil').textContent=user.subscription_until?'до '+fmtDate(user.subscription_until):'не активна';
+    $('#adminUserDevices').textContent=devices.filter(item=>item.active).length+' / '+Number(user.max_devices||1);
+    $('#adminUserLastSeen').textContent='активность '+fmtDate(user.last_activity_at);
+    const block=$('#adminBlockUser');block.dataset.adminAction=user.is_blocked?'unblock':'block';block.classList.toggle('danger',!user.is_blocked);block.querySelector('b').textContent=user.is_blocked?'Разблокировать':'Заблокировать';block.querySelector('small').textContent=user.is_blocked?'Вернуть доступ в H1Cloud':'Остановить доступ в H1Cloud';
+    $('#adminUserDeviceHistory').innerHTML=devices.length?devices.map(item=>'<div class="admin-row"><div class="admin-row-main"><b>'+esc(item.name||'Устройство')+'</b><small>'+esc(item.platform||'MGN VPN')+(item.ip_address?' · '+esc(item.ip_address):'')+(item.country?' · '+esc(item.country):'')+'</small><div class="admin-tags">'+(item.active?'<span class="admin-tag online">ОНЛАЙН</span>':'<span class="admin-tag offline">ИСТОРИЯ</span>')+(item.suspicious?'<span class="admin-tag granted">ПОДОЗРИТЕЛЬНО</span>':'')+'</div></div><div class="admin-row-side"><small>'+fmtDate(item.last_seen_at)+'</small></div></div>').join(''):'<p class="admin-empty">История устройств пуста</p>';
+    const payments=data.payments||[],promos=data.promos||[];
+    $('#adminUserPayments').innerHTML=(payments.map(item=>'<div class="admin-row"><div class="admin-row-main"><b>'+esc(item.method)+' · '+esc(item.plan_code||'—')+'</b><small>'+fmtDate(item.created_at)+'</small></div><div class="admin-row-side"><b>'+adminNumber(item.amount)+' '+esc(item.currency)+'</b><span class="admin-tag '+(item.status==='paid'?'paid':'granted')+'">'+esc(item.status)+'</span></div></div>').join('')+promos.map(item=>'<div class="admin-row"><div class="admin-row-main"><b>Промокод '+esc(item.code)+'</b><small>'+esc(item.type)+' · '+adminNumber(item.value)+'</small></div><small>'+fmtDate(item.used_at)+'</small></div>').join(''))||'<p class="admin-empty">Оплат и промокодов нет</p>';
+    const actions={add_days:'Добавлено дней',remove_days:'Убрано дней',set_devices:'Изменён лимит',block:'Пользователь заблокирован',unblock:'Пользователь разблокирован',reset_devices:'Сброшены устройства',regenerate_link:'Пересоздана ссылка'};
+    $('#adminUserAudit').innerHTML=(data.audit||[]).length?(data.audit||[]).map(item=>'<div class="admin-row"><div class="admin-row-main"><b>'+esc(actions[item.action]||item.action)+'</b><small>Админ '+Number(item.actor_id)+'</small></div><small>'+fmtDate(item.created_at)+'</small></div>').join(''):'<p class="admin-empty">Действий пока нет</p>';
+    icons();
+  }
+
+  async function openAdminUser(userId){
+    if(!state.data?.admin?.enabled)return;
+    try{renderAdminUser(await request('/api/miniapp/admin/users/'+Number(userId)+'?_='+Date.now()));go('admin-user')}catch(error){toast(error.message)}
+  }
+
+  async function adminUserAction(action){
+    const userId=state.admin.selectedUser;if(!userId||state.busy)return;
+    const payload={action};
+    if(action==='add_days'||action==='remove_days'){
+      const value=window.prompt(action==='add_days'?'Сколько дней добавить?':'Сколько дней убрать?','30');
+      if(value===null)return;payload.days=Number(value);
+    }
+    if(action==='set_devices'){
+      const value=window.prompt('Новый лимит устройств: от 1 до 5','1');
+      if(value===null)return;payload.limit=Number(value);
+    }
+    if(['block','reset_devices','regenerate_link'].includes(action)){
+      const labels={block:'Заблокировать пользователя и остановить VPN?',reset_devices:'Сбросить все запомненные устройства?',regenerate_link:'Сменить персональную ссылку и сбросить устройства?'};
+      if(!window.confirm(labels[action]))return;
+    }
+    state.busy=true;
+    try{const result=await request('/api/miniapp/admin/users/'+userId+'/actions',{method:'POST',body:JSON.stringify(payload)});renderAdminUser(result.detail);notify();toast('Изменение применено');state.admin.loaded.overview=false;state.admin.loaded.users=false}catch(error){notify('error');toast(error.message)}finally{state.busy=false}
   }
 
   async function loadAdminServers(force=false){
@@ -585,7 +648,7 @@
   }
 
   function go(page){
-    if(page==='admin'&&!state.data?.admin?.enabled){toast('Доступ запрещён');page='home'}
+    if((page==='admin'||page==='admin-user')&&!state.data?.admin?.enabled){toast('Доступ запрещён');page='home'}
     if(!$('.page[data-page="'+page+'"]'))page='home';
     if(page===state.page&&$('.page[data-page="'+page+'"]')?.classList.contains('active'))return;
     if(ROOT_PAGES.has(page))state.previousRoot=page;
@@ -1048,6 +1111,10 @@
   $('#adminUsersPrev').onclick=()=>loadAdminUsers(state.admin.userPage-1);
   $('#adminUsersNext').onclick=()=>loadAdminUsers(state.admin.userPage+1);
   $('#adminServersRefresh').onclick=()=>loadAdminServers(true);
+  $('#adminUsersTable').addEventListener('click',event=>{
+    const row=event.target.closest('[data-admin-user]');if(row)openAdminUser(Number(row.dataset.adminUser));
+  });
+  $$('.admin-actions [data-admin-action]').forEach(button=>button.addEventListener('click',()=>adminUserAction(button.dataset.adminAction)));
 
   document.addEventListener('pointerdown',event=>{
     const el=event.target.closest('button,[data-nav],.plan-card');
@@ -1064,6 +1131,7 @@
   try{
     tg?.BackButton?.onClick(()=>{
       if(!$('#paymentSheet').hidden||!$('#deviceSheet').hidden||!$('#clientSheet').hidden){closeSheets();return}
+      if(state.page==='admin-user'){go('admin');return}
       if(!ROOT_PAGES.has(state.page))go(state.previousRoot||'home');
       else go('home');
     });
