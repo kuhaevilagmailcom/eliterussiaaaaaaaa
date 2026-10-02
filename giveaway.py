@@ -9,7 +9,7 @@ from typing import Any
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from db import Database, from_iso, utcnow
+from db import Database, GIVEAWAY_POST_RENDER_VERSION, from_iso, utcnow
 from vpn import VpnProvider
 
 
@@ -46,6 +46,24 @@ def _days_label(days: int) -> str:
     else:
         word = "дней"
     return f"{days} {word}"
+
+
+def _winner_public_label(item: dict[str, Any]) -> str:
+    telegram_id = int(item.get("telegram_id") or 0)
+    username = str(item.get("username") or "").strip().lstrip("@")
+    first_name = str(item.get("first_name") or "").strip()
+    safe_name = html.escape(first_name or (f"ID {telegram_id}" if telegram_id else "Победитель"))
+
+    if username:
+        safe_username = html.escape(username)
+        visible = f"{safe_name} (@{safe_username})" if first_name else f"@{safe_username}"
+        return f'<a href="https://t.me/{safe_username}">{visible}</a>'
+
+    if telegram_id:
+        visible = f"{safe_name} · ID {telegram_id}" if first_name else f"ID {telegram_id}"
+        return f'<a href="tg://user?id={telegram_id}">{visible}</a>'
+
+    return safe_name
 
 
 def render_giveaway_post(
@@ -101,12 +119,7 @@ def render_giveaway_post(
         lines.append("Участников для выбора победителей не было.")
     else:
         for index, item in enumerate(winners, start=1):
-            username = str(item.get("username") or "").strip().lstrip("@")
-            if username:
-                label = "@" + html.escape(username)
-            else:
-                label = f"Победитель #{index}"
-            lines.append(f"{index}. {label}")
+            lines.append(f"{index}. {_winner_public_label(item)}")
         lines += [
             "",
             f"🎉 Каждый победитель получил {_days_label(prize_days)} MGN VPN.",
@@ -169,7 +182,10 @@ async def _finalize_channel_posts(
         )
 
     for post in posts:
-        if post.get("finalized_at"):
+        if (
+            post.get("finalized_at")
+            and int(post.get("render_version") or 0) >= GIVEAWAY_POST_RENDER_VERSION
+        ):
             continue
         chat_id = _chat_id(post["chat_id"])
         message_id = int(post["message_id"])
@@ -259,11 +275,21 @@ async def _notify_winners(
 
 
 def _winner_admin_label(item: dict[str, Any], index: int) -> str:
-    username = str(item.get("username") or "").strip().lstrip("@")
     telegram_id = int(item.get("telegram_id") or 0)
+    username = str(item.get("username") or "").strip().lstrip("@")
+    first_name = html.escape(str(item.get("first_name") or "").strip() or f"Победитель {index}")
     if username:
-        return f"@{html.escape(username)} · <code>{telegram_id}</code>"
-    return f"Победитель #{index} · <code>{telegram_id}</code>"
+        safe_username = html.escape(username)
+        return (
+            f'<a href="https://t.me/{safe_username}">{first_name} (@{safe_username})</a>'
+            f" · <code>{telegram_id}</code>"
+        )
+    if telegram_id:
+        return (
+            f'<a href="tg://user?id={telegram_id}">{first_name}</a>'
+            f" · <code>{telegram_id}</code>"
+        )
+    return first_name
 
 
 async def _sync_vpn_users(
