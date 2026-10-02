@@ -1,7 +1,7 @@
 from giveaway import render_giveaway_post
 
 
-def test_giveaway_does_not_publish_private_first_name_without_username():
+def test_giveaway_winner_without_username_has_clickable_name_and_id():
     giveaway = {
         "text_html": "Тестовый розыгрыш",
         "winners_count": 1,
@@ -13,8 +13,25 @@ def test_giveaway_does_not_publish_private_first_name_without_username():
         participant_count=1,
         winners=[{"telegram_id": 42, "username": "", "first_name": "Private Name"}],
     )
-    assert "Private Name" not in text
-    assert "Победитель #1" in text
+    assert "Победитель #1" not in text
+    assert "Private Name · ID 42" in text
+    assert 'href="tg://user?id=42"' in text
+
+
+def test_giveaway_winner_with_username_has_name_username_and_profile_link():
+    giveaway = {
+        "text_html": "Тестовый розыгрыш",
+        "winners_count": 1,
+        "prize_days": 30,
+        "status": "finished",
+    }
+    text = render_giveaway_post(
+        giveaway,
+        participant_count=1,
+        winners=[{"telegram_id": 77, "username": "winner_name", "first_name": "Иван"}],
+    )
+    assert "Иван (@winner_name)" in text
+    assert 'href="https://t.me/winner_name"' in text
 
 
 def test_cancelled_giveaway_has_no_winner_claim():
@@ -143,5 +160,37 @@ def test_reroll_moves_prize_to_another_participant(tmp_path):
         assert [int(item["telegram_id"]) for item in winners] == [402]
         assert from_iso((await db.get_user(401))["subscription_until"]) is None
         assert from_iso((await db.get_user(402))["subscription_until"]) > utcnow()
+
+    asyncio.run(scenario())
+
+
+
+def test_finished_giveaway_post_render_version_can_be_refreshed(tmp_path):
+    async def scenario():
+        from db import GIVEAWAY_POST_RENDER_VERSION
+
+        db = Database(str(tmp_path / "giveaway-render-version.sqlite3"))
+        await db.init()
+        await db.ensure_user(1, "owner", "Owner")
+
+        giveaway = await db.create_giveaway(
+            created_by=1,
+            text_html="Test",
+            text_plain="Test",
+            photo_file_id=None,
+            winners_count=1,
+            prize_days=30,
+            end_mode="participants",
+            participant_limit=1,
+        )
+        giveaway_id = int(giveaway["id"])
+        await db.add_giveaway_post(giveaway_id, "@test", 123)
+
+        posts = await db.list_giveaway_posts(giveaway_id)
+        assert int(posts[0]["render_version"]) == 0
+
+        await db.mark_giveaway_post_finalized(giveaway_id, "@test")
+        posts = await db.list_giveaway_posts(giveaway_id)
+        assert int(posts[0]["render_version"]) == GIVEAWAY_POST_RENDER_VERSION
 
     asyncio.run(scenario())
