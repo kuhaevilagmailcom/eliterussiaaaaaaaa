@@ -21,6 +21,9 @@ from catalog import (
 )
 
 
+GIVEAWAY_POST_RENDER_VERSION = 2
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -192,6 +195,7 @@ class Database:
                     chat_id TEXT NOT NULL,
                     message_id INTEGER NOT NULL,
                     finalized_at TEXT,
+                    render_version INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY (giveaway_id, chat_id),
                     FOREIGN KEY(giveaway_id) REFERENCES giveaways(id)
                 );
@@ -564,6 +568,18 @@ class Database:
             if "admin_notified_at" not in giveaway_columns:
                 await db.execute(
                     "ALTER TABLE giveaways ADD COLUMN admin_notified_at TEXT"
+                )
+
+            giveaway_post_columns = {
+                row[1]
+                for row in await (
+                    await db.execute("PRAGMA table_info(giveaway_posts)")
+                ).fetchall()
+            }
+            if "render_version" not in giveaway_post_columns:
+                await db.execute(
+                    "ALTER TABLE giveaway_posts "
+                    "ADD COLUMN render_version INTEGER NOT NULL DEFAULT 1"
                 )
 
             support_columns = {
@@ -3605,8 +3621,8 @@ class Database:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO giveaway_posts
-                    (giveaway_id, chat_id, message_id, finalized_at)
-                VALUES (?, ?, ?, NULL)
+                    (giveaway_id, chat_id, message_id, finalized_at, render_version)
+                VALUES (?, ?, ?, NULL, 0)
                 """,
                 (int(giveaway_id), str(chat_id), int(message_id)),
             )
@@ -4087,7 +4103,7 @@ class Database:
             await db.execute(
                 """
                 UPDATE giveaway_posts
-                SET finalized_at=NULL
+                SET finalized_at=NULL, render_version=0
                 WHERE giveaway_id=?
                 """,
                 (giveaway_id,),
@@ -4220,10 +4236,16 @@ class Database:
             await db.execute(
                 """
                 UPDATE giveaway_posts
-                SET finalized_at=COALESCE(finalized_at, ?)
+                SET finalized_at=COALESCE(finalized_at, ?),
+                    render_version=?
                 WHERE giveaway_id=? AND chat_id=?
                 """,
-                (to_iso(utcnow()), int(giveaway_id), str(chat_id)),
+                (
+                    to_iso(utcnow()),
+                    GIVEAWAY_POST_RENDER_VERSION,
+                    int(giveaway_id),
+                    str(chat_id),
+                ),
             )
             await db.commit()
 
@@ -4272,7 +4294,11 @@ class Database:
                             AND (
                                 EXISTS (
                                     SELECT 1 FROM giveaway_posts gp
-                                    WHERE gp.giveaway_id=g.id AND gp.finalized_at IS NULL
+                                    WHERE gp.giveaway_id=g.id
+                                      AND (
+                                          gp.finalized_at IS NULL
+                                          OR COALESCE(gp.render_version, 0) < ?
+                                      )
                                 )
                                 OR EXISTS (
                                     SELECT 1 FROM giveaway_winners gw
@@ -4285,7 +4311,11 @@ class Database:
                     ORDER BY g.id
                     LIMIT ?
                     """,
-                    (now, max(1, min(int(limit), 500))),
+                    (
+                        now,
+                        GIVEAWAY_POST_RENDER_VERSION,
+                        max(1, min(int(limit), 500)),
+                    ),
                 )
             ).fetchall()
         return [int(row[0]) for row in rows]
