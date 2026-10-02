@@ -2197,21 +2197,28 @@ class H1CloudVpnProvider(VpnProvider):
             )
             return links
 
-        quarantined = [item for item in uncertain if item[0] >= 3]
+        degraded = [item for item in uncertain if item[0] >= 3]
         uncertain = [item for item in uncertain if item[0] < 3]
-        if quarantined:
+        if degraded:
             logger.warning(
-                "H1Cloud temporarily quarantined %s route(s) after repeated fresh failures",
-                len(quarantined),
+                "H1Cloud %s route(s) have repeated BotHost probe failures; "
+                "keeping them in the subscription at lower priority",
+                len(degraded),
             )
 
         verified.sort(key=lambda item: (item[0], item[1]))
         uncertain.sort(key=lambda item: (item[0], item[1]))
-        ranked = [item[2] for item in verified] + [item[2] for item in uncertain]
+        degraded.sort(key=lambda item: (item[0], item[1]))
+        ranked = (
+            [item[2] for item in verified]
+            + [item[2] for item in uncertain]
+            + [item[2] for item in degraded]
+        )
         logger.info(
-            "H1Cloud smart selection: %s verified, %s preserved, best %.0f ms",
+            "H1Cloud smart selection: %s verified, %s uncertain, %s degraded, best %.0f ms",
             len(verified),
             len(uncertain),
+            len(degraded),
             verified[0][0],
         )
 
