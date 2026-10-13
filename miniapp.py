@@ -867,17 +867,27 @@ class MiniAppServer:
         if not _active(user):
             raise web.HTTPForbidden(text="Subscription expired")
 
-        # Happ and other compatible clients may send model/OS information.
-        # A subscription refresh is NOT proof of an active VPN connection;
-        # the hint only decorates panel-confirmed devices.
+        # Capture the identity from the actual client's HTTPS /sub request
+        # BEFORE serving our cached VLESS payload. H1's own aggregate /sub is
+        # fetched by BotHost and cannot tell us which user's phone updated.
         if getattr(self.provider, "mode_name", "") == "h1cloud":
             hint = subscription_device_hint(request.headers)
-            if hint:
+            ua = str(request.headers.get("User-Agent") or "").lower()
+            is_happ = "happ" in ua
+            if hint or is_happ:
                 try:
-                    await self.db.record_subscription_device(int(user["telegram_id"]), hint)
+                    await self.db.note_subscription_device_probe(
+                        int(user["telegram_id"]),
+                        from_happ=is_happ,
+                        has_hwid=bool(hint),
+                        has_model=bool(request.headers.get("X-Device-Model")),
+                        has_os=bool(request.headers.get("X-Device-OS")),
+                    )
+                    if hint:
+                        await self.db.record_subscription_device(int(user["telegram_id"]), hint)
                 except Exception:
-                    # Metadata must never block a working VPN subscription.
-                    logger.warning("Subscription device hint storage unavailable")
+                    # Never break a VPN subscription because of statistics.
+                    logger.warning("Subscription device identity storage unavailable")
 
         cached = self._subscription_cache.get(token)
         now = time.monotonic()
@@ -1153,6 +1163,7 @@ class MiniAppServer:
                         {"name": hint["name"], "platform": hint["platform"], "updated_at": hint["updated_at"]}
                         for hint in await self.db.list_subscription_device_hints(uid)
                     ],
+                    "device_probe": await self.db.subscription_device_probe(uid),
                 },
                 "plans": [
                     {
