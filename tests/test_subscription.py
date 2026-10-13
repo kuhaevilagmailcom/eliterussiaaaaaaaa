@@ -145,6 +145,10 @@ def test_h1_subscription_merges_new_federation_country_even_if_aggregate_is_stal
         provider._federated_nodes = AsyncMock(
             return_value=[{"id": "de-node", "proxy_kind": "proxy"}]
         )
+        # A BotHost TCP RTT probe cannot judge the user's VPN route speed.
+        provider._rank_live_vless_links = AsyncMock(
+            side_effect=AssertionError("never probe from subscription import")
+        )
 
         payload, _headers = await provider.fetch_subscription(
             {
@@ -158,6 +162,8 @@ def test_h1_subscription_merges_new_federation_country_even_if_aggregate_is_stal
         links = provider._subscription_vless_links(payload)
         assert any("@de.example:" in link for link in links)
         assert len(links) == 4
+        assert "@nl.example:" in links[0]
+        provider._rank_live_vless_links.assert_not_awaited()
 
     asyncio.run(run())
 
