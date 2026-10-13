@@ -8,7 +8,7 @@
   <title>MGN VPN</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="/static/assets/lucide.min.js?v=1"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=28">
+  <link rel="stylesheet" href="/static/styles.css?v=29">
 </head>
 <body>
   <section id="appError" class="app-error" hidden role="status">
@@ -208,6 +208,7 @@
           <button type="button" data-admin-tab="users">Люди</button>
           <button type="button" data-admin-tab="payments">Оплаты</button>
           <button type="button" data-admin-tab="servers">Серверы</button>
+          <button type="button" data-admin-tab="gifts" id="adminGiftsTab" hidden>QR-подарки</button>
         </nav>
 
         <div class="admin-panel active" data-admin-panel="overview">
@@ -246,6 +247,25 @@
             <article><small>Stars всего</small><b id="adminStarsTotal">—</b><em id="adminStarsMonth">—</em></article>
           </div>
           <article class="admin-card table-card"><div class="admin-card-head"><div><small>ПОСЛЕДНИЕ</small><h2>Транзакции</h2></div></div><div class="admin-table" id="adminPaymentsTable"><p class="admin-empty">Загрузка…</p></div></article>
+        </div>
+
+        <div class="admin-panel" data-admin-panel="gifts">
+          <article class="admin-card">
+            <div class="admin-card-head"><div><small>MGN VPN</small><h2>Подарочные QR</h2></div></div>
+            <p class="promo-hint">Выберите подписку. Каждый QR активируется только один раз и действует 30 дней до использования.</p>
+            <div class="gift-admin-buttons">
+              <button type="button" data-gift-days="30">1 месяц</button>
+              <button type="button" data-gift-days="90">3 месяца</button>
+              <button type="button" data-gift-days="365">1 год</button>
+            </div>
+            <div id="adminGiftResult" class="gift-admin-result" hidden>
+              <img id="adminGiftQrImage" alt="Подарочный QR-код MGN VPN">
+              <p id="adminGiftCaption"></p>
+              <a id="adminGiftLink" href="#" target="_blank" rel="noopener noreferrer">Открыть подарочную ссылку</a>
+              <button type="button" class="sheet-primary" id="adminGiftCopy">Скопировать ссылку</button>
+            </div>
+            <p class="promo-hint" id="adminGiftStatus" role="status"></p>
+          </article>
         </div>
 
         <div class="admin-panel" data-admin-panel="servers">
@@ -313,6 +333,17 @@
         <label class="promo-field"><span>Введите код</span><input id="promoCodePage" autocomplete="off" maxlength="40" placeholder="MGN20"></label>
         <button type="button" class="sheet-primary" id="redeemPromo">Применить промокод</button>
         <p class="promo-hint" id="promoPageResult"></p>
+        <article class="gift-redeem-card">
+          <div class="page-section-head compact-head"><div><small>ПОДАРКИ</small><h3>Подарочный QR</h3></div></div>
+          <button type="button" class="secondary-row gift-scan-button" id="scanGiftQr">
+            <span class="icon-box"><i data-lucide="scan-line"></i></span>
+            <span><b>Сканировать QR</b><small>Наведи камеру на подарочный код</small></span>
+            <i data-lucide="chevron-right"></i>
+          </button>
+          <label class="promo-field"><span>Или вставь ссылку на подарок</span><input id="giftCodePage" maxlength="200" autocomplete="off" placeholder="https://t.me/..."></label>
+          <button type="button" class="sheet-primary" id="activateGiftQr">Получить подарок</button>
+          <p class="promo-hint" id="giftRedeemResult" role="status"></p>
+        </article>
         <button type="button" class="secondary-row bonus-referral-link" data-nav="referrals">
           <span class="icon-box"><i data-lucide="users-round"></i></span>
           <span><b>Пригласить друзей</b><small>Получай бесплатные дни за приглашения</small></span>
@@ -432,6 +463,6 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"><span><i></i></span></div>
 
-  <script src="/static/app.js?v=31"></script>
+  <script src="/static/app.js?v=32"></script>
 </body>
 </html>
