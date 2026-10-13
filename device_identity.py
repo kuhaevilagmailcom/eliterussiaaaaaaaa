@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-_HWID = re.compile(r"^[A-Za-z0-9._:-]{6,160}$")
+_HWID = re.compile(r"^[A-Za-z0-9._:=-]{6,160}$")
 _GENERIC_NAMES = {"", "устройство", "подключённое устройство", "unknown", "unknown device", "device", "desktop"}
 
 
