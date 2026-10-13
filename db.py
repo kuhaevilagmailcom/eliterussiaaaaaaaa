@@ -1899,7 +1899,20 @@ class Database:
                             (until_value, plan_name, target_id),
                         )
                     else:
-                        restored = clamp_device_limit(previous_devices)
+                        # A refunded pre-upgrade order stored device counts
+                        # under the previous 1-base model. Restore its former
+                        # purchased slots plus the newly included second slot.
+                        try:
+                            was_legacy = await self._is_legacy_locked_quote(
+                                db,
+                                product_code=code,
+                                device_count=payment["device_count"],
+                                original_amount=int(payment["original_amount_rub"] or payment["amount_rub"]),
+                                created_at=payment["created_at"],
+                            )
+                        except ValueError:
+                            was_legacy = False
+                        restored = clamp_device_limit(int(previous_devices) + int(was_legacy))
                         await db.execute(
                             """
                             UPDATE users
