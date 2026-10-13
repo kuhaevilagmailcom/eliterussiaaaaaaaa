@@ -6,9 +6,14 @@ from device_identity import (
 )
 
 
-def test_subscription_requires_hwid_and_metadata():
+def test_subscription_requires_hwid_but_not_optional_model_or_os():
     assert subscription_device_hint({"X-Device-Model": "iPhone 13 Pro"}) is None
-    assert subscription_device_hint({"X-HWID": "valid-123"}) is None
+    assert subscription_device_hint({"X-HWID": "valid-123"}) == {
+        "hwid": "valid-123", "name": "Устройство", "platform": "",
+    }
+    assert subscription_device_hint({"X-HWID": "valid-123", "User-Agent": "Happ/3.14"}) == {
+        "hwid": "valid-123", "name": "Устройство Happ", "platform": "",
+    }
     assert subscription_device_hint({"X-HWID": "bad hwid", "X-Device-Model": "iPhone"}) is None
 
 
@@ -47,7 +52,7 @@ def test_count_only_fallback_does_not_invent_extra_devices():
     one = {"fingerprint_key": "a", "name": "iPhone", "platform": "iOS", "updated_at": "today"}
     two = {"fingerprint_key": "b", "name": "Windows", "platform": "Windows", "updated_at": "today"}
     count = [{"id": "count-1", "name": "Подключённое устройство", "fingerprint": ""}]
-    assert enrich_h1_devices(7, count, [one])[0]["name"] == "iPhone"
+    assert enrich_h1_devices(7, count, [one])[0]["name"] == "Подключённое устройство"
     assert enrich_h1_devices(7, count, [one, two])[0]["name"] == "Подключённое устройство"
 
 
@@ -85,3 +90,27 @@ def test_h1_unrelated_fallback_device_not_relabelled():
     }
     unrelated = [{"id": "fallback:123abc", "name": "Устройство", "fingerprint": ""}]
     assert enrich_h1_devices(1, unrelated, [hint])[0]["name"] == "Устройство"
+
+
+def test_device_alias_header_and_user_agent_os_fallback():
+    result = subscription_device_hint({
+        "X-Happ-HWID": "happ-device-012345",
+        "User-Agent": "Happ/3.0 (Android 15)",
+    })
+    assert result == {
+        "hwid": "happ-device-012345",
+        "name": "Android",
+        "platform": "Android",
+    }
+
+
+def test_model_is_cleaned_for_html_and_long_inputs():
+    result = subscription_device_hint({
+        "X-HWID": "hwid-1234567",
+        "X-Device-Model": "<script>iPhone\\n13 Pro</script>",
+        "X-Device-OS": "iOS",
+    })
+    assert result is not None
+    assert "<" not in result["name"]
+    assert ">" not in result["name"]
+    assert len(result["name"]) <= 80
