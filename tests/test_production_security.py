@@ -44,12 +44,12 @@ def test_admin_server_status_uses_live_h1_countries_not_old_static_list():
     ]
     rendered = format_admin_server_status(servers)
     assert rendered == (
-        "🖥 <b>Состояние серверов</b>\\n"
-        "✅ <b>🇳🇱 Нидерланды</b> · 30 мс\\n"
-        "✅ <b>🇵🇰 Пакистан</b> · 33 мс\\n"
-        "✅ <b>🇹🇷 Турция</b> · 56 мс\\n"
-        "✅ <b>🇩🇪 Германия</b> · 72 мс\\n"
-        "✅ <b>🇺🇸 США 1</b> · 163 мс\\n"
+        "🖥 <b>Состояние серверов</b>\n"
+        "✅ <b>🇳🇱 Нидерланды</b> · 30 мс\n"
+        "✅ <b>🇵🇰 Пакистан</b> · 33 мс\n"
+        "✅ <b>🇹🇷 Турция</b> · 56 мс\n"
+        "✅ <b>🇩🇪 Германия</b> · 72 мс\n"
+        "✅ <b>🇺🇸 США 1</b> · 163 мс\n"
         "✅ <b>🇫🇮 Финляндия</b> · 102 мс"
     )
     assert "Польша" not in rendered and "США 2" not in rendered
@@ -69,7 +69,7 @@ def test_admin_server_status_distinguishes_unknown_and_escapes_names():
 
 def test_admin_server_status_no_false_offline_placeholders():
     assert format_admin_server_status([]) == (
-        "🖥 <b>Состояние серверов</b>\\n"
+        "🖥 <b>Состояние серверов</b>\n"
         "➖ H1 пока не вернул список серверов"
     )
 
