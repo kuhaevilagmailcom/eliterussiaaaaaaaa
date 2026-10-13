@@ -105,3 +105,90 @@ def test_only_supported_gift_periods():
             else:
                 raise AssertionError("unsupported gift period accepted")
     run(scenario())
+
+
+def test_gift_miniapp_activation_notifies_user_and_admin_auth(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+    from miniapp import MiniAppServer
+
+    async def scenario():
+        db = Database(str(tmp_path / "api-gifts.db"))
+        await db.init()
+        await db.ensure_user(552, "receiver", "Receiver")
+        bot = SimpleNamespace(send_message=AsyncMock())
+        provider = SimpleNamespace(provision=AsyncMock(return_value=None))
+        server = MiniAppServer(
+            bot,
+            SimpleNamespace(db_path=str(tmp_path / "api-gifts.db")),
+            db,
+            provider,
+        )
+        server._admin_auth = AsyncMock(return_value=(9, {}, {}, "full"))
+        server._auth = AsyncMock(return_value=(552, {}, await db.get_user(552)))
+        server._username = AsyncMock(return_value="mgnvpn_bot")
+        server._sync_bot_subscription_menu = AsyncMock()
+
+        creation_request = make_mocked_request("POST", "/api/miniapp/admin/gifts")
+        server._json_body = AsyncMock(return_value={"days": 30})
+        created_response = await server.admin_create_gift_qr(creation_request)
+        assert created_response.status == 200
+        import json
+        created = json.loads(created_response.body)
+        assert created["link"].startswith("https://t.me/mgnvpn_bot?start=g_")
+        assert created["qr_image"].startswith("data:image/png;base64,")
+
+        scanned_request = make_mocked_request("POST", "/api/miniapp/gifts/redeem")
+        server._json_body = AsyncMock(return_value={"code": created["link"]})
+        redeemed_response = await server.redeem_gift_qr(scanned_request)
+        redeemed = json.loads(redeemed_response.body)
+        assert redeemed["ok"] is True and redeemed["days"] == 30
+        assert "подар" in bot.send_message.await_args.kwargs["text"].lower()
+        assert bot.send_message.await_args.kwargs["chat_id"] == 552
+
+        try:
+            await server.redeem_gift_qr(scanned_request)
+        except web.HTTPConflict:
+            pass
+        else:
+            raise AssertionError("Used gift was activated twice")
+
+        server._admin_auth = AsyncMock(return_value=(9, {}, {}, "limited"))
+        try:
+            await server.admin_create_gift_qr(creation_request)
+        except web.HTTPForbidden:
+            pass
+        else:
+            raise AssertionError("Limited admin generated a paid-value gift")
+
+    run(scenario())
+
+
+def test_existing_420_rub_checkout_price_is_honored_only_before_cutover(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "pricing-cutover.db"))
+        await db.init()
+        async with aiosqlite.connect(db.path) as conn:
+            before = (utcnow() - timedelta(hours=1)).isoformat()
+            after = (utcnow() + timedelta(hours=1)).isoformat()
+            assert await db._is_legacy_locked_quote(
+                conn, product_code="180", device_count=2,
+                original_amount=420, created_at=before,
+            ) is False
+            assert await db._is_legacy_locked_quote(
+                conn, product_code="365", device_count=4,
+                original_amount=1020, created_at=before,
+            ) is False
+            try:
+                await db._is_legacy_locked_quote(
+                    conn, product_code="180", device_count=2,
+                    original_amount=420, created_at=after,
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("New invoice used outdated 420 RUB price")
+
+    run(scenario())
