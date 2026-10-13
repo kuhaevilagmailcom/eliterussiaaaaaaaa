@@ -977,3 +977,49 @@ def test_device_model_hint_does_not_change_h1_slot_limit(tmp_path):
         assert await db.enrich_panel_devices(601, []) == []
 
     run(scenario())
+
+
+def test_happ_refresh_without_hwid_is_reported_but_not_counted(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "probe.sqlite3"))
+        await db.init()
+        await db.ensure_user(7001, "happ", "Happ User")
+        await db.note_subscription_device_probe(
+            7001, from_happ=True, has_hwid=False, has_model=False, has_os=False,
+        )
+        probe = await db.subscription_device_probe(7001)
+        assert probe["last_happ_at"]
+        assert probe["last_hwid_at"] is None
+        assert await db.list_subscription_device_hints(7001) == []
+
+        await db.note_subscription_device_probe(
+            7001, from_happ=True, has_hwid=True, has_model=True, has_os=True,
+        )
+        probe = await db.subscription_device_probe(7001)
+        assert probe["last_hwid_at"]
+        assert probe["last_model_at"]
+        assert probe["last_os_at"]
+
+    run(scenario())
+
+
+def test_subscription_detected_device_without_os_is_persisted(tmp_path):
+    from device_identity import subscription_device_hint
+
+    async def scenario():
+        db = Database(str(tmp_path / "device_without_os.sqlite3"))
+        await db.init()
+        await db.ensure_user(7002, "noos", "No OS")
+        hint = subscription_device_hint({
+            "X-HWID": "persistent-happ-0000001",
+            "User-Agent": "Happ/3.14.0",
+        })
+        assert hint
+        await db.record_subscription_device(7002, hint)
+        saved = await db.list_subscription_device_hints(7002)
+        assert len(saved) == 1
+        assert saved[0]["name"] == "Устройство Happ"
+        assert saved[0]["platform"] == ""
+        assert "persistent-happ-0000001" not in str(saved)
+
+    run(scenario())
