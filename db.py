@@ -705,6 +705,14 @@ class Database:
                     ("base_two_devices_v1", to_iso(utcnow())),
                 )
 
+            # Lock in the pricing cutover once, for already-created payment
+            # intents. Prior quotes remain valid, new ones use lower prices.
+            await db.execute(
+                "INSERT OR IGNORE INTO service_migrations (name, applied_at) "
+                "VALUES (?, ?)",
+                ("pricing_370_777_v1", to_iso(utcnow())),
+            )
+
             # Idempotent startup normalization; no new slot each restart.
             await db.execute(
                 """
@@ -2228,10 +2236,26 @@ class Database:
         current = self._product_price(product_code, device_count)
         if original_amount == current:
             return False
-        if self._legacy_price(product_code, device_count) != original_amount:
-            raise ValueError("Payment price is outdated")
         created = from_iso(created_at)
         if created is None:
+            raise ValueError("Payment price is outdated")
+
+        # 6- and 12-month checkout prices changed without changing included
+        # slots. Honor an already-issued quote only if it predates the cutover.
+        previous_price = {"180": 420, "365": 920}.get(product_code)
+        old_total = (
+            previous_price + (max(BASE_DEVICES, min(MAX_DEVICES, int(device_count or BASE_DEVICES))) - BASE_DEVICES) * EXTRA_DEVICE_PRICE_RUB
+            if previous_price is not None else None
+        )
+        if old_total == original_amount:
+            pricing = await (await db.execute(
+                "SELECT applied_at FROM service_migrations WHERE name='pricing_370_777_v1'"
+            )).fetchone()
+            cutover = from_iso(pricing[0]) if pricing else None
+            if cutover and created < cutover:
+                return False  # no legacy one-device conversion
+
+        if self._legacy_price(product_code, device_count) != original_amount:
             raise ValueError("Payment price is outdated")
         migration = await (await db.execute(
             "SELECT applied_at FROM service_migrations WHERE name='base_two_devices_v1'"
