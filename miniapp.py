@@ -1766,11 +1766,11 @@ class MiniAppServer:
             await self.bot.send_message(
                 chat_id=uid,
                 text=(
-                    "🎁 <b>Вы получили подарок MGN VPN!</b>\\n\\n"
-                    f"Подписка: <b>{label}</b>\\n"
-                    f"Доступ продлён до: <b>{escape(result['subscription_until'][:10])}</b>\\n\\n"
+                    "🎁 <b>Вы получили подарок MGN VPN!</b>\n\n"
+                    f"Подписка: <b>{label}</b>\n"
+                    f"Доступ продлён до: <b>{escape(result['subscription_until'][:10])}</b>\n\n"
                     "Откройте Mini App, чтобы подключить VPN."
-                ).replace("\\n", "\n"),
+                ).replace("\n", "\n"),
             )
         except Exception as exc:
             # Telegram may deny messages until user starts the bot.
