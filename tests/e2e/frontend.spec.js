@@ -6,6 +6,10 @@ const root = path.resolve(__dirname, '../..');
 const read = relative => fs.readFileSync(path.join(root, relative));
 
 async function routeFiles(page, miniApp = false) {
+  if(miniApp){
+    page.on('pageerror',error=>console.log('[MINIAPP JS ERROR]',error.stack||error.message));
+    page.on('console',message=>{if(message.type()==='error')console.log('[MINIAPP CONSOLE]',message.text())});
+  }
   await page.route('https://telegram.org/js/telegram-web-app.js', route => route.fulfill({
     contentType: 'application/javascript',
     body: `window.Telegram={WebApp:{initData:'test-init-data',ready(){},expand(){},
