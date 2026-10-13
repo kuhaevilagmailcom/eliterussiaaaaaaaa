@@ -1071,3 +1071,67 @@ def test_new_subscribers_start_with_two_device_slots(tmp_path):
             await database.set_device_limit(10111, 1)
 
     run(scenario())
+
+
+def test_pre_migration_sbp_quote_is_honored_but_new_legacy_price_is_rejected(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "old-quotes.db"))
+        await db.init()
+        await db.ensure_user(10201, None, "Legacy Buyer")
+
+        # This unpaid order existed before the pricing switch.
+        await db.create_sbp_payment(
+            payment_id="old-paid", order_id="old-order", telegram_id=10201,
+            target_telegram_id=10201, plan_code="30",
+            amount_rub=149, original_amount_rub=149,
+            device_count=2, previous_device_count=1,
+        )
+        async with aiosqlite.connect(db.path) as connection:
+            await connection.execute(
+                "UPDATE sbp_payments SET created_at=? WHERE payment_id=?",
+                (to_iso(utcnow() - timedelta(days=1)), "old-paid"),
+            )
+            await connection.commit()
+        assert await db.settle_sbp_payment("old-paid")
+        old = await db.get_user(10201)
+        assert old["max_devices"] == 3  # old paid second slot + new free base
+
+        # A freshly created invoice cannot charge an outdated price.
+        await db.create_sbp_payment(
+            payment_id="invalid-old", order_id="invalid-order", telegram_id=10201,
+            target_telegram_id=10201, plan_code="30",
+            amount_rub=99, original_amount_rub=99,
+        )
+        with pytest.raises(ValueError, match="outdated"):
+            await db.settle_sbp_payment("invalid-old")
+
+    run(scenario())
+
+
+def test_pre_migration_stars_intent_is_settled_at_locked_amount(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "old-stars.db"))
+        await db.init()
+        await db.ensure_user(10202, None, "Legacy Stars")
+        await db.create_payment_intent(
+            intent_id="old-stars-intent", buyer_id=10202, target_id=10202,
+            product_code="30", original_amount_rub=99,
+            discount_amount_rub=0, final_amount_rub=99,
+            currency="XTR", currency_amount=rub_to_stars(99),
+            device_count=1,
+        )
+        async with aiosqlite.connect(db.path) as connection:
+            await connection.execute(
+                "UPDATE payment_intents SET created_at=? WHERE intent_id=?",
+                (to_iso(utcnow() - timedelta(days=1)), "old-stars-intent"),
+            )
+            await connection.commit()
+        # Existing intent expiry is still enforced, but its historical quote
+        # can settle during the remaining validity window.
+        assert await db.settle_star_payment(
+            "charge-old-stars", 10202, 10202, "30",
+            rub_to_stars(99), intent_id="old-stars-intent",
+        )
+        assert (await db.get_user(10202))["max_devices"] == 2
+
+    run(scenario())
