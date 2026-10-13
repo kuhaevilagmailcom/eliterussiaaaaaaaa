@@ -70,7 +70,7 @@ class Database:
                     subscription_until TEXT,
                     plan_name TEXT NOT NULL DEFAULT '',
                     traffic_limit_gb INTEGER NOT NULL DEFAULT 0,
-                    max_devices INTEGER NOT NULL DEFAULT 1,
+                    max_devices INTEGER NOT NULL DEFAULT 2,
                     sub_token TEXT NOT NULL UNIQUE,
                     referrer_id INTEGER,
                     last_menu_message_id INTEGER,
@@ -668,25 +668,34 @@ class Database:
                 "ON users(username COLLATE NOCASE)"
             )
 
-            # One device is included in every plan. Preserve only explicit
-            # bonus slots and keep the total within 1..5.
+            # Migrate existing subscribers exactly once. Customers keep
+            # their paid bonus slots alongside the new 2-device base.
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS service_migrations "
+                "(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+            )
+            migrated = await (await db.execute(
+                "SELECT 1 FROM service_migrations WHERE name='base_two_devices_v1'"
+            )).fetchone()
+            if not migrated:
+                await db.execute(
+                    """
+                    UPDATE users
+                    SET bonus_devices=MIN(3, MAX(0, COALESCE(bonus_devices, 0))),
+                        max_devices=MIN(5, 2 + MIN(3, MAX(0, COALESCE(bonus_devices, 0))))
+                    """
+                )
+                await db.execute(
+                    "INSERT INTO service_migrations (name, applied_at) VALUES (?, ?)",
+                    ("base_two_devices_v1", to_iso(utcnow())),
+                )
+
+            # Idempotent startup normalization; no new slot each restart.
             await db.execute(
                 """
                 UPDATE users
-                SET bonus_devices=MIN(
-                        4,
-                        MAX(0, COALESCE(bonus_devices, 0))
-                    ),
-                    max_devices=MIN(
-                        5,
-                        MAX(
-                            1,
-                            1 + MIN(
-                                4,
-                                MAX(0, COALESCE(bonus_devices, 0))
-                            )
-                        )
-                    )
+                SET bonus_devices=MIN(3, MAX(0, COALESCE(bonus_devices, 0))),
+                    max_devices=MIN(5, 2 + MIN(3, MAX(0, COALESCE(bonus_devices, 0))))
                 """
             )
             await db.commit()
@@ -1161,12 +1170,12 @@ class Database:
         return await self.get_user(telegram_id)
 
     async def set_device_limit(self, telegram_id: int, limit: int) -> dict[str, Any]:
-        if type(limit) is not int or not 1 <= limit <= MAX_DEVICES:
-            raise ValueError("device limit must be 1..5")
+        if type(limit) is not int or not BASE_DEVICES <= limit <= MAX_DEVICES:
+            raise ValueError("device limit must be 2..5")
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 "UPDATE users SET max_devices=?, bonus_devices=? WHERE telegram_id=?",
-                (limit, limit - 1, telegram_id),
+                (limit, limit - BASE_DEVICES, telegram_id),
             )
             if cursor.rowcount != 1:
                 raise KeyError(telegram_id)
@@ -1342,7 +1351,7 @@ class Database:
         max_total_devices: int = 5,
     ) -> dict[str, Any] | None:
         delta = int(delta)
-        max_total_devices = min(5, max(1, int(max_total_devices)))
+        max_total_devices = min(MAX_DEVICES, max(BASE_DEVICES, int(max_total_devices)))
 
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
@@ -1363,9 +1372,9 @@ class Database:
 
             bonus = max(0, int(row["bonus_devices"] or 0))
             new_bonus = bonus + delta
-            new_total = 1 + new_bonus
+            new_total = BASE_DEVICES + new_bonus
 
-            if new_bonus < 0 or new_total < 1 or new_total > max_total_devices:
+            if new_bonus < 0 or new_total < BASE_DEVICES or new_total > max_total_devices:
                 await db.rollback()
                 return None
 
@@ -1686,7 +1695,7 @@ class Database:
                 (
                     to_iso(until),
                     f"Промокод +{int(promo['value'])} дней",
-                    min(5, max(1, int(user["max_devices"] or 1))),
+                    min(MAX_DEVICES, max(BASE_DEVICES, int(user["max_devices"] or BASE_DEVICES))),
                     telegram_id,
                 ),
             )
@@ -3655,7 +3664,8 @@ class Database:
                 UPDATE users
                 SET subscription_until=NULL,
                     plan_name='',
-                    max_devices=1
+                    max_devices=2,
+                    bonus_devices=0
                 WHERE telegram_id=?
                 """,
                 (telegram_id,),
