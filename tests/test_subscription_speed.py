@@ -40,6 +40,7 @@ def test_cold_subscription_requests_share_single_h1_fetch(tmp_path):
             SimpleNamespace(
                 db_path=str(tmp_path / "vpn.db"),
                 display_tz=timezone.utc,
+                trusted_proxy_ips=(),
             ),
             db,
             provider,
