@@ -24,14 +24,14 @@ PLANS: dict[str, dict[str, Any]] = {
         "months": 6,
         "name": "6 месяцев",
         "devices": 2,
-        "price_rub": 420,
+        "price_rub": 370,
     },
     "365": {
         "days": 365,
         "months": 12,
         "name": "1 год",
         "devices": 2,
-        "price_rub": 920,
+        "price_rub": 777,
     },
 }
 
