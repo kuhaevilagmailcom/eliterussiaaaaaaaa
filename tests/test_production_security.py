@@ -267,7 +267,7 @@ def test_http_security_routes_and_subscription(tmp_path, monkeypatch):
             popular = [item['code'] for item in catalog['plans'] if item.get('popular')]
             assert popular == ['90']
             savings = {item['code']: item['savings_rub'] for item in catalog['plans']}
-            assert savings['90'] == 40 and savings['180'] == 0 and savings['365'] == 0
+            assert savings['90'] == 40 and savings['180'] == 50 and savings['365'] == 63
             assert catalog['max_devices'] == 5
             assert (await client.get('/api/miniapp/me')).status == 401
             await db.create_service_promo(
