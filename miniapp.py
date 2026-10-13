@@ -1149,6 +1149,10 @@ class MiniAppServer:
                     "traffic_history": traffic_history,
                     "devices": state.devices,
                     "device_history": await self.db.list_device_history(uid),
+                    "device_profiles": [
+                        {"name": hint["name"], "platform": hint["platform"], "updated_at": hint["updated_at"]}
+                        for hint in await self.db.list_subscription_device_hints(uid)
+                    ],
                 },
                 "plans": [
                     {
