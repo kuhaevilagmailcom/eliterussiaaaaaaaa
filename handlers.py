@@ -743,7 +743,7 @@ def profile_text(
 ) -> str:
     user_id = int(user["telegram_id"])
     active = is_active(user)
-    max_devices = int(user.get("max_devices") or 1)
+    max_devices = int(user.get("max_devices") or BASE_DEVICES)
     devices = list(device_profiles or [])
     devices_count = len(devices)
     plan = html.escape(user.get("plan_name") or "—")
@@ -847,7 +847,7 @@ def connection_text(
     emoji: EmojiBank,
     subscription_url: str,
 ) -> str:
-    max_devices = int(user.get("max_devices") or 1)
+    max_devices = int(user.get("max_devices") or BASE_DEVICES)
     connected = len(list(state.devices or []))
     plan = html.escape(str(user.get("plan_name") or "VPN"))
     return (
@@ -1446,7 +1446,7 @@ def build_router(
                 f"Тариф: <b>{html.escape(str(user.get('plan_name') or 'VPN'))}</b>",
                 f"До: <b>{format_until(user, config)}</b>",
                 f"Осталось: <b>{remaining_text(user)}</b>",
-                f"Устройства: <b>до {int(user.get('max_devices') or 1)}</b>",
+                f"Устройства: <b>до {int(user.get('max_devices') or BASE_DEVICES)}</b>",
                 "",
                 "<blockquote>🔧 Нажмите <b>«Моя подписка»</b>, чтобы подключить устройство, "
                 "продлить доступ или скопировать персональную ссылку.</blockquote>",
@@ -2298,7 +2298,7 @@ def build_router(
                 actor,
                 f"{e} <b>Устройства</b>\n\n"
                 "Сначала активируйте VPN-подписку.\n"
-                "В любой тариф входит <b>1 устройство</b>.",
+                f"В любой тариф входят <b>{BASE_DEVICES} устройства</b>.",
                 reply_markup=section_nav_keyboard(back_data=back_data),
             )
             return
@@ -2438,7 +2438,7 @@ def build_router(
             message,
             message.from_user,
             "💳 <b>Выберите тариф</b>\n\n"
-            "В подписку входит 1 устройство. Оплата — СБП или Telegram Stars.\n"
+            "В подписку входят 2 устройства. Каждое следующее — +50 ₽. Оплата — СБП или Telegram Stars.\n"
             "<i>Если подписка уже активна, новый срок прибавится к оставшимся дням — ничего не сгорит.</i>",
             reply_markup=plans_keyboard(config),
         )
@@ -2465,7 +2465,7 @@ def build_router(
             callback.message,
             callback.from_user,
             "💳 <b>Выберите тариф</b>\n\n"
-            "В подписку входит 1 устройство. Оплата — СБП или Telegram Stars.\n"
+            "В подписку входят 2 устройства. Каждое следующее — +50 ₽. Оплата — СБП или Telegram Stars.\n"
             "<i>Если подписка уже активна, новый срок прибавится к оставшимся дням — ничего не сгорит.</i>",
             reply_markup=plans_keyboard(config),
         )
@@ -2488,7 +2488,7 @@ def build_router(
             f"{e} <b>{plan['name']}</b>"
             + (" · 🔥 <b>Популярный</b>" if code == POPULAR_PLAN_CODE else "")
             + "\n\n"
-            + f"📱 Включено устройств — <b>1</b>\n"
+            + f"📱 Включено устройств — <b>{BASE_DEVICES}</b>\n"
             + f"🏦 <b>{plan_price_rub(config, code)} ₽</b> · СБП\n"
             + f"⭐ <b>{plan_price_stars(config, code)} Stars</b>\n"
             + (
@@ -5894,7 +5894,7 @@ def build_router(
         kb.adjust(3)
         kb.row(blue_inline_button("⬅️ Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
         await safe_callback_answer(callback, )
-        await send_screen(callback.message, callback.from_user, "<b>Лимит устройств</b>\n\nВыберите значение от 1 до 5.", reply_markup=kb.as_markup())
+        await send_screen(callback.message, callback.from_user, "<b>Лимит устройств</b>\n\nВыберите значение от 2 до 5.", reply_markup=kb.as_markup())
 
     @router.callback_query(F.data.startswith("admin:setdevice:"))
     async def admin_set_device(callback: CallbackQuery) -> None:
@@ -5907,7 +5907,7 @@ def build_router(
             return
         uid, limit = int(parts[2]), int(parts[3])
         if not 1 <= limit <= 5:
-            await safe_callback_answer(callback, "Допустимо от 1 до 5", show_alert=True)
+            await safe_callback_answer(callback, "Допустимо от 2 до 5", show_alert=True)
             return
         await safe_callback_answer(callback, "Обновляю лимит…")
         updated = await db.set_device_limit(uid, limit)
