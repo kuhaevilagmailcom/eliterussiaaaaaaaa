@@ -9,7 +9,7 @@ from typing import Any
 
 import aiosqlite
 
-from device_identity import device_fingerprint_key, enrich_h1_devices
+from device_identity import device_fingerprint_key, enrich_h1_devices, h1_panel_device_id
 
 from catalog import (
     BASE_DEVICES,
@@ -394,6 +394,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS subscription_device_metadata (
                     telegram_id INTEGER NOT NULL,
                     fingerprint_key TEXT NOT NULL,
+                    panel_id TEXT NOT NULL DEFAULT '',
                     name TEXT NOT NULL,
                     platform TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL,
@@ -3031,6 +3032,7 @@ class Database:
         if not name and not platform:
             return
         fingerprint_key = device_fingerprint_key(telegram_id, hwid)
+        panel_id = h1_panel_device_id(hwid)
         now = to_iso(utcnow())
         cutoff = to_iso(utcnow() - timedelta(days=90))
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
@@ -3041,13 +3043,13 @@ class Database:
             await db.execute(
                 """
                 INSERT INTO subscription_device_metadata
-                (telegram_id, fingerprint_key, name, platform, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                (telegram_id, fingerprint_key, panel_id, name, platform, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(telegram_id, fingerprint_key) DO UPDATE SET
-                    name=excluded.name, platform=excluded.platform,
-                    updated_at=excluded.updated_at
+                    panel_id=excluded.panel_id, name=excluded.name,
+                    platform=excluded.platform, updated_at=excluded.updated_at
                 """,
-                (int(telegram_id), fingerprint_key, name, platform, now),
+                (int(telegram_id), fingerprint_key, panel_id, name, platform, now),
             )
             await db.commit()
 
@@ -3056,7 +3058,7 @@ class Database:
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (await db.execute(
-                "SELECT fingerprint_key, name, platform, updated_at "
+                "SELECT fingerprint_key, panel_id, name, platform, updated_at "
                 "FROM subscription_device_metadata WHERE telegram_id=? AND updated_at>=? "
                 "ORDER BY updated_at DESC LIMIT 30",
                 (int(telegram_id), cutoff),
