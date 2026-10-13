@@ -70,7 +70,7 @@ class Database:
                     subscription_until TEXT,
                     plan_name TEXT NOT NULL DEFAULT '',
                     traffic_limit_gb INTEGER NOT NULL DEFAULT 0,
-                    max_devices INTEGER NOT NULL DEFAULT 1,
+                    max_devices INTEGER NOT NULL DEFAULT 2,
                     sub_token TEXT NOT NULL UNIQUE,
                     referrer_id INTEGER,
                     last_menu_message_id INTEGER,
@@ -668,25 +668,34 @@ class Database:
                 "ON users(username COLLATE NOCASE)"
             )
 
-            # One device is included in every plan. Preserve only explicit
-            # bonus slots and keep the total within 1..5.
+            # Migrate existing subscribers exactly once. Customers keep
+            # their paid bonus slots alongside the new 2-device base.
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS service_migrations "
+                "(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+            )
+            migrated = await (await db.execute(
+                "SELECT 1 FROM service_migrations WHERE name='base_two_devices_v1'"
+            )).fetchone()
+            if not migrated:
+                await db.execute(
+                    """
+                    UPDATE users
+                    SET bonus_devices=MIN(3, MAX(0, COALESCE(bonus_devices, 0))),
+                        max_devices=MIN(5, 2 + MIN(3, MAX(0, COALESCE(bonus_devices, 0))))
+                    """
+                )
+                await db.execute(
+                    "INSERT INTO service_migrations (name, applied_at) VALUES (?, ?)",
+                    ("base_two_devices_v1", to_iso(utcnow())),
+                )
+
+            # Idempotent startup normalization; no new slot each restart.
             await db.execute(
                 """
                 UPDATE users
-                SET bonus_devices=MIN(
-                        4,
-                        MAX(0, COALESCE(bonus_devices, 0))
-                    ),
-                    max_devices=MIN(
-                        5,
-                        MAX(
-                            1,
-                            1 + MIN(
-                                4,
-                                MAX(0, COALESCE(bonus_devices, 0))
-                            )
-                        )
-                    )
+                SET bonus_devices=MIN(3, MAX(0, COALESCE(bonus_devices, 0))),
+                    max_devices=MIN(5, 2 + MIN(3, MAX(0, COALESCE(bonus_devices, 0))))
                 """
             )
             await db.commit()
@@ -1161,12 +1170,12 @@ class Database:
         return await self.get_user(telegram_id)
 
     async def set_device_limit(self, telegram_id: int, limit: int) -> dict[str, Any]:
-        if type(limit) is not int or not 1 <= limit <= MAX_DEVICES:
-            raise ValueError("device limit must be 1..5")
+        if type(limit) is not int or not BASE_DEVICES <= limit <= MAX_DEVICES:
+            raise ValueError("device limit must be 2..5")
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
             cursor = await db.execute(
                 "UPDATE users SET max_devices=?, bonus_devices=? WHERE telegram_id=?",
-                (limit, limit - 1, telegram_id),
+                (limit, limit - BASE_DEVICES, telegram_id),
             )
             if cursor.rowcount != 1:
                 raise KeyError(telegram_id)
@@ -1342,7 +1351,7 @@ class Database:
         max_total_devices: int = 5,
     ) -> dict[str, Any] | None:
         delta = int(delta)
-        max_total_devices = min(5, max(1, int(max_total_devices)))
+        max_total_devices = min(MAX_DEVICES, max(BASE_DEVICES, int(max_total_devices)))
 
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
@@ -1363,9 +1372,9 @@ class Database:
 
             bonus = max(0, int(row["bonus_devices"] or 0))
             new_bonus = bonus + delta
-            new_total = 1 + new_bonus
+            new_total = BASE_DEVICES + new_bonus
 
-            if new_bonus < 0 or new_total < 1 or new_total > max_total_devices:
+            if new_bonus < 0 or new_total < BASE_DEVICES or new_total > max_total_devices:
                 await db.rollback()
                 return None
 
@@ -1686,7 +1695,7 @@ class Database:
                 (
                     to_iso(until),
                     f"Промокод +{int(promo['value'])} дней",
-                    min(5, max(1, int(user["max_devices"] or 1))),
+                    min(MAX_DEVICES, max(BASE_DEVICES, int(user["max_devices"] or BASE_DEVICES))),
                     telegram_id,
                 ),
             )
@@ -1890,7 +1899,20 @@ class Database:
                             (until_value, plan_name, target_id),
                         )
                     else:
-                        restored = clamp_device_limit(previous_devices)
+                        # A refunded pre-upgrade order stored device counts
+                        # under the previous 1-base model. Restore its former
+                        # purchased slots plus the newly included second slot.
+                        try:
+                            was_legacy = await self._is_legacy_locked_quote(
+                                db,
+                                product_code=code,
+                                device_count=payment["device_count"],
+                                original_amount=int(payment["original_amount_rub"] or payment["amount_rub"]),
+                                created_at=payment["created_at"],
+                            )
+                        except ValueError:
+                            was_legacy = False
+                        restored = clamp_device_limit(int(previous_devices) + int(was_legacy))
                         await db.execute(
                             """
                             UPDATE users
@@ -2023,6 +2045,7 @@ class Database:
         self, db, *, promo_id: int | None, buyer_id: int, payment_id: str,
         product_code: str, original_amount: int, discount_amount: int,
         final_amount: int, device_count: int | None = None,
+        order_created_at: str | None = None,
     ) -> None:
         if promo_id is None:
             return
@@ -2048,12 +2071,14 @@ class Database:
         if int(used[0]) >= int(promo["per_user_limit"]):
             raise ValueError("Promo user limit reached")
 
-        expected_original = self._product_price(product_code, device_count)
-        expected_discount = expected_original * int(promo["value"]) // 100
-        expected_final = expected_original - expected_discount
+        await self._is_legacy_locked_quote(
+            db, product_code=product_code, device_count=device_count,
+            original_amount=int(original_amount), created_at=order_created_at,
+        )
+        expected_discount = int(original_amount) * int(promo["value"]) // 100
+        expected_final = int(original_amount) - expected_discount
         if (
-            int(original_amount) != expected_original
-            or int(discount_amount) != expected_discount
+            int(discount_amount) != expected_discount
             or int(final_amount) != expected_final
         ):
             raise ValueError("Promo payment amounts are invalid")
@@ -2073,6 +2098,44 @@ class Database:
         if product_code not in PLANS:
             raise ValueError("Unknown payment product")
         return plan_total_price_rub(None, product_code, device_count or BASE_DEVICES)
+
+    @staticmethod
+    def _legacy_price(product_code: str, device_count: int | None) -> int | None:
+        """Prices from before the two-device migration, for in-flight orders only."""
+        previous = {"30": 99, "90": 249, "180": 499, "365": 999}
+        if product_code == DEVICE_PRODUCT_CODE:
+            return EXTRA_DEVICE_PRICE_RUB
+        base = previous.get(product_code)
+        if base is None:
+            return None
+        old_count = max(1, min(MAX_DEVICES, int(device_count or 1)))
+        return base + (old_count - 1) * EXTRA_DEVICE_PRICE_RUB
+
+    async def _is_legacy_locked_quote(
+        self,
+        db: aiosqlite.Connection,
+        *,
+        product_code: str,
+        device_count: int | None,
+        original_amount: int,
+        created_at: str | None,
+    ) -> bool:
+        """Honor an already-created payment, never permit old prices for new orders."""
+        current = self._product_price(product_code, device_count)
+        if original_amount == current:
+            return False
+        if self._legacy_price(product_code, device_count) != original_amount:
+            raise ValueError("Payment price is outdated")
+        created = from_iso(created_at)
+        if created is None:
+            raise ValueError("Payment price is outdated")
+        migration = await (await db.execute(
+            "SELECT applied_at FROM service_migrations WHERE name='base_two_devices_v1'"
+        )).fetchone()
+        migrated_at = from_iso(migration[0]) if migration else None
+        if migrated_at is None or created >= migrated_at:
+            raise ValueError("Payment price is outdated")
+        return True
 
     async def redeem_full_discount(
         self, *, promo_id: int, buyer_id: int, target_id: int, product_code: str,
@@ -2114,8 +2177,12 @@ class Database:
             if row is None or row["status"] == "paid":
                 return False
             original_amount = int(row["original_amount_rub"] or row["amount_rub"])
-            if original_amount != self._product_price(str(row["plan_code"]), row["device_count"]):
-                raise ValueError("Payment price is outdated")
+            legacy_quote = await self._is_legacy_locked_quote(
+                db, product_code=str(row["plan_code"]),
+                device_count=row["device_count"],
+                original_amount=original_amount,
+                created_at=row["created_at"],
+            )
             if row["promo_id"] is None and (
                 int(row["discount_amount_rub"] or 0) != 0
                 or int(row["amount_rub"]) != original_amount
@@ -2131,12 +2198,16 @@ class Database:
                 discount_amount=int(row["discount_amount_rub"] or 0),
                 final_amount=int(row["amount_rub"]),
                 device_count=row["device_count"],
+                order_created_at=row["created_at"],
             )
+            effective_device_count = row["device_count"]
+            if legacy_quote and effective_device_count is not None and str(row["plan_code"]) != DEVICE_PRODUCT_CODE:
+                effective_device_count = min(MAX_DEVICES, int(effective_device_count) + 1)
             await self._apply_product(
                 db,
                 row["target_telegram_id"] or row["telegram_id"],
                 row["plan_code"],
-                row["device_count"],
+                effective_device_count,
             )
             await db.execute(
                 "UPDATE sbp_payments SET status='paid', paid_at=? WHERE payment_id=?",
@@ -2178,11 +2249,16 @@ class Database:
                 if intent["status"] != "created" or not expires_at or expires_at <= utcnow():
                     raise ValueError("Payment intent expired")
                 expected_stars = rub_to_stars(int(intent["final_amount_rub"]))
-                if (
-                    int(intent["original_amount_rub"])
-                    != self._product_price(plan_code, intent["device_count"])
-                    or expected_stars != stars
-                ):
+                try:
+                    legacy_quote = await self._is_legacy_locked_quote(
+                        db, product_code=plan_code,
+                        device_count=intent["device_count"],
+                        original_amount=int(intent["original_amount_rub"]),
+                        created_at=intent["created_at"],
+                    )
+                except ValueError as exc:
+                    raise ValueError("Payment intent price is invalid") from exc
+                if expected_stars != stars:
                     raise ValueError("Payment intent price is invalid")
                 await self._consume_paid_promo(
                     db,
@@ -2194,12 +2270,16 @@ class Database:
                     discount_amount=int(intent["discount_amount_rub"]),
                     final_amount=int(intent["final_amount_rub"]),
                     device_count=intent["device_count"],
+                    order_created_at=intent["created_at"],
                 )
+            effective_device_count = intent["device_count"] if intent else None
+            if intent and legacy_quote and effective_device_count is not None and plan_code != DEVICE_PRODUCT_CODE:
+                effective_device_count = min(MAX_DEVICES, int(effective_device_count) + 1)
             await self._apply_product(
                 db,
                 target_telegram_id,
                 plan_code,
-                intent["device_count"] if intent else None,
+                effective_device_count,
             )
             await db.execute(
                 "INSERT INTO star_payments VALUES (?, ?, ?, ?, ?, ?)",
@@ -3654,8 +3734,7 @@ class Database:
                 """
                 UPDATE users
                 SET subscription_until=NULL,
-                    plan_name='',
-                    max_devices=1
+                    plan_name=''
                 WHERE telegram_id=?
                 """,
                 (telegram_id,),

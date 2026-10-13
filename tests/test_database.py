@@ -132,13 +132,13 @@ def test_device_slots_survive_renewal_and_stay_in_range(tmp_path):
         db = Database(str(tmp_path / "mgn.sqlite3"))
         await db.init()
         await db.ensure_user(10, "device", "Device")
-        for expected in range(2, 6):
+        for expected in range(3, 6):
             user = await db.grant_extra_device(10)
             assert user["max_devices"] == expected
         assert await db.grant_extra_device(10) is None
         renewed = await db.extend_subscription(10, 30, "1 месяц", 1)
         assert renewed["max_devices"] == 5
-        for expected in range(4, 0, -1):
+        for expected in range(4, 1, -1):
             user = await db.revoke_extra_device(10)
             assert user["max_devices"] == expected
         assert await db.revoke_extra_device(10) is None
@@ -161,15 +161,15 @@ def test_promos_are_case_insensitive_limited_and_preserve_slots(tmp_path):
             applicable_plans="90,180,365",
         )
         quote = await db.promo_quote(
-            code="mGN20", telegram_id=20, plan_code="90", original_price=349
+            code="mGN20", telegram_id=20, plan_code="90", original_price=220
         )
-        assert quote["discount"] == 69
-        assert quote["final_price"] == 280
+        assert quote["discount"] == 44
+        assert quote["final_price"] == 176
         assert await db.consume_promo(
             promo_id=promo["id"], telegram_id=20, payment_id="pay-1"
         )
         assert await db.promo_quote(
-            code="MGN20", telegram_id=20, plan_code="90", original_price=349
+            code="MGN20", telegram_id=20, plan_code="90", original_price=220
         ) is None
 
         await db.create_service_promo(
@@ -179,7 +179,7 @@ def test_promos_are_case_insensitive_limited_and_preserve_slots(tmp_path):
             created_by=1,
         )
         user = await db.redeem_free_days_promo("mgnfree", 20)
-        assert user["max_devices"] == 2
+        assert user["max_devices"] == 3
         assert await db.redeem_free_days_promo("MGNFREE", 20) is None
 
     run(scenario())
@@ -197,11 +197,11 @@ def test_payment_events_are_idempotent(tmp_path):
             buyer_id=30,
             target_id=30,
             product_code="30",
-            original_amount_rub=99,
+            original_amount_rub=70,
             discount_amount_rub=0,
-            final_amount_rub=99,
+            final_amount_rub=70,
             currency="XTR",
-            currency_amount=62,
+            currency_amount=44,
         )
         assert await db.mark_payment_intent_paid("intent-1")
         assert not await db.mark_payment_intent_paid("intent-1")
@@ -219,7 +219,7 @@ def test_admin_stats_separate_self_paid_from_admin_and_gift_access(tmp_path):
         await db.create_sbp_payment(
             payment_id="self-paid", order_id="self-order",
             telegram_id=201, target_telegram_id=201,
-            plan_code="30", amount_rub=99, original_amount_rub=99,
+            plan_code="30", amount_rub=70, original_amount_rub=70,
         )
         assert await db.settle_sbp_payment("self-paid")
         await db.grant_subscription_by_admin(
@@ -228,7 +228,7 @@ def test_admin_stats_separate_self_paid_from_admin_and_gift_access(tmp_path):
         await db.create_sbp_payment(
             payment_id="gift-paid", order_id="gift-order",
             telegram_id=204, target_telegram_id=203,
-            plan_code="30", amount_rub=99, original_amount_rub=99,
+            plan_code="30", amount_rub=70, original_amount_rub=70,
         )
         assert await db.settle_sbp_payment("gift-paid")
 
@@ -241,7 +241,7 @@ def test_admin_stats_separate_self_paid_from_admin_and_gift_access(tmp_path):
         await db.create_sbp_payment(
             payment_id="admin-user-buys", order_id="admin-user-order",
             telegram_id=202, target_telegram_id=202,
-            plan_code="30", amount_rub=99, original_amount_rub=99,
+            plan_code="30", amount_rub=70, original_amount_rub=70,
         )
         assert await db.settle_sbp_payment("admin-user-buys")
         stats = await db.admin_overview()
@@ -318,8 +318,8 @@ def test_paid_tariff_switch_stacks_days_instead_of_replacing_them(tmp_path):
             telegram_id=200,
             target_telegram_id=200,
             plan_code="30",
-            amount_rub=99,
-            original_amount_rub=99,
+            amount_rub=70,
+            original_amount_rub=70,
         )
         assert await db.settle_sbp_payment("week")
         after_week = from_iso((await db.get_user(200))["subscription_until"])
@@ -330,8 +330,8 @@ def test_paid_tariff_switch_stacks_days_instead_of_replacing_them(tmp_path):
             telegram_id=200,
             target_telegram_id=200,
             plan_code="30",
-            amount_rub=99,
-            original_amount_rub=99,
+            amount_rub=70,
+            original_amount_rub=70,
         )
         assert await db.settle_sbp_payment("month")
         user = await db.get_user(200)
@@ -372,8 +372,8 @@ def test_attribution_source_is_first_touch_and_counts_paid_buyers(tmp_path):
             telegram_id=101,
             target_telegram_id=101,
             plan_code="30",
-            amount_rub=99,
-            original_amount_rub=99,
+            amount_rub=70,
+            original_amount_rub=70,
         )
         assert await db.settle_sbp_payment("src-paid")
 
@@ -420,9 +420,9 @@ def test_paid_promo_is_revalidated_atomically_at_settlement(tmp_path):
                 telegram_id=user_id,
                 target_telegram_id=user_id,
                 plan_code="30",
-                amount_rub=50,
-                original_amount_rub=99,
-                discount_amount_rub=49,
+                amount_rub=35,
+                original_amount_rub=70,
+                discount_amount_rub=35,
                 promo_id=int(promo["id"]),
                 promo_code="ONLYONE",
             )
@@ -458,11 +458,11 @@ def test_paid_promo_rejects_expiry_or_disable_after_invoice(tmp_path, change):
             buyer_id=110,
             target_id=110,
             product_code="30",
-            original_amount_rub=99,
-            discount_amount_rub=19,
-            final_amount_rub=80,
+            original_amount_rub=70,
+            discount_amount_rub=14,
+            final_amount_rub=56,
             currency="XTR",
-            currency_amount=50,
+            currency_amount=35,
             promo_id=int(promo["id"]),
             promo_code="LATE",
         )
@@ -480,7 +480,7 @@ def test_paid_promo_rejects_expiry_or_disable_after_invoice(tmp_path, change):
             await connection.commit()
         with pytest.raises(ValueError):
             await db.settle_star_payment(
-                "charge-late", 110, 110, "30", 50, intent_id="intent-late"
+                "charge-late", 110, 110, "30", 35, intent_id="intent-late"
             )
         assert (await db.get_payment_intent("intent-late"))["status"] == "created"
 
@@ -497,25 +497,25 @@ def test_stars_intent_expires_and_replay_is_idempotent(tmp_path):
             buyer_id=120,
             target_id=120,
             product_code="30",
-            original_amount_rub=99,
+            original_amount_rub=70,
             discount_amount_rub=0,
-            final_amount_rub=99,
+            final_amount_rub=70,
             currency="XTR",
-            currency_amount=62,
+            currency_amount=44,
         )
-        assert await db.settle_star_payment("charge-fresh", 120, 120, "30", 62, intent_id="fresh")
-        assert not await db.settle_star_payment("charge-fresh", 120, 120, "30", 62, intent_id="fresh")
+        assert await db.settle_star_payment("charge-fresh", 120, 120, "30", 44, intent_id="fresh")
+        assert not await db.settle_star_payment("charge-fresh", 120, 120, "30", 44, intent_id="fresh")
 
         await db.create_payment_intent(
             intent_id="expired",
             buyer_id=120,
             target_id=120,
             product_code="30",
-            original_amount_rub=99,
+            original_amount_rub=70,
             discount_amount_rub=0,
-            final_amount_rub=99,
+            final_amount_rub=70,
             currency="XTR",
-            currency_amount=62,
+            currency_amount=44,
         )
         async with aiosqlite.connect(db.path) as connection:
             await connection.execute(
@@ -524,7 +524,7 @@ def test_stars_intent_expires_and_replay_is_idempotent(tmp_path):
             )
             await connection.commit()
         with pytest.raises(ValueError, match="expired"):
-            await db.settle_star_payment("charge-expired", 120, 120, "30", 62, intent_id="expired")
+            await db.settle_star_payment("charge-expired", 120, 120, "30", 44, intent_id="expired")
 
     run(scenario())
 
@@ -818,11 +818,11 @@ def test_giveaway_participants_page_marks_current_winner(tmp_path):
 
 
 def test_subscription_device_pricing_is_50_rub_per_extra_device():
-    assert plan_total_price_rub(None, "30", 1) == 99
-    assert plan_total_price_rub(None, "30", 2) == 149
-    assert plan_total_price_rub(None, "30", 3) == 199
-    assert plan_total_price_rub(None, "30", 4) == 249
-    assert plan_total_price_rub(None, "30", 5) == 299
+    assert plan_total_price_rub(None, "30", 2) == 70
+    assert plan_total_price_rub(None, "30", 3) == 120
+    assert plan_total_price_rub(None, "30", 4) == 170
+    assert plan_total_price_rub(None, "30", 5) == 220
+    assert plan_total_price_rub(None, "90", 2) == 170
 
 
 def test_subscription_purchase_sets_selected_device_count(tmp_path):
@@ -837,15 +837,15 @@ def test_subscription_purchase_sets_selected_device_count(tmp_path):
             telegram_id=901,
             target_telegram_id=901,
             plan_code="30",
-            amount_rub=199,
-            original_amount_rub=199,
+            amount_rub=120,
+            original_amount_rub=120,
             device_count=3,
-            previous_device_count=1,
+            previous_device_count=2,
         )
         assert await db.settle_sbp_payment("buy-3")
         user = await db.get_user(901)
         assert user["max_devices"] == 3
-        assert user["bonus_devices"] == 2
+        assert user["bonus_devices"] == 1
 
         before = from_iso(user["subscription_until"])
         await db.create_sbp_payment(
@@ -854,15 +854,15 @@ def test_subscription_purchase_sets_selected_device_count(tmp_path):
             telegram_id=901,
             target_telegram_id=901,
             plan_code="30",
-            amount_rub=149,
-            original_amount_rub=149,
+            amount_rub=70,
+            original_amount_rub=70,
             device_count=2,
             previous_device_count=3,
         )
         assert await db.settle_sbp_payment("renew-2")
         reduced = await db.get_user(901)
         assert reduced["max_devices"] == 2
-        assert reduced["bonus_devices"] == 1
+        assert reduced["bonus_devices"] == 0
         assert from_iso(reduced["subscription_until"]) >= before + timedelta(days=30)
 
         await db.create_sbp_payment(
@@ -871,15 +871,15 @@ def test_subscription_purchase_sets_selected_device_count(tmp_path):
             telegram_id=901,
             target_telegram_id=901,
             plan_code="30",
-            amount_rub=249,
-            original_amount_rub=249,
+            amount_rub=170,
+            original_amount_rub=170,
             device_count=4,
             previous_device_count=2,
         )
         assert await db.settle_sbp_payment("renew-4")
         expanded = await db.get_user(901)
         assert expanded["max_devices"] == 4
-        assert expanded["bonus_devices"] == 3
+        assert expanded["bonus_devices"] == 2
 
     run(scenario())
 
@@ -899,8 +899,8 @@ def test_subscription_refund_restores_previous_device_count(tmp_path):
             telegram_id=902,
             target_telegram_id=902,
             plan_code="30",
-            amount_rub=299,
-            original_amount_rub=299,
+            amount_rub=220,
+            original_amount_rub=220,
             device_count=5,
             previous_device_count=3,
         )
@@ -911,7 +911,7 @@ def test_subscription_refund_restores_previous_device_count(tmp_path):
         assert reversed_access and reversed_access["changed"] is True
         restored = await db.get_user(902)
         assert restored["max_devices"] == 3
-        assert restored["bonus_devices"] == 2
+        assert restored["bonus_devices"] == 1
 
     run(scenario())
 
@@ -973,7 +973,7 @@ def test_device_model_hint_does_not_change_h1_slot_limit(tmp_path):
             })
             await db.record_subscription_device(601, hint)
         refreshed = await db.get_user(601)
-        assert int(refreshed["max_devices"]) == before == 1
+        assert int(refreshed["max_devices"]) == before == 2
         assert await db.enrich_panel_devices(601, []) == []
 
     run(scenario())
@@ -1021,5 +1021,117 @@ def test_subscription_detected_device_without_os_is_persisted(tmp_path):
         assert saved[0]["name"] == "Устройство Happ"
         assert saved[0]["platform"] == ""
         assert "persistent-happ-0000001" not in str(saved)
+
+    run(scenario())
+
+
+def test_existing_device_slots_migrate_once_to_two_base_devices(tmp_path):
+    async def scenario():
+        database = Database(str(tmp_path / "migrate-slots.sqlite3"))
+        await database.init()
+        for user_id in (10101, 10102, 10103):
+            await database.ensure_user(user_id, None, "Legacy")
+        async with aiosqlite.connect(database.path) as db:
+            await db.execute(
+                "DELETE FROM service_migrations WHERE name='base_two_devices_v1'"
+            )
+            for uid, old_total, paid_extra in (
+                (10101, 1, 0), (10102, 2, 1), (10103, 5, 4),
+            ):
+                await db.execute(
+                    "UPDATE users SET max_devices=?, bonus_devices=? WHERE telegram_id=?",
+                    (old_total, paid_extra, uid),
+                )
+            await db.commit()
+
+        await database.init()
+        first = [await database.get_user(uid) for uid in (10101, 10102, 10103)]
+        assert [user["max_devices"] for user in first] == [2, 3, 5]
+        assert [user["bonus_devices"] for user in first] == [0, 1, 3]
+        await database.init()
+        second = [await database.get_user(uid) for uid in (10101, 10102, 10103)]
+        assert [user["max_devices"] for user in second] == [2, 3, 5]
+        assert await database.grant_extra_device(10101) is not None
+        assert (await database.get_user(10101))["max_devices"] == 3
+        assert await database.revoke_extra_device(10101) is not None
+        assert (await database.get_user(10101))["max_devices"] == 2
+        assert await database.revoke_extra_device(10101) is None
+
+    run(scenario())
+
+
+def test_new_subscribers_start_with_two_device_slots(tmp_path):
+    async def scenario():
+        database = Database(str(tmp_path / "new-slots.sqlite3"))
+        await database.init()
+        user = await database.ensure_user(10111, None, "New")
+        assert user["max_devices"] == 2
+        assert user["bonus_devices"] == 0
+        with pytest.raises(ValueError, match="2..5"):
+            await database.set_device_limit(10111, 1)
+
+    run(scenario())
+
+
+def test_pre_migration_sbp_quote_is_honored_but_new_legacy_price_is_rejected(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "old-quotes.db"))
+        await db.init()
+        await db.ensure_user(10201, None, "Legacy Buyer")
+
+        # This unpaid order existed before the pricing switch.
+        await db.create_sbp_payment(
+            payment_id="old-paid", order_id="old-order", telegram_id=10201,
+            target_telegram_id=10201, plan_code="30",
+            amount_rub=149, original_amount_rub=149,
+            device_count=2, previous_device_count=1,
+        )
+        async with aiosqlite.connect(db.path) as connection:
+            await connection.execute(
+                "UPDATE sbp_payments SET created_at=? WHERE payment_id=?",
+                (to_iso(utcnow() - timedelta(days=1)), "old-paid"),
+            )
+            await connection.commit()
+        assert await db.settle_sbp_payment("old-paid")
+        old = await db.get_user(10201)
+        assert old["max_devices"] == 3  # old paid second slot + new free base
+
+        # A freshly created invoice cannot charge an outdated price.
+        await db.create_sbp_payment(
+            payment_id="invalid-old", order_id="invalid-order", telegram_id=10201,
+            target_telegram_id=10201, plan_code="30",
+            amount_rub=99, original_amount_rub=99,
+        )
+        with pytest.raises(ValueError, match="outdated"):
+            await db.settle_sbp_payment("invalid-old")
+
+    run(scenario())
+
+
+def test_pre_migration_stars_intent_is_settled_at_locked_amount(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "old-stars.db"))
+        await db.init()
+        await db.ensure_user(10202, None, "Legacy Stars")
+        await db.create_payment_intent(
+            intent_id="old-stars-intent", buyer_id=10202, target_id=10202,
+            product_code="30", original_amount_rub=99,
+            discount_amount_rub=0, final_amount_rub=99,
+            currency="XTR", currency_amount=rub_to_stars(99),
+            device_count=1,
+        )
+        async with aiosqlite.connect(db.path) as connection:
+            await connection.execute(
+                "UPDATE payment_intents SET created_at=?, device_count=1 WHERE intent_id=?",
+                (to_iso(utcnow() - timedelta(days=1)), "old-stars-intent"),
+            )
+            await connection.commit()
+        # Existing intent expiry is still enforced, but its historical quote
+        # can settle during the remaining validity window.
+        assert await db.settle_star_payment(
+            "charge-old-stars", 10202, 10202, "30",
+            rub_to_stars(99), intent_id="old-stars-intent",
+        )
+        assert (await db.get_user(10202))["max_devices"] == 2
 
     run(scenario())

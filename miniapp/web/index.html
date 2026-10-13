@@ -268,7 +268,7 @@
           <div class="admin-actions">
             <button type="button" data-admin-action="add_days"><i data-lucide="calendar-plus"></i><span><b>Добавить дни</b><small>Продлить подписку</small></span></button>
             <button type="button" data-admin-action="remove_days"><i data-lucide="calendar-minus"></i><span><b>Убрать дни</b><small>Сократить срок</small></span></button>
-            <button type="button" data-admin-action="set_devices"><i data-lucide="monitor-smartphone"></i><span><b>Лимит устройств</b><small>От 1 до 5</small></span></button>
+            <button type="button" data-admin-action="set_devices"><i data-lucide="monitor-smartphone"></i><span><b>Лимит устройств</b><small>От 2 до 5</small></span></button>
             <button type="button" data-admin-action="reset_devices"><i data-lucide="unlink"></i><span><b>Сбросить устройства</b><small>Отключить запомненные</small></span></button>
             <button type="button" data-admin-action="regenerate_link"><i data-lucide="refresh-cw"></i><span><b>Пересоздать ссылку</b><small>Сменить URL и сбросить устройства</small></span></button>
             <button type="button" class="danger" id="adminBlockUser" data-admin-action="block"><i data-lucide="ban"></i><span><b>Заблокировать</b><small>Остановить доступ в H1Cloud</small></span></button>
@@ -379,15 +379,15 @@
         <div class="device-picker-head">
           <div>
             <small id="paymentDeviceLabel">КОЛИЧЕСТВО УСТРОЙСТВ</small>
-            <b><span id="paymentDeviceCount">1</span> <span id="paymentDeviceWord">устройство</span></b>
+            <b><span id="paymentDeviceCount">2</span> <span id="paymentDeviceWord">устройства</span></b>
           </div>
-          <span class="device-current" id="paymentDeviceCurrent">Сейчас 1</span>
+          <span class="device-current" id="paymentDeviceCurrent">Сейчас 2</span>
         </div>
-        <p class="device-picker-hint" id="paymentDeviceHint">1 устройство включено в тариф.</p>
+        <p class="device-picker-hint" id="paymentDeviceHint">2 устройства включены в тариф.</p>
         <div class="device-range-wrap">
-          <input id="paymentDeviceRange" class="device-range" type="range" min="1" max="5" step="1" value="1" aria-label="Количество устройств от 1 до 5">
+          <input id="paymentDeviceRange" class="device-range" type="range" min="2" max="5" step="1" value="2" aria-label="Количество устройств от 2 до 5">
           <div class="device-range-dots" aria-hidden="true">
-            <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span>
+            <span>2</span><span>3</span><span>4</span><span>5</span>
           </div>
         </div>
       </section>
@@ -432,6 +432,6 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="loader" id="loader"><img src="/static/assets/mgn-vpn-logo.webp?v=8" alt="MGN VPN"><span><i></i></span></div>
 
-  <script src="/static/app.js?v=29"></script>
+  <script src="/static/app.js?v=31"></script>
 </body>
 </html>

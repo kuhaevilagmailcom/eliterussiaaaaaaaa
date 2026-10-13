@@ -8,34 +8,34 @@ PLANS: dict[str, dict[str, Any]] = {
         "days": 30,
         "months": 1,
         "name": "1 месяц",
-        "devices": 1,
-        "price_rub": 99,
+        "devices": 2,
+        "price_rub": 70,
     },
     "90": {
         "days": 90,
         "months": 3,
         "name": "3 месяца",
-        "devices": 1,
-        "price_rub": 249,
+        "devices": 2,
+        "price_rub": 170,
         "popular": True,
     },
     "180": {
         "days": 180,
         "months": 6,
         "name": "6 месяцев",
-        "devices": 1,
-        "price_rub": 499,
+        "devices": 2,
+        "price_rub": 420,
     },
     "365": {
         "days": 365,
         "months": 12,
         "name": "1 год",
-        "devices": 1,
-        "price_rub": 999,
+        "devices": 2,
+        "price_rub": 920,
     },
 }
 
-BASE_DEVICES = 1
+BASE_DEVICES = 2
 MAX_DEVICES = 5
 DEVICE_PRODUCT_CODE = "device"
 EXTRA_DEVICE_PRICE_RUB = 50
@@ -55,12 +55,12 @@ def plan_price_stars(config, code: str) -> int:
     return rub_to_stars(plan_price_rub(config, code))
 
 
-def plan_total_price_rub(config, code: str, devices: int = 1) -> int:
+def plan_total_price_rub(config, code: str, devices: int = BASE_DEVICES) -> int:
     count = clamp_device_limit(devices)
     return plan_price_rub(config, code) + (count - BASE_DEVICES) * EXTRA_DEVICE_PRICE_RUB
 
 
-def plan_total_price_stars(config, code: str, devices: int = 1) -> int:
+def plan_total_price_stars(config, code: str, devices: int = BASE_DEVICES) -> int:
     return rub_to_stars(plan_total_price_rub(config, code, devices))
 
 

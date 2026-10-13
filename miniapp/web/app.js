@@ -17,7 +17,7 @@
     page:'home',
     previousRoot:'home',
     selectedPlan:null,
-    selectedDevices:1,
+    selectedDevices:2,
     promoCode:'',
     promoPercent:0,
     sbpPayment:null,
@@ -140,13 +140,13 @@
     return n===1?'устройство':(n>=2&&n<=4?'устройства':'устройств');
   }
   function clampDevices(value){
-    return Math.max(1,Math.min(5,Math.round(Number(value)||1)));
+    return Math.max(2,Math.min(5,Math.round(Number(value)||2)));
   }
   function selectedPlanTotalRub(){
     const plan=state.selectedPlan;
     if(!plan)return 0;
     const extra=Number(state.data?.shop?.extra_device_price_rub||50);
-    return Math.max(0,Number(plan.rub||0)+(clampDevices(state.selectedDevices)-1)*extra);
+    return Math.max(0,Number(plan.rub||0)+(clampDevices(state.selectedDevices)-2)*extra);
   }
   function rubToStars(amount){
     const rub=Math.max(0,Math.round(Number(amount)||0));
@@ -163,11 +163,11 @@
     const d=state.data;
     const selected=clampDevices(state.selectedDevices);
     const active=!!d?.subscription?.active;
-    const current=clampDevices(d?.subscription?.max_devices||1);
+    const current=clampDevices(d?.subscription?.max_devices||2);
     const extra=Number(d?.shop?.extra_device_price_rub||50);
     if(!active){
-      if(selected===1)return '1 устройство включено в тариф.';
-      return 'Доплата за устройства: +'+((selected-1)*extra).toLocaleString('ru-RU')+' ₽.';
+      if(selected===2)return '2 устройства включены в тариф.';
+      return 'Доплата за устройства: +'+((selected-2)*extra).toLocaleString('ru-RU')+' ₽.';
     }
     const delta=selected-current;
     if(delta===0)return 'Лимит устройств останется без изменений.';
@@ -181,13 +181,13 @@
     const range=$('#paymentDeviceRange');
     if(range){
       range.value=String(selected);
-      range.style.setProperty('--range-progress',((selected-1)/4*100)+'%');
+      range.style.setProperty('--range-progress',((selected-2)/3*100)+'%');
     }
     $('#paymentDeviceCount').textContent=String(selected);
     $('#paymentDeviceWord').textContent=deviceWord(selected);
     const active=!!state.data?.subscription?.active;
-    const current=clampDevices(state.data?.subscription?.max_devices||1);
-    $('#paymentDeviceCurrent').textContent=active?('Сейчас '+current):'От 1 до 5';
+    const current=clampDevices(state.data?.subscription?.max_devices||2);
+    $('#paymentDeviceCurrent').textContent=active?('Сейчас '+current):'От 2 до 5';
     $('#paymentDeviceHint').textContent=paymentDeviceHint();
 
     const total=selectedPlanTotalRub();
@@ -204,7 +204,7 @@
     if(hapticTick){
       try{
         if(tg?.HapticFeedback?.selectionChanged)tg.HapticFeedback.selectionChanged();
-        else haptic(selected===1||selected===5?'medium':'light');
+        else haptic(selected===2||selected===5?'medium':'light');
       }catch(_){}
     }
   }
@@ -241,7 +241,7 @@
     const d=state.data;
     const active=!!d.subscription.active;
     const used=(d.vpn.device_profiles||[]).length;
-    const limit=Math.max(1,Number(d.subscription.max_devices||1));
+    const limit=Math.max(1,Number(d.subscription.max_devices||2));
     const pct=Math.min(100,Math.round((used/limit)*100));
 
     $('#headerName').textContent=d.user.first_name||'MGN VPN';
@@ -306,7 +306,7 @@
       const featured=Boolean(plan.popular);
       return '<article class="plan-card '+(featured?'featured':'')+'">'+
         (featured?'<span class="plan-label">ПОПУЛЯРНЫЙ</span>':'')+
-        '<div class="plan-info"><h3>'+esc(plan.name)+'</h3><p>1 устройство включено</p>'+
+        '<div class="plan-info"><h3>'+esc(plan.name)+'</h3><p>2 устройства включены</p>'+
         (Number(plan.savings||0)>0?'<em>Выгода '+Number(plan.savings)+' ₽</em>':'')+'</div>'+
         '<div class="plan-price"><b>'+Number(plan.rub||0).toLocaleString('ru-RU')+' ₽</b><small>'+Number(plan.stars||0).toLocaleString('ru-RU')+' Stars</small></div>'+
         '<button type="button" data-buy="'+esc(plan.code)+'">'+(active?'Продлить VPN':'Купить VPN')+'</button>'+
@@ -328,7 +328,7 @@
     const h1=Array.isArray(d.vpn.devices)?d.vpn.devices:[];
     const profiles=Array.isArray(d.vpn.device_profiles)?d.vpn.device_profiles:[];
     const probe=d.vpn.device_probe||{};
-    const limit=Math.max(1,Number(d.subscription.max_devices||1));
+    const limit=Math.max(1,Number(d.subscription.max_devices||2));
     const used=profiles.length;
     if($('#deviceCount'))$('#deviceCount').textContent=used;
     if($('#deviceLimit'))$('#deviceLimit').textContent=limit;
@@ -396,7 +396,7 @@
     $('#profileRewards').textContent='+'+Number(d.user.referral_rewards||0);
     $('#profileRefs').textContent=Number(d.user.referrals||0).toLocaleString('ru-RU');
     const used=(d.vpn.device_profiles||[]).length;
-    const limit=Math.max(1,Number(d.subscription.max_devices||1));
+    const limit=Math.max(1,Number(d.subscription.max_devices||2));
     $('#profileDevices').textContent=used+' / '+limit;
     $('#profileTraffic').textContent=d.subscription.active
       ? fmtTraffic(d.vpn.traffic_used_gb,d.vpn.traffic_limit_gb)
@@ -586,7 +586,7 @@
     $('#adminUserStatus').classList.toggle('danger',!!user.is_blocked);
     $('#adminUserPlan').textContent=user.plan_name||'Нет подписки';
     $('#adminUserUntil').textContent=user.subscription_until?'до '+fmtDate(user.subscription_until):'не активна';
-    $('#adminUserDevices').textContent=devices.filter(item=>item.active).length+' / '+Number(user.max_devices||1);
+    $('#adminUserDevices').textContent=devices.filter(item=>item.active).length+' / '+Number(user.max_devices||2);
     $('#adminUserLastSeen').textContent='активность '+fmtDate(user.last_activity_at);
     const block=$('#adminBlockUser');block.dataset.adminAction=user.is_blocked?'unblock':'block';block.classList.toggle('danger',!user.is_blocked);block.querySelector('b').textContent=user.is_blocked?'Разблокировать':'Заблокировать';block.querySelector('small').textContent=user.is_blocked?'Вернуть доступ в H1Cloud':'Остановить доступ в H1Cloud';
     $('#adminUserDeviceHistory').innerHTML=devices.length?devices.map(item=>'<div class="admin-row"><div class="admin-row-main"><b>'+esc(item.name||'Устройство')+'</b><small>'+esc(item.platform||'MGN VPN')+(item.ip_address?' · '+esc(item.ip_address):'')+(item.country?' · '+esc(item.country):'')+'</small><div class="admin-tags">'+(item.active?'<span class="admin-tag online">ОНЛАЙН</span>':'<span class="admin-tag offline">ИСТОРИЯ</span>')+(item.suspicious?'<span class="admin-tag granted">ПОДОЗРИТЕЛЬНО</span>':'')+'</div></div><div class="admin-row-side"><small>'+fmtDate(item.last_seen_at)+'</small></div></div>').join(''):'<p class="admin-empty">История устройств пуста</p>';
@@ -610,7 +610,7 @@
       if(value===null)return;payload.days=Number(value);
     }
     if(action==='set_devices'){
-      const value=window.prompt('Новый лимит устройств: от 1 до 5','1');
+      const value=window.prompt('Новый лимит устройств: от 2 до 5','2');
       if(value===null)return;payload.limit=Number(value);
     }
     if(['block','reset_devices','regenerate_link'].includes(action)){
@@ -716,8 +716,8 @@
     state.promoPercent=0;
     const active=!!state.data?.subscription?.active;
     state.selectedDevices=active
-      ? clampDevices(state.data?.subscription?.max_devices||1)
-      : 1;
+      ? clampDevices(state.data?.subscription?.max_devices||2)
+      : 2;
 
     $('#sheetTitle').textContent=(active?'Продление · ':'')+plan.name;
     const savings=Number(plan.savings||0);
@@ -746,7 +746,7 @@
     const d=state.data;
     if(!d)return;
     closeSheets();
-    const limit=Number(d.subscription.max_devices||1);
+    const limit=Number(d.subscription.max_devices||2);
     const max=Number(d.shop.max_devices||5);
     $('#deviceSheetPrice').textContent=Number(d.shop.extra_device_price_rub||50)+' ₽';
     $('#deviceSheetBalance').textContent='Оплата через СБП';

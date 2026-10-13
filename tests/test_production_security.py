@@ -200,7 +200,7 @@ def test_atomic_payments_and_concurrency(tmp_path):
         db = Database(str(tmp_path/'test.db'))
         await db.init()
         await db.ensure_user(42, None, 'Test')
-        await db.create_sbp_payment('p', 'o', 42, '30', 99)
+        await db.create_sbp_payment('p', 'o', 42, '30', 70)
         results = await asyncio.gather(*(db.settle_sbp_payment('p') for _ in range(8)))
         assert results.count(True) == 1
         until = (await db.get_user(42))['subscription_until']
@@ -210,15 +210,15 @@ def test_atomic_payments_and_concurrency(tmp_path):
         assert not await Database(db.path).settle_sbp_payment('p')
         assert (await db.get_user(42))['subscription_until'] == until
         with pytest.raises(aiosqlite.IntegrityError):
-            await db.create_sbp_payment('p', 'o', 42, '30', 99)
+            await db.create_sbp_payment('p', 'o', 42, '30', 70)
         await db.create_sbp_payment('invalid', 'invalid', 42, 'missing-plan', 1)
         with pytest.raises(ValueError):
             await db.settle_sbp_payment('invalid')
         assert (await db.get_sbp_payment('invalid'))['status'] == 'created'
-        await db.create_payment_intent(intent_id='intent', buyer_id=42, target_id=42, product_code='30', original_amount_rub=99, discount_amount_rub=0, final_amount_rub=99, currency='XTR', currency_amount=62)
-        assert await db.settle_star_payment('charge', 42, 42, '30', 62, 'intent')
-        assert not await db.settle_star_payment('charge', 42, 42, '30', 62, 'intent')
-        assert not await db.settle_star_payment('another-charge', 42, 42, '30', 62, 'intent')
+        await db.create_payment_intent(intent_id='intent', buyer_id=42, target_id=42, product_code='30', original_amount_rub=70, discount_amount_rub=0, final_amount_rub=70, currency='XTR', currency_amount=44)
+        assert await db.settle_star_payment('charge', 42, 42, '30', 44, 'intent')
+        assert not await db.settle_star_payment('charge', 42, 42, '30', 44, 'intent')
+        assert not await db.settle_star_payment('another-charge', 42, 42, '30', 44, 'intent')
         assert (await db.get_payment_intent('intent'))['status'] == 'paid'
         await asyncio.gather(*(db.extend_subscription(42, 1, 'Test', 1) for _ in range(5)))
         assert from_iso((await db.get_user(42))['subscription_until']) >= from_iso(until)+timedelta(days=12)
@@ -249,7 +249,7 @@ def test_http_security_routes_and_subscription(tmp_path, monkeypatch):
             assert agreement.status == privacy.status == 200
             assert 'Пользовательское соглашение' in await agreement.text()
             assert 'Политика конфиденциальности' in await privacy.text()
-            assert all(f'{price} ₽' in root_html for price in (99,249,499,999))
+            assert all(f'{price} ₽' in root_html for price in (70,170,420,920))
             assert 'bottomNav' in await app.text()
             health_response = await client.get('/api/miniapp/health')
             assert health_response.status == 200
@@ -263,11 +263,11 @@ def test_http_security_routes_and_subscription(tmp_path, monkeypatch):
             assert catalog_response.status == 200
             catalog = await catalog_response.json()
             prices = {item['code']: item['price_rub'] for item in catalog['plans']}
-            assert prices == {'30': 99, '90': 249, '180': 499, '365': 999}
+            assert prices == {'30': 70, '90': 170, '180': 420, '365': 920}
             popular = [item['code'] for item in catalog['plans'] if item.get('popular')]
             assert popular == ['90']
             savings = {item['code']: item['savings_rub'] for item in catalog['plans']}
-            assert savings['90'] == 48 and savings['180'] == 95 and savings['365'] == 189
+            assert savings['90'] == 40 and savings['180'] == 0 and savings['365'] == 0
             assert catalog['max_devices'] == 5
             assert (await client.get('/api/miniapp/me')).status == 401
             await db.create_service_promo(
@@ -502,7 +502,7 @@ def test_admin_grant_notifies_recipient_with_devices_and_connect_button(tmp_path
         notice = bot.send_message.await_args.kwargs
         assert notice['chat_id'] == 42
         assert 'на 30 дней' in notice['text']
-        assert 'до 1' in notice['text']
+        assert 'до 2' in notice['text']
         assert notice['reply_markup'].inline_keyboard[0][0].callback_data == 'menu:connect'
 
     asyncio.run(run())
@@ -834,10 +834,10 @@ def test_sbp_rejects_provider_mismatch(tmp_path, monkeypatch, override):
     async def run():
         db = Database(str(tmp_path/'payment.db')); await db.init()
         await db.ensure_user(42,None,'Test')
-        await db.create_sbp_payment('p','o',42,'30',99)
+        await db.create_sbp_payment('p','o',42,'30',70)
         server = MiniAppServer(None, replace(Config.from_env(),db_path=db.path),db,SimpleNamespace(service_ready=False))
         server._auth=AsyncMock(return_value=(42,{},{}))
-        remote={'payment_id':'p','order_id':'o','currency':'RUB','amount':'99','status':'paid',**override}
+        remote={'payment_id':'p','order_id':'o','currency':'RUB','amount':'70','status':'paid',**override}
         monkeypatch.setattr(miniapp,'get_payment',AsyncMock(return_value=remote))
         with pytest.raises(web.HTTPConflict):
             await server.sbp_check(make_mocked_request('GET','/',match_info={'payment_id':'p'}))
@@ -855,7 +855,7 @@ def test_support_validation_and_device_payment_limits(tmp_path):
                 await db.create_support_ticket(telegram_id=42,username=None,first_name='Test',message=message)
         ticket=await db.create_support_ticket(telegram_id=42,username=None,first_name='Test',message='x'*3000)
         assert len(ticket['message'])==3000
-        for i in range(4):
+        for i in range(3):
             assert await db.settle_star_payment('device-'+str(i),42,42,'device',32)
         assert (await db.get_user(42))['max_devices']==5
         with pytest.raises(ValueError):
@@ -1007,11 +1007,11 @@ def test_smart_notifications_use_safe_keys_and_cover_abandoned_stars(tmp_path):
             buyer_id=7001,
             target_id=7001,
             product_code="30",
-            original_amount_rub=99,
+            original_amount_rub=70,
             discount_amount_rub=0,
-            final_amount_rub=99,
+            final_amount_rub=70,
             currency="XTR",
-            currency_amount=62,
+            currency_amount=44,
         )
         async with aiosqlite.connect(db.path, timeout=15.0) as conn:
             created = (now - timedelta(minutes=25)).isoformat()

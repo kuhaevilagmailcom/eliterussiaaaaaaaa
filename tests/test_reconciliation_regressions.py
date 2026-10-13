@@ -65,9 +65,9 @@ def test_refund_reverses_subscription_once(tmp_path):
         await db.init()
         await db.ensure_user(42, "buyer", "Buyer")
         await db.create_sbp_payment(
-            "payment-1", "order-1", 42, "30", 99,
+            "payment-1", "order-1", 42, "30", 70,
             target_telegram_id=42,
-            original_amount_rub=99,
+            original_amount_rub=70,
         )
         assert await db.settle_sbp_payment("payment-1")
         paid_until = from_iso((await db.get_user(42))["subscription_until"])

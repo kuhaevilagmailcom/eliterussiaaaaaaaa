@@ -22,6 +22,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPri
 
 from admin_notifications import notify_purchase_admins
 from catalog import (
+    BASE_DEVICES,
     EXTRA_DEVICE_PRICE_RUB,
     MAX_DEVICES,
     STAR_RATE_RUB,
@@ -323,7 +324,7 @@ class MiniAppServer:
             f"Статус: <b>{'Активна' if active else 'Не активна'}</b>\n"
             f"Тариф: <b>{user.get('plan_name') or '—'}</b>\n"
             f"До: <b>{until_text}</b>\n"
-            f"Устройства: <b>до {int(user.get('max_devices') or 1)}</b>"
+            f"Устройства: <b>до {int(user.get('max_devices') or BASE_DEVICES)}</b>"
         )
         try:
             await self.bot.edit_message_caption(
@@ -695,7 +696,7 @@ class MiniAppServer:
                     }
                     for code, plan in PLANS.items()
                 ],
-                "base_devices": 1,
+                "base_devices": BASE_DEVICES,
                 "max_devices": MAX_DEVICES,
                 "extra_device_price_rub": EXTRA_DEVICE_PRICE_RUB,
                 "extra_device_price_stars": rub_to_stars(EXTRA_DEVICE_PRICE_RUB),
@@ -1146,7 +1147,7 @@ class MiniAppServer:
                     "plan": row.get("plan_name") or "",
                     "until": until_text,
                     "remaining_seconds": _remaining_seconds(row),
-                    "max_devices": int(row.get("max_devices") or 1),
+                    "max_devices": int(row.get("max_devices") or BASE_DEVICES),
                     "trial_used": bool(row.get("trial_used")),
                 },
                 "vpn": {
@@ -1300,8 +1301,8 @@ class MiniAppServer:
                     await asyncio.wait_for(self.provider.provision(updated), timeout=30.0)
             elif action == "set_devices":
                 limit = int(data.get("limit") or 0)
-                if not 1 <= limit <= MAX_DEVICES:
-                    raise _json_error(400, "Лимит устройств должен быть от 1 до 5")
+                if not BASE_DEVICES <= limit <= MAX_DEVICES:
+                    raise _json_error(400, "Лимит устройств должен быть от 2 до 5")
                 updated = await self.db.set_device_limit(target_id, limit)
                 details = {"limit": limit}
                 if getattr(self.provider, "service_ready", True):
@@ -1436,12 +1437,12 @@ class MiniAppServer:
             raise _json_error(400, "Тариф не найден")
 
         try:
-            device_count = int(data.get("device_count") or (row.get("max_devices") if _active(row) else 1) or 1)
+            device_count = int(data.get("device_count") or (row.get("max_devices") if _active(row) else BASE_DEVICES) or BASE_DEVICES)
         except (TypeError, ValueError):
             raise _json_error(400, "Некорректное количество устройств")
-        if device_count < 1 or device_count > MAX_DEVICES:
-            raise _json_error(400, "Можно выбрать от 1 до 5 устройств")
-        previous_device_count = max(1, min(MAX_DEVICES, int(row.get("max_devices") or 1)))
+        if device_count < BASE_DEVICES or device_count > MAX_DEVICES:
+            raise _json_error(400, "Можно выбрать от 2 до 5 устройств")
+        previous_device_count = max(BASE_DEVICES, min(MAX_DEVICES, int(row.get("max_devices") or BASE_DEVICES)))
 
         original = plan_total_price_rub(self.config, code, device_count)
         promo_code = str(data.get("promo_code") or "").strip()
@@ -1520,12 +1521,12 @@ class MiniAppServer:
             raise _json_error(400, "Тариф не найден")
 
         try:
-            device_count = int(data.get("device_count") or (row.get("max_devices") if _active(row) else 1) or 1)
+            device_count = int(data.get("device_count") or (row.get("max_devices") if _active(row) else BASE_DEVICES) or BASE_DEVICES)
         except (TypeError, ValueError):
             raise _json_error(400, "Некорректное количество устройств")
-        if device_count < 1 or device_count > MAX_DEVICES:
-            raise _json_error(400, "Можно выбрать от 1 до 5 устройств")
-        previous_device_count = max(1, min(MAX_DEVICES, int(row.get("max_devices") or 1)))
+        if device_count < BASE_DEVICES or device_count > MAX_DEVICES:
+            raise _json_error(400, "Можно выбрать от 2 до 5 устройств")
+        previous_device_count = max(BASE_DEVICES, min(MAX_DEVICES, int(row.get("max_devices") or BASE_DEVICES)))
 
         original = plan_total_price_rub(self.config, code, device_count)
         promo_code = str(data.get("promo_code") or "").strip()
@@ -1706,11 +1707,11 @@ class MiniAppServer:
         plan_code = str(data.get("plan_code") or "")
         plan = PLANS.get(plan_code)
         try:
-            device_count = int(data.get("device_count") or (row.get("max_devices") if _active(row) else 1) or 1)
+            device_count = int(data.get("device_count") or (row.get("max_devices") if _active(row) else BASE_DEVICES) or BASE_DEVICES)
         except (TypeError, ValueError):
             raise _json_error(400, "Некорректное количество устройств")
-        if device_count < 1 or device_count > MAX_DEVICES:
-            raise _json_error(400, "Можно выбрать от 1 до 5 устройств")
+        if device_count < BASE_DEVICES or device_count > MAX_DEVICES:
+            raise _json_error(400, "Можно выбрать от 2 до 5 устройств")
         original = plan_total_price_rub(self.config, plan_code, device_count) if plan else 0
         quote = await self.db.promo_quote(
             code=code,
