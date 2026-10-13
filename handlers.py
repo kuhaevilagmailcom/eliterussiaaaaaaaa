@@ -2324,6 +2324,30 @@ def build_router(
                 suffix = f" · {platform}" if platform else ""
                 lines.append(f"{index}. <b>{name}</b>{suffix}")
 
+        # H1 may retain only a hashed device or even a server-side
+        # fallback identity. Don't pretend an app updating its subscription
+        # is necessarily the device currently connected to the VPN.
+        try:
+            app_profiles = await db.list_subscription_device_hints(int(user["telegram_id"]))
+        except Exception:
+            app_profiles = []
+        matched_models = {
+            (str(item.get("name") or ""), str(item.get("platform") or ""))
+            for item in state.devices
+            if item.get("identity_source") == "client-reported"
+        }
+        app_profiles = [
+            item for item in app_profiles
+            if (str(item.get("name") or ""), str(item.get("platform") or "")) not in matched_models
+        ]
+        if app_profiles:
+            lines.extend(["", "<b>Обновляли подписку:</b>"])
+            for item in app_profiles[:5]:
+                name = html.escape(str(item.get("name") or "Устройство"))
+                os_label = html.escape(str(item.get("platform") or ""))
+                lines.append(f"• {name}" + (f" · {os_label}" if os_label else ""))
+            lines.append("<i>Данные приложения, не подтверждение подключения.</i>")
+
         lines += [
             "",
             f"+1 устройство — <b>{EXTRA_DEVICE_PRICE_RUB} ₽</b>.",
