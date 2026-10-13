@@ -34,6 +34,7 @@ from catalog import (
     rub_to_stars,
 )
 from db import Database, from_iso, utcnow
+from device_identity import subscription_device_hint
 from payments import RollyPayError, create_payment, get_payment
 from legal import (
     AGREEMENT_SECTIONS,
@@ -430,6 +431,11 @@ class MiniAppServer:
                 self.provider.get_state(user),
                 2.5,
             )
+            if is_h1 and state.devices:
+                try:
+                    state.devices = await self.db.enrich_panel_devices(user_id, state.devices)
+                except Exception:
+                    logger.warning("Device model hints unavailable for %s", user_id)
             if (
                 is_h1
                 and time.monotonic() - self._last_reconcile.get(user_id, 0.0)
@@ -860,6 +866,18 @@ class MiniAppServer:
             raise web.HTTPForbidden(text="Subscription blocked")
         if not _active(user):
             raise web.HTTPForbidden(text="Subscription expired")
+
+        # Happ and other compatible clients may send model/OS information.
+        # A subscription refresh is NOT proof of an active VPN connection;
+        # the hint only decorates panel-confirmed devices.
+        if getattr(self.provider, "mode_name", "") == "h1cloud":
+            hint = subscription_device_hint(request.headers)
+            if hint:
+                try:
+                    await self.db.record_subscription_device(int(user["telegram_id"]), hint)
+                except Exception:
+                    # Metadata must never block a working VPN subscription.
+                    logger.warning("Subscription device hint storage unavailable")
 
         cached = self._subscription_cache.get(token)
         now = time.monotonic()
@@ -1958,6 +1976,7 @@ class MiniAppServer:
             state = await asyncio.wait_for(self.provider.reset_devices(row), 30.0)
             token = str(row["sub_token"])
             await self.invalidate_subscription_cache(token)
+            await self.db.clear_subscription_device_hints(uid)
         except Exception as exc:
             logger.warning("Mini App device reset failed for %s: %s", uid, exc)
             raise _json_error(503, "Не удалось сбросить устройства")
