@@ -1,5 +1,6 @@
 from device_identity import (
     device_fingerprint_key,
+    h1_panel_device_id,
     enrich_h1_devices,
     subscription_device_hint,
 )
@@ -57,3 +58,30 @@ def test_happ_base64_like_hwid_is_supported():
     })
     assert parsed is not None
     assert parsed["name"] == "iPhone 13 Pro"
+
+
+def test_native_h1_sha256_identifier_matches_its_metadata():
+    hwid = "Happ-Device-2026"
+    hint = {
+        "fingerprint_key": device_fingerprint_key(100, hwid),
+        "panel_id": h1_panel_device_id(hwid),
+        "name": "Samsung Galaxy S25",
+        "platform": "Android 16",
+        "updated_at": "2026-10-14T00:00:00+00:00",
+    }
+    h1_row = {"id": h1_panel_device_id(hwid), "name": "Устройство", "fingerprint": ""}
+    named = enrich_h1_devices(100, [h1_row], [hint])
+    assert named[0]["name"] == "Samsung Galaxy S25"
+    assert named[0]["identity_source"] == "client-reported"
+
+
+def test_h1_unrelated_fallback_device_not_relabelled():
+    hint = {
+        "fingerprint_key": "somehashedkey",
+        "panel_id": h1_panel_device_id("Phone-Correct"),
+        "name": "iPhone 13 Pro",
+        "platform": "iOS",
+        "updated_at": "2026-10-14T00:00:00+00:00",
+    }
+    unrelated = [{"id": "fallback:123abc", "name": "Устройство", "fingerprint": ""}]
+    assert enrich_h1_devices(1, unrelated, [hint])[0]["name"] == "Устройство"
