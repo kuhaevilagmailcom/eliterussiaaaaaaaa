@@ -11,8 +11,8 @@ def test_prices_and_savings_are_centralized():
     assert {code: plan_price_rub(None, code) for code in PLANS} == {
         "30": 70,
         "90": 170,
-        "180": 420,
-        "365": 920,
+        "180": 370,
+        "365": 777,
     }
     assert {code: plan_savings_rub(code) for code in ("90", "180", "365")} == {
         "90": 40,
@@ -31,7 +31,7 @@ def test_base_plan_includes_two_devices_and_extra_slot_pricing():
     from catalog import BASE_DEVICES, MAX_DEVICES, plan_total_price_rub, plan_total_price_stars, rub_to_stars
     assert BASE_DEVICES == 2
     assert MAX_DEVICES == 5
-    for code, base in {"30": 70, "90": 170, "180": 420, "365": 920}.items():
+    for code, base in {"30": 70, "90": 170, "180": 370, "365": 777}.items():
         for selected in range(2, 6):
             expected = base + (selected - 2) * 50
             assert plan_total_price_rub(None, code, selected) == expected
