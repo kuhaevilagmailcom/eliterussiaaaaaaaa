@@ -531,6 +531,8 @@ class H1CloudVpnProvider(VpnProvider):
         # subscription. Only repeated fresh failures are eligible for removal.
         self._endpoint_health_cache: dict[tuple[str, int], tuple[float, float | None]] = {}
         self._endpoint_failure_streak: dict[tuple[str, int], int] = {}
+        self._federation_lock = asyncio.Lock()
+        self._federation_cache: tuple[float, list[dict[str, Any]]] | None = None
 
     @staticmethod
     def _name(user: dict[str, Any]) -> str:
@@ -794,7 +796,7 @@ class H1CloudVpnProvider(VpnProvider):
                     return list(nested)
         return []
 
-    async def _federated_nodes(self) -> list[dict[str, Any]]:
+    async def _discover_federated_nodes(self) -> list[dict[str, Any]]:
         """Merge every H1 federation store and tolerate response-shape changes."""
         nodes: list[dict[str, Any]] = []
         index_by_key: dict[tuple[str, str], int] = {}
@@ -901,6 +903,31 @@ class H1CloudVpnProvider(VpnProvider):
             ],
         )
         return nodes
+
+    async def _federated_nodes(self) -> list[dict[str, Any]]:
+        """Cache global H1 federation discovery across users for 30 seconds.
+
+        Every subscriber otherwise triggers three panel calls. The bounded
+        cache reduces contention without caching credentials or subscriptions.
+        """
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        cache = getattr(self, "_federation_cache", None)
+        if cache is not None and now - cache[0] < 30.0:
+            return [dict(node) for node in cache[1]]
+
+        lock = getattr(self, "_federation_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._federation_lock = lock
+        async with lock:
+            cache = getattr(self, "_federation_cache", None)
+            now = loop.time()
+            if cache is not None and now - cache[0] < 30.0:
+                return [dict(node) for node in cache[1]]
+            nodes = await self._discover_federated_nodes()
+            self._federation_cache = (loop.time(), [dict(node) for node in nodes])
+            return [dict(node) for node in nodes]
 
     @staticmethod
     def _node_prefix(node: dict[str, Any]) -> str:
