@@ -17,7 +17,7 @@
     page:'home',
     previousRoot:'home',
     selectedPlan:null,
-    selectedDevices:1,
+    selectedDevices:2,
     promoCode:'',
     promoPercent:0,
     sbpPayment:null,
@@ -140,13 +140,13 @@
     return n===1?'устройство':(n>=2&&n<=4?'устройства':'устройств');
   }
   function clampDevices(value){
-    return Math.max(1,Math.min(5,Math.round(Number(value)||1)));
+    return Math.max(2,Math.min(5,Math.round(Number(value)||2)));
   }
   function selectedPlanTotalRub(){
     const plan=state.selectedPlan;
     if(!plan)return 0;
     const extra=Number(state.data?.shop?.extra_device_price_rub||50);
-    return Math.max(0,Number(plan.rub||0)+(clampDevices(state.selectedDevices)-1)*extra);
+    return Math.max(0,Number(plan.rub||0)+(clampDevices(state.selectedDevices)-2)*extra);
   }
   function rubToStars(amount){
     const rub=Math.max(0,Math.round(Number(amount)||0));
@@ -166,8 +166,8 @@
     const current=clampDevices(d?.subscription?.max_devices||1);
     const extra=Number(d?.shop?.extra_device_price_rub||50);
     if(!active){
-      if(selected===1)return '1 устройство включено в тариф.';
-      return 'Доплата за устройства: +'+((selected-1)*extra).toLocaleString('ru-RU')+' ₽.';
+      if(selected===2)return '2 устройства включены в тариф.';
+      return 'Доплата за устройства: +'+((selected-2)*extra).toLocaleString('ru-RU')+' ₽.';
     }
     const delta=selected-current;
     if(delta===0)return 'Лимит устройств останется без изменений.';
@@ -181,13 +181,13 @@
     const range=$('#paymentDeviceRange');
     if(range){
       range.value=String(selected);
-      range.style.setProperty('--range-progress',((selected-1)/4*100)+'%');
+      range.style.setProperty('--range-progress',((selected-2)/3*100)+'%');
     }
     $('#paymentDeviceCount').textContent=String(selected);
     $('#paymentDeviceWord').textContent=deviceWord(selected);
     const active=!!state.data?.subscription?.active;
     const current=clampDevices(state.data?.subscription?.max_devices||1);
-    $('#paymentDeviceCurrent').textContent=active?('Сейчас '+current):'От 1 до 5';
+    $('#paymentDeviceCurrent').textContent=active?('Сейчас '+current):'От 2 до 5';
     $('#paymentDeviceHint').textContent=paymentDeviceHint();
 
     const total=selectedPlanTotalRub();
@@ -204,7 +204,7 @@
     if(hapticTick){
       try{
         if(tg?.HapticFeedback?.selectionChanged)tg.HapticFeedback.selectionChanged();
-        else haptic(selected===1||selected===5?'medium':'light');
+        else haptic(selected===2||selected===5?'medium':'light');
       }catch(_){}
     }
   }
@@ -306,7 +306,7 @@
       const featured=Boolean(plan.popular);
       return '<article class="plan-card '+(featured?'featured':'')+'">'+
         (featured?'<span class="plan-label">ПОПУЛЯРНЫЙ</span>':'')+
-        '<div class="plan-info"><h3>'+esc(plan.name)+'</h3><p>1 устройство включено</p>'+
+        '<div class="plan-info"><h3>'+esc(plan.name)+'</h3><p>2 устройства включены</p>'+
         (Number(plan.savings||0)>0?'<em>Выгода '+Number(plan.savings)+' ₽</em>':'')+'</div>'+
         '<div class="plan-price"><b>'+Number(plan.rub||0).toLocaleString('ru-RU')+' ₽</b><small>'+Number(plan.stars||0).toLocaleString('ru-RU')+' Stars</small></div>'+
         '<button type="button" data-buy="'+esc(plan.code)+'">'+(active?'Продлить VPN':'Купить VPN')+'</button>'+
@@ -717,7 +717,7 @@
     const active=!!state.data?.subscription?.active;
     state.selectedDevices=active
       ? clampDevices(state.data?.subscription?.max_devices||1)
-      : 1;
+      : 2;
 
     $('#sheetTitle').textContent=(active?'Продление · ':'')+plan.name;
     const savings=Number(plan.savings||0);
