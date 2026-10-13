@@ -439,14 +439,15 @@ def test_h1_server_diagnostics_reports_exact_mgn_fleet():
         servers = report["servers"]
         assert [item["name"] for item in servers] == [
             "🇳🇱 Нидерланды",
-            "🇫🇮 Финляндия",
-            "🇵🇱 Польша",
-            "🇵🇰 Пакистан",
             "🇺🇸 США 1",
-            "🇺🇸 США 2",
+            "🇫🇮 Финляндия",
         ]
-        assert len(servers) == 6
+        assert len(servers) == 3
         assert all(item["configured"] is True for item in servers)
+        assert not any(
+            "Польша" in item["name"] or "США 2" in item["name"]
+            for item in servers
+        )
 
         finland = next(item for item in servers if "Финляндия" in item["name"])
         assert finland["available"] is True
@@ -490,10 +491,10 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
             return_value=(
                 "vless://u@nl1.h1cloud.net:443#MGN-NL\n"
                 "vless://u@fi5.h1cloud.net:443#MGN-FI\n"
-                "vless://u@pl-d1.h1cloud.net:443#MGN-PL\n"
+                "vless://u@tr1.example.net:443#MGN-TR\n"
+                "vless://u@de1.example.net:443#MGN-DE\n"
                 "vless://u@pk1.h1cloud.net:443#MGN-PK\n"
                 "vless://u@us3.h1cloud.net:443#MGN-US\n"
-                "vless://u@us2.h1cloud.net:443#MGN-US2\n"
             ).encode()
         )
 
@@ -514,14 +515,14 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
         assert len(servers) == 6
         assert [item["name"] for item in servers] == [
             "🇳🇱 Нидерланды",
-            "🇫🇮 Финляндия",
-            "🇵🇱 Польша",
             "🇵🇰 Пакистан",
+            "🇹🇷 Турция",
+            "🇩🇪 Германия",
             "🇺🇸 США 1",
-            "🇺🇸 США 2",
+            "🇫🇮 Финляндия",
         ]
         assert all(item["configured"] for item in servers)
-        assert not any("Литва" in item["name"] or "Германия" in item["name"] for item in servers)
+        assert not any("Польша" in item["name"] or "США 2" in item["name"] for item in servers)
 
         finland = next(item for item in servers if "Финляндия" in item["name"])
         assert finland["available"] is True
@@ -529,9 +530,11 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
         assert finland["check"] == "subscription_present"
 
         usa1 = next(item for item in servers if item["name"] == "🇺🇸 США 1")
-        usa2 = next(item for item in servers if item["name"] == "🇺🇸 США 2")
+        turkey = next(item for item in servers if item["name"] == "🇹🇷 Турция")
+        germany = next(item for item in servers if item["name"] == "🇩🇪 Германия")
         assert usa1["host"] == "us3.h1cloud.net"
-        assert usa2["host"] == "us2.h1cloud.net"
+        assert turkey["host"] == "tr1.example.net"
+        assert germany["host"] == "de1.example.net"
         assert report["sources"]["subscription"]["count"] == 6
         assert next(item for item in servers if item["name"] == "🇳🇱 Нидерланды")["port"] == 443
 
@@ -560,14 +563,9 @@ def test_h1_server_diagnostics_distinguishes_empty_federation_from_main_config()
 
         report = await provider.server_diagnostics()
         assert report["discovery_ok"] is True
-        assert len(report["servers"]) == 6
+        assert len(report["servers"]) == 1
         assert [item["name"] for item in report["servers"]] == [
             "🇳🇱 Нидерланды",
-            "🇫🇮 Финляндия",
-            "🇵🇱 Польша",
-            "🇵🇰 Пакистан",
-            "🇺🇸 США 1",
-            "🇺🇸 США 2",
         ]
         assert report["servers"][0]["kind"] == "main"
         assert report["servers"][0]["available"] is True
