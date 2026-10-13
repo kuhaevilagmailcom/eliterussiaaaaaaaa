@@ -3663,9 +3663,7 @@ class Database:
                 """
                 UPDATE users
                 SET subscription_until=NULL,
-                    plan_name='',
-                    max_devices=2,
-                    bonus_devices=0
+                    plan_name=''
                 WHERE telegram_id=?
                 """,
                 (telegram_id,),
