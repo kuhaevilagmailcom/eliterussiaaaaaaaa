@@ -2620,7 +2620,7 @@ def build_router(
 
     async def notify_subscription_granted(bot, user: dict[str, Any], days: int) -> None:
         telegram_id = int(user["telegram_id"])
-        device_limit = max(1, min(MAX_DEVICES, int(user.get("max_devices") or BASE_DEVICES)))
+        device_limit = max(BASE_DEVICES, min(MAX_DEVICES, int(user.get("max_devices") or BASE_DEVICES)))
         kb = InlineKeyboardBuilder()
         kb.row(
             blue_inline_button(
@@ -5889,7 +5889,7 @@ def build_router(
             return
         uid = int(raw)
         kb = InlineKeyboardBuilder()
-        for limit in range(1, 6):
+        for limit in range(BASE_DEVICES, MAX_DEVICES + 1):
             kb.button(text=str(limit), callback_data=f"admin:setdevice:{uid}:{limit}")
         kb.adjust(3)
         kb.row(blue_inline_button("⬅️ Назад", callback_data=f"admin:user:{uid}", premium_icon=False))
@@ -5906,7 +5906,7 @@ def build_router(
             await safe_callback_answer(callback, "Некорректное значение", show_alert=True)
             return
         uid, limit = int(parts[2]), int(parts[3])
-        if not 1 <= limit <= 5:
+        if not BASE_DEVICES <= limit <= MAX_DEVICES:
             await safe_callback_answer(callback, "Допустимо от 2 до 5", show_alert=True)
             return
         await safe_callback_answer(callback, "Обновляю лимит…")
