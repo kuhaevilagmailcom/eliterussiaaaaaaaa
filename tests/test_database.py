@@ -1122,7 +1122,7 @@ def test_pre_migration_stars_intent_is_settled_at_locked_amount(tmp_path):
         )
         async with aiosqlite.connect(db.path) as connection:
             await connection.execute(
-                "UPDATE payment_intents SET created_at=? WHERE intent_id=?",
+                "UPDATE payment_intents SET created_at=?, device_count=1 WHERE intent_id=?",
                 (to_iso(utcnow() - timedelta(days=1)), "old-stars-intent"),
             )
             await connection.commit()
