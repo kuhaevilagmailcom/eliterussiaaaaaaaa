@@ -942,7 +942,7 @@
     resultElement.textContent='Проверяем подарок…';
     try{
       const result=await request('/api/miniapp/gifts/redeem',{
-        method:'POST',body:JSON.stringify({code:String(code).trim()})
+        method:'POST',body:JSON.stringify({gift_code:String(code).trim()})
       });
       resultElement.textContent='🎁 Вы получили подарок MGN VPN · '+result.label+'! Подписка начислена.';
       $('#giftCodePage').value='';
