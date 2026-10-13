@@ -34,6 +34,7 @@ from catalog import (
     rub_to_stars,
 )
 from db import Database, from_iso, utcnow
+from device_identity import subscription_device_hint
 from payments import RollyPayError, create_payment, get_payment
 from legal import (
     AGREEMENT_SECTIONS,
@@ -430,6 +431,11 @@ class MiniAppServer:
                 self.provider.get_state(user),
                 2.5,
             )
+            if is_h1 and state.devices:
+                try:
+                    state.devices = await self.db.enrich_panel_devices(user_id, state.devices)
+                except Exception:
+                    logger.warning("Device model hints unavailable for %s", user_id)
             if (
                 is_h1
                 and time.monotonic() - self._last_reconcile.get(user_id, 0.0)
@@ -861,6 +867,18 @@ class MiniAppServer:
         if not _active(user):
             raise web.HTTPForbidden(text="Subscription expired")
 
+        # Happ and other compatible clients may send model/OS information.
+        # A subscription refresh is NOT proof of an active VPN connection;
+        # the hint only decorates panel-confirmed devices.
+        if getattr(self.provider, "mode_name", "") == "h1cloud":
+            hint = subscription_device_hint(request.headers)
+            if hint:
+                try:
+                    await self.db.record_subscription_device(int(user["telegram_id"]), hint)
+                except Exception:
+                    # Metadata must never block a working VPN subscription.
+                    logger.warning("Subscription device hint storage unavailable")
+
         cached = self._subscription_cache.get(token)
         now = time.monotonic()
         if cached and now - float(cached["created"]) <= 30.0:
@@ -1131,6 +1149,10 @@ class MiniAppServer:
                     "traffic_history": traffic_history,
                     "devices": state.devices,
                     "device_history": await self.db.list_device_history(uid),
+                    "device_profiles": [
+                        {"name": hint["name"], "platform": hint["platform"], "updated_at": hint["updated_at"]}
+                        for hint in await self.db.list_subscription_device_hints(uid)
+                    ],
                 },
                 "plans": [
                     {
@@ -1282,6 +1304,10 @@ class MiniAppServer:
                 if not self.provider.capabilities.supports_device_reset:
                     raise _json_error(409, "Провайдер не поддерживает сброс устройств")
                 await asyncio.wait_for(self.provider.reset_devices(row), timeout=30.0)
+                try:
+                    await self.db.clear_subscription_device_hints(target_id)
+                except Exception:
+                    logger.warning("Admin device-reset metadata cleanup unavailable for %s", target_id)
                 updated = row
             elif action == "regenerate_link":
                 old_token = str(row.get("sub_token") or "")
@@ -1961,6 +1987,12 @@ class MiniAppServer:
         except Exception as exc:
             logger.warning("Mini App device reset failed for %s: %s", uid, exc)
             raise _json_error(503, "Не удалось сбросить устройства")
+
+        try:
+            await self.db.clear_subscription_device_hints(uid)
+        except Exception:
+            # H1 reset already succeeded; don't incorrectly report failure.
+            logger.warning("Device-reset metadata cleanup unavailable for %s", uid)
 
         return web.json_response({"ok": True, "devices": state.devices})
 

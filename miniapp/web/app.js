@@ -336,18 +336,20 @@
 
     const root=$('#deviceList');
     const history=Array.isArray(d.vpn.device_history)?d.vpn.device_history:[];
+    const profiles=Array.isArray(d.vpn.device_profiles)?d.vpn.device_profiles:[];
     const canRemove=Boolean(d.capabilities?.device_removal);
     const canReset=Boolean(d.capabilities?.device_reset);
     const resetButton=$('#resetDevicesPage');
     const activeHistory=history.filter(item=>Boolean(item.active));
     const historyOnly=history.filter(item=>!item.active);
-    const visible=history.length?activeHistory:list;
+    // H1's current device list takes priority over older database history.
+    const visible=list.length?list:activeHistory;
     if(resetButton)resetButton.hidden=!(d.subscription.active&&canReset&&(list.length||activeHistory.length));
     if(!d.subscription.active){
       root.innerHTML='<div class="empty">После активации подписки здесь появятся подключённые устройства.</div>';
     }else if(!d.vpn.ready){
       root.innerHTML='<div class="empty">VPN-сервер ещё не подключён. Лимит устройств уже сохранён.</div>';
-    }else if(!visible.length&&!historyOnly.length){
+    }else if(!visible.length&&!historyOnly.length&&!profiles.length){
       root.innerHTML='<div class="empty">Подключённых устройств пока нет. Они появятся после первого подключения к VPN.</div>';
     }else{
       const renderDevice=(item,index,isHistory)=>{
@@ -355,17 +357,24 @@
         const name=esc(item.name||item.device_name||('Устройство '+(index+1)));
         const platform=esc(item.platform||item.os||'MGN VPN');
         const lastSeen=item.last_seen_at||item.last_seen;
+        const profileUpdated=item.profile_updated_at;
         const meta=[item.ip_address||item.ip,item.country].filter(Boolean).map(esc).join(' · ');
+        const refreshNote=profileUpdated?'Профиль обновлён '+fmtDate(profileUpdated):'';
         return '<article class="device '+(isHistory?'history ':'')+(item.suspicious?'suspicious':'')+'">'+
           '<span class="device-symbol"><i data-lucide="'+deviceIcon(item)+'"></i></span>'+
-          '<span class="device-copy"><b>'+name+'</b><small>'+platform+(lastSeen?' · '+fmtDate(lastSeen):'')+'</small>'+(meta?'<small>'+meta+'</small>':'')+'</span>'+
+          '<span class="device-copy"><b>'+name+'</b><small>'+platform+(lastSeen?' · '+fmtDate(lastSeen):'')+'</small>'+(refreshNote?'<small>'+refreshNote+'</small>':'')+(meta?'<small>'+meta+'</small>':'')+'</span>'+
           (item.suspicious?'<span class="device-warning" title="Подозрительное подключение">!</span>':'')+
           (id&&canRemove&&!isHistory?'<button type="button" class="device-remove" aria-label="Отключить устройство" data-remove="'+encodeURIComponent(id)+'"><i data-lucide="trash-2"></i></button>':'')+
         '</article>';
       };
       const currentHtml=visible.map((item,index)=>renderDevice(item,index,false)).join('');
-      const oldHtml=historyOnly.length?'<div class="device-history-title">История подключений</div>'+historyOnly.map((item,index)=>renderDevice(item,index,true)).join(''):'';
-      root.innerHTML=currentHtml+oldHtml;
+      const oldHtml=historyOnly.length?'<div class="device-history-title">История устройств</div>'+historyOnly.map((item,index)=>renderDevice(item,index,true)).join(''):'';
+      const matched=new Set(visible.filter(item=>item.identity_source==='client-reported').map(item=>String(item.name||'')+'|'+String(item.platform||'')));
+      const unmatched=profiles.filter(item=>!matched.has(String(item.name||'')+'|'+String(item.platform||''))).slice(0,5);
+      const modelHtml=unmatched.length?'<div class="device-history-title">Обновляли подписку</div>'+
+        unmatched.map((item,index)=>renderDevice({...item,profile_updated_at:item.updated_at},index,true)).join('')+
+        '<p class="device-identity-note">Данные от VPN-приложения, не подтверждение активного соединения.</p>':'';
+      root.innerHTML=currentHtml+modelHtml+oldHtml;
       $$('[data-remove]',root).forEach(btn=>btn.onclick=()=>removeDevice(decodeURIComponent(btn.dataset.remove)));
     }
   }

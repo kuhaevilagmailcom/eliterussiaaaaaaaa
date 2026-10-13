@@ -255,11 +255,20 @@ async def load_state(
     user: dict[str, Any],
     provider: VpnProvider,
     config: Config,
+    db: Database | None = None,
 ) -> tuple[VpnState, bool]:
     if not is_active(user):
         return fallback_state(user, config), True
     if not getattr(provider, "service_ready", True):
         return fallback_state(user, config), False
+
+    async def with_device_labels(state: VpnState) -> VpnState:
+        if db and getattr(provider, "mode_name", "") == "h1cloud" and state.devices:
+            try:
+                state.devices = await db.enrich_panel_devices(int(user["telegram_id"]), state.devices)
+            except Exception:
+                logger.warning("Bot device model hints unavailable for %s", user.get("telegram_id"))
+        return state
 
     # Fast path for an already provisioned H1 client: opening the bot UI must
     # not wait for every remote federation node.
@@ -268,7 +277,7 @@ async def load_state(
             provider.get_state(user),
             timeout=5.0,
         )
-        return state, True
+        return await with_device_labels(state), True
     except Exception as state_exc:
         logger.warning(
             "VPN state read failed for user %s: %s",
@@ -281,7 +290,7 @@ async def load_state(
             provider.provision(user),
             timeout=15.0,
         )
-        return state, True
+        return await with_device_labels(state), True
     except Exception as exc:
         logger.warning(
             "VPN provisioning failed for user %s: %s",
@@ -1474,7 +1483,7 @@ def build_router(
 
     async def show_profile(message: Message, actor) -> None:
         user = await ensure_actor(actor)
-        state, ok = await load_state(user, provider, config)
+        state, ok = await load_state(user, provider, config, db)
         kb = InlineKeyboardBuilder()
         if is_active(user):
             kb.row(
@@ -2289,7 +2298,7 @@ def build_router(
             )
             return
 
-        state, ok = await load_state(user, provider, config)
+        state, ok = await load_state(user, provider, config, db)
         limit = min(
             MAX_DEVICES,
             max(BASE_DEVICES, int(user.get("max_devices") or BASE_DEVICES)),
@@ -2307,8 +2316,37 @@ def build_router(
         if state.devices:
             lines += [
                 "",
-                f"Активных подключений по данным панели — <b>{len(state.devices)}</b>",
+                f"Устройств по данным H1 — <b>{len(state.devices)}/{limit}</b>",
             ]
+            for index, item in enumerate(state.devices[:limit], start=1):
+                name = html.escape(str(item.get("name") or f"Устройство {index}"))
+                platform = html.escape(str(item.get("platform") or "").strip())
+                suffix = f" · {platform}" if platform else ""
+                lines.append(f"{index}. <b>{name}</b>{suffix}")
+
+        # H1 may retain only a hashed device or even a server-side
+        # fallback identity. Don't pretend an app updating its subscription
+        # is necessarily the device currently connected to the VPN.
+        try:
+            app_profiles = await db.list_subscription_device_hints(int(user["telegram_id"]))
+        except Exception:
+            app_profiles = []
+        matched_models = {
+            (str(item.get("name") or ""), str(item.get("platform") or ""))
+            for item in state.devices
+            if item.get("identity_source") == "client-reported"
+        }
+        app_profiles = [
+            item for item in app_profiles
+            if (str(item.get("name") or ""), str(item.get("platform") or "")) not in matched_models
+        ]
+        if app_profiles:
+            lines.extend(["", "<b>Обновляли подписку:</b>"])
+            for item in app_profiles[:5]:
+                name = html.escape(str(item.get("name") or "Устройство"))
+                os_label = html.escape(str(item.get("platform") or ""))
+                lines.append(f"• {name}" + (f" · {os_label}" if os_label else ""))
+            lines.append("<i>Данные приложения, не подтверждение подключения.</i>")
 
         lines += [
             "",
@@ -3432,7 +3470,7 @@ def build_router(
             )
             return
 
-        state, ok = await load_state(user, provider, config)
+        state, ok = await load_state(user, provider, config, db)
         subscription_url = await public_subscription_url(
             user,
             state,

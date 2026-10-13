@@ -914,3 +914,66 @@ def test_subscription_refund_restores_previous_device_count(tmp_path):
         assert restored["bonus_devices"] == 2
 
     run(scenario())
+
+
+def test_h1_device_model_hint_persists_without_raw_hwid(tmp_path):
+    from device_identity import subscription_device_hint
+
+    async def scenario():
+        db = Database(str(tmp_path / "models.sqlite3"))
+        await db.init()
+        await db.ensure_user(501, "alpha", "Alpha")
+        await db.ensure_user(502, "beta", "Beta")
+
+        hint = subscription_device_hint({
+            "x-hwid": "example-uuid-aaaa",
+            "x-device-model": "iPhone 13 Pro",
+            "x-device-os": "iOS",
+            "x-ver-os": "18.3",
+        })
+        assert hint is not None
+        await db.record_subscription_device(501, hint)
+
+        async with aiosqlite.connect(db.path) as conn:
+            rows = await (await conn.execute(
+                "SELECT fingerprint_key, name, platform FROM subscription_device_metadata"
+            )).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] != hint["hwid"]
+        assert rows[0][1:] == ("iPhone 13 Pro", "iOS 18.3")
+
+        confirmed = [{"id": "1", "fingerprint": "example-uuid-aaaa", "name": "Устройство"}]
+        named = await db.enrich_panel_devices(501, confirmed)
+        assert named[0]["name"] == "iPhone 13 Pro"
+        assert named[0]["platform"] == "iOS 18.3"
+        other = await db.enrich_panel_devices(502, confirmed)
+        assert other[0]["name"] == "Устройство"
+        assert await db.enrich_panel_devices(501, []) == []
+
+        await db.clear_subscription_device_hints(501)
+        cleared = await db.enrich_panel_devices(501, confirmed)
+        assert cleared[0]["name"] == "Устройство"
+
+    run(scenario())
+
+
+def test_device_model_hint_does_not_change_h1_slot_limit(tmp_path):
+    from device_identity import subscription_device_hint
+
+    async def scenario():
+        db = Database(str(tmp_path / "models_limit.sqlite3"))
+        await db.init()
+        user = await db.ensure_user(601, "test", "Test")
+        before = int(user["max_devices"])
+        for idx in range(4):
+            hint = subscription_device_hint({
+                "X-HWID": f"abcdef-device-{idx}",
+                "X-Device-Model": "Windows PC",
+                "X-Device-OS": "Windows",
+            })
+            await db.record_subscription_device(601, hint)
+        refreshed = await db.get_user(601)
+        assert int(refreshed["max_devices"]) == before == 1
+        assert await db.enrich_panel_devices(601, []) == []
+
+    run(scenario())
