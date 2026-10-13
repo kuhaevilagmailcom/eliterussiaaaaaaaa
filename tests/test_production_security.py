@@ -502,7 +502,7 @@ def test_admin_grant_notifies_recipient_with_devices_and_connect_button(tmp_path
         notice = bot.send_message.await_args.kwargs
         assert notice['chat_id'] == 42
         assert 'на 30 дней' in notice['text']
-        assert 'до 1' in notice['text']
+        assert 'до 2' in notice['text']
         assert notice['reply_markup'].inline_keyboard[0][0].callback_data == 'menu:connect'
 
     asyncio.run(run())
