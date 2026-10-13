@@ -23,6 +23,11 @@ def device_fingerprint_key(user_id: int, hwid: str) -> str:
     return hashlib.sha256(f"{int(user_id)}:{normalized}".encode("utf-8")).hexdigest()
 
 
+def h1_panel_device_id(hwid: str) -> str:
+    """H1Cloud's devices.json identifier for an explicit X-HWID."""
+    return "hwid:" + hashlib.sha256(str(hwid).encode("utf-8")).hexdigest()
+
+
 def _clean(value: object, max_len: int = 80) -> str:
     if not isinstance(value, str):
         return ""
@@ -81,12 +86,15 @@ def enrich_h1_devices(
 ) -> list[dict[str, Any]]:
     """Overlay descriptive hints on panel-confirmed device rows only."""
     by_key = {str(h["fingerprint_key"]): h for h in hints}
+    by_panel_id = {str(h.get("panel_id")): h for h in hints if h.get("panel_id")}
     rows = [dict(row) for row in devices]
     for row in rows:
         fingerprint = str(row.get("fingerprint") or "").strip()
         # H1 installations also sometimes return their HWID as the row ID.
         identifier = str(row.get("id") or "").strip()
-        hint = by_key.get(device_fingerprint_key(user_id, fingerprint)) if _HWID.fullmatch(fingerprint) else None
+        hint = by_panel_id.get(identifier) or by_panel_id.get(fingerprint)
+        if hint is None:
+            hint = by_key.get(device_fingerprint_key(user_id, fingerprint)) if _HWID.fullmatch(fingerprint) else None
         if hint is None and _HWID.fullmatch(identifier):
             hint = by_key.get(device_fingerprint_key(user_id, identifier))
         # Older H1 versions only report device count. With a single device and
