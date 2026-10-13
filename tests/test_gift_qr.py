@@ -13,7 +13,7 @@ def run(coro):
 
 
 def test_qr_opens_telegram_bot_and_contains_compatible_deep_link():
-    token = "AaBb0123456789_-AaBb0123456789_-AaBb0123456789"
+    token = "a" * 43  # Test-only placeholder, not an issued voucher.
     link = gift_link("mgnvpn_bot", token)
     assert link == "https://t.me/mgnvpn_bot?start=g_" + token
     assert parse_gift_token(link) == token
