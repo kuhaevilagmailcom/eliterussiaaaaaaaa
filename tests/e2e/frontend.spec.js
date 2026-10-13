@@ -43,7 +43,7 @@ async function routeFiles(page, miniApp = false) {
       clients:[
         {name:'Happ',platform:'Android · iOS',redirect_url:'https://mgn.test/client/happ/token',supports_subscription_import:true},
         {name:'INCY',platform:'Android · iOS',redirect_url:'https://mgn.test/client/incy/token',supports_subscription_import:true}
-      ], shop:{extra_device_price_rub:100,extra_device_price_stars:32,max_devices:5},
+      ], shop:{extra_device_price_rub:50,extra_device_price_stars:32,max_devices:5},
       agreement:{updated:'27 сентября 2026 года',sections:[{heading:'1. Общие положения',paragraphs:['Условия использования MGN VPN.']}]},
       bot_url:'https://t.me/mgnvpn_bot'
     }});
