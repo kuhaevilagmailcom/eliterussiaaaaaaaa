@@ -8,6 +8,7 @@ from aiohttp.test_utils import make_mocked_request
 
 from db import to_iso, utcnow
 from miniapp import MiniAppServer
+from vpn import H1CloudVpnProvider
 
 
 def test_cold_subscription_requests_share_single_h1_fetch(tmp_path):
@@ -64,5 +65,33 @@ def test_cold_subscription_requests_share_single_h1_fetch(tmp_path):
             assert provider.fetch_subscription.await_count == 1
         finally:
             await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_h1_federation_discovery_is_singleflight_and_short_lived():
+    async def scenario():
+        provider = object.__new__(H1CloudVpnProvider)
+        discovery = AsyncMock(side_effect=_discover)
+        provider._discover_federated_nodes = discovery
+
+        results = await asyncio.gather(
+            *(provider._federated_nodes() for _ in range(10))
+        )
+        assert discovery.await_count == 1
+        assert all(row == [{"id": "de", "proxy_kind": "lproxy"}] for row in results)
+        results[0][0]["id"] = "modified"
+        assert (await provider._federated_nodes())[0]["id"] == "de"
+        assert discovery.await_count == 1
+
+        # Expiring cache never holds back newly added countries indefinitely.
+        _time, nodes = provider._federation_cache
+        provider._federation_cache = (-10_000.0, nodes)
+        await provider._federated_nodes()
+        assert discovery.await_count == 2
+
+    async def _discover():
+        await asyncio.sleep(0.05)
+        return [{"id": "de", "proxy_kind": "lproxy"}]
 
     asyncio.run(scenario())
