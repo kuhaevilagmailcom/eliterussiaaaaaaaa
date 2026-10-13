@@ -21,7 +21,7 @@ def test_qr_opens_telegram_bot_and_contains_compatible_deep_link():
     assert parse_gift_token("MGN-GIFT:" + token) == token
     assert parse_gift_token("https://evil.example/?start=g_" + token) is None
     assert parse_gift_token("https://t.me/fake?start=wrong_" + token) is None
-    assert gift_qr_png(link).startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+    assert gift_qr_png(link).startswith(bytes([137,80,78,71,13,10,26,10]))
 
 
 def test_gift_redemption_is_atomic_even_under_race(tmp_path):
