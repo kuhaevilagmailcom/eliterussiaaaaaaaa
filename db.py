@@ -3024,7 +3024,7 @@ class Database:
         Never count this as a VPN connection. H1 remains authoritative for that.
         """
         hwid = str(hint.get("hwid") or "")
-        if not re.fullmatch(r"[A-Za-z0-9._:-]{6,160}", hwid):
+        if not re.fullmatch(r"[A-Za-z0-9._:=-]{6,160}", hwid):
             return
         name = str(hint.get("name") or "").strip()[:80]
         platform = str(hint.get("platform") or "").strip()[:80]
@@ -3076,6 +3076,10 @@ class Database:
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
             await db.execute(
                 "DELETE FROM subscription_device_metadata WHERE telegram_id=?",
+                (int(telegram_id),),
+            )
+            await db.execute(
+                "UPDATE device_history SET active=0 WHERE telegram_id=?",
                 (int(telegram_id),),
             )
             await db.commit()
