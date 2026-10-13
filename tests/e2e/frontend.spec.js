@@ -16,15 +16,15 @@ async function routeFiles(page, miniApp = false) {
   await page.route('http://mgn.test/**', async route => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/public/catalog') return route.fulfill({ json: {
-      plans: ['30','90','180','365'].map((code, index) => ({code, price_rub: [100,349,599,1200][index]})),
+      plans: ['30','90','180','365'].map((code, index) => ({code, price_rub: [70,170,420,920][index]})),
       max_devices: 5,
-      extra_device_price_rub: 100
+      extra_device_price_rub: 50
     }});
     if (url.pathname === '/api/miniapp/promo/redeem') return route.fulfill({json:{
       ok:true,type:'discount',code:'MGN20',value:20
     }});
     if (url.pathname === '/api/miniapp/promo/quote') return route.fulfill({json:{
-      code:'MGN20',type:'discount',value:20,original_price:100,discount:20,final_price:80,device_count:1
+      code:'MGN20',type:'discount',value:20,original_price:70,discount:14,final_price:56,device_count:2
     }});
     if (url.pathname === '/api/miniapp/admin/overview') return route.fulfill({json:{
       role:'owner',overview:{total:128,active:91,paid_total:74,active_paid:62,sbp_revenue:14800,new_7d:12},
@@ -35,15 +35,15 @@ async function routeFiles(page, miniApp = false) {
     if (url.pathname === '/api/miniapp/admin/servers') return route.fulfill({json:{servers:['🇳🇱 Нидерланды','🇫🇮 Финляндия','🇵🇱 Польша','🇵🇰 Пакистан','🇺🇸 США 1','🇺🇸 США 2'].map(name=>({name,available:true,latency_ms:100}))}});
     if (url.pathname === '/api/miniapp/me') return route.fulfill({ json: {
       user: {id:42,first_name:'Тест',username:'test',telegram_id:42,referrals:0,referral_rewards:0},
-      subscription: {active:true,plan:'1 месяц',until:'2027-01-01T00:00:00+00:00',remaining_seconds:2592000,max_devices:1},
+      subscription: {active:true,plan:'1 месяц',until:'2027-01-01T00:00:00+00:00',remaining_seconds:2592000,max_devices:2},
       vpn: {ready:true, ok:true, server:'MGN VPN', subscription_url:'https://mgn.test/sub/token', traffic_used_gb:0, traffic_limit_gb:0, devices:[]},
-      plans: [{code:'30',name:'1 месяц',days:30,devices:1,rub:100,stars:63,savings:0}],
+      plans: [{code:'30',name:'1 месяц',days:30,devices:2,rub:70,stars:44,savings:0}],
       payments: {sbp_enabled:true}, capabilities:{device_list:true,device_removal:false,device_reset:true},
       admin: {enabled:true,role:'owner'},
       clients:[
         {name:'Happ',platform:'Android · iOS',redirect_url:'https://mgn.test/client/happ/token',supports_subscription_import:true},
         {name:'INCY',platform:'Android · iOS',redirect_url:'https://mgn.test/client/incy/token',supports_subscription_import:true}
-      ], shop:{extra_device_price_rub:100,extra_device_price_stars:63,max_devices:5},
+      ], shop:{extra_device_price_rub:100,extra_device_price_stars:32,max_devices:5},
       agreement:{updated:'27 сентября 2026 года',sections:[{heading:'1. Общие положения',paragraphs:['Условия использования MGN VPN.']}]},
       bot_url:'https://t.me/mgnvpn_bot'
     }});
@@ -85,7 +85,7 @@ for (const viewport of [
 ]) test(`public site ${viewport.width}px`, async ({page}) => {
   const errors=[]; page.on('pageerror', error => errors.push(error.message));
   await page.setViewportSize(viewport); await routeFiles(page); await page.goto('http://mgn.test/');
-  await expect(page.locator('[data-plan-price="30"]')).toHaveText('100 ₽');
+  await expect(page.locator('[data-plan-price="30"]')).toHaveText('70 ₽');
   await expect(page.locator('.logo img')).toBeVisible();
   await expect(page.locator('main .agreement-part')).toHaveCount(0);
   await expect(page.locator('footer a[href="/agreement"]')).toBeVisible();
@@ -205,7 +205,7 @@ test('Mini App saves a discount promo from Bonuses and carries it into checkout'
   await page.locator('#bottomNav [data-nav="plans"]').click();
   await page.locator('[data-buy="30"]').click();
   await expect(page.locator('#paymentPromoCode')).toHaveValue('MGN20');
-  await expect(page.locator('#paymentPromoResult')).toContainText('итого 80 ₽');
+  await expect(page.locator('#paymentPromoResult')).toContainText('итого 56 ₽');
 
   await page.locator('#sheetClose').click();
   await page.locator('#bottomNav [data-nav="home"]').click();
@@ -231,4 +231,26 @@ test('Mini App admin dashboard is available to an owner and stays compact', asyn
   await expect(page.locator('#adminServers')).toContainText('Нидерланды');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   expect(errors).toEqual([]);
+});
+
+
+test('MGN checkout includes 2 devices and charges 50 RUB for each extra slot', async ({page}) => {
+  await page.setViewportSize({width:390,height:844});
+  await routeFiles(page,true);
+  await page.goto('http://mgn.test/app');
+  await page.locator('[data-nav="plans"]:visible').first().click();
+  await page.locator('[data-buy="30"]').click();
+  const range=page.locator('#paymentDeviceRange');
+  await expect(range).toHaveAttribute('min','2');
+  await expect(range).toHaveAttribute('max','5');
+  await expect(range).toHaveValue('2');
+  await expect(page.locator('#sbpPrice')).toHaveText('70 ₽');
+
+  await range.evaluate(input=>{
+    input.value='5';
+    input.dispatchEvent(new Event('input',{bubbles:true}));
+  });
+  await expect(page.locator('#sbpPrice')).toHaveText('220 ₽');
+  await expect(page.locator('#paymentDeviceCount')).toHaveText('5');
+  await expect(page.locator('#starsPrice')).toHaveText('138 Stars');
 });
