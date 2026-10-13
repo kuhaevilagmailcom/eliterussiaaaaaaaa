@@ -739,11 +739,12 @@ def profile_text(
     emoji: EmojiBank,
     provider_ok: bool,
     config: Config,
+    device_profiles: list[dict[str, Any]] | None = None,
 ) -> str:
     user_id = int(user["telegram_id"])
     active = is_active(user)
     max_devices = int(user.get("max_devices") or 1)
-    devices = list(state.devices or [])
+    devices = list(device_profiles or [])
     devices_count = len(devices)
     plan = html.escape(user.get("plan_name") or "—")
 
@@ -766,10 +767,11 @@ def profile_text(
             f"├ Осталось: <b>{remaining_text(user)}</b>",
             f"└ Трафик: <b>{format_traffic_gb(state.traffic_used_gb, state.traffic_limit_gb)}</b>",
             "",
-            f"{e_devices} <b>Устройства — {devices_count}/{max_devices}</b>",
+            f"{e_devices} <b>Устройства (по подписке) — {devices_count}</b>",
+            f"Оплачено слотов: <b>{max_devices}</b>",
         ]
         if devices:
-            for index, item in enumerate(devices[:max_devices], start=1):
+            for index, item in enumerate(devices[:10], start=1):
                 name = html.escape(
                     str(
                         item.get("name")
@@ -783,10 +785,9 @@ def profile_text(
                 )
                 suffix = f" · {platform}" if platform else ""
                 lines.append(f"├ {name}{suffix}")
-            free_slots = max(0, max_devices - devices_count)
-            lines.append(f"└ Свободно слотов: <b>{free_slots}</b>")
+            lines.append("<i>Определено по обновлениям подписки Happ, не по VPN-сессиям.</i>")
         else:
-            lines.append("└ Подключённых устройств пока нет.")
+            lines.append("└ Пока нет данных. Обновите подписку в Happ.")
     else:
         lines += [
             "└ Подписка не активна.",
@@ -1484,6 +1485,10 @@ def build_router(
     async def show_profile(message: Message, actor) -> None:
         user = await ensure_actor(actor)
         state, ok = await load_state(user, provider, config, db)
+        try:
+            device_profiles = await db.list_subscription_device_hints(int(user["telegram_id"]))
+        except Exception:
+            device_profiles = []
         kb = InlineKeyboardBuilder()
         if is_active(user):
             kb.row(
@@ -1512,7 +1517,7 @@ def build_router(
         await send_screen(
             message,
             actor,
-            profile_text(user, state, emoji, ok, config),
+            profile_text(user, state, emoji, ok, config, device_profiles),
             reply_markup=kb.as_markup(),
         )
 
@@ -2313,40 +2318,29 @@ def build_router(
             f"└ Дополнительных слотов — <b>{bonus}</b>",
         ]
 
-        if state.devices:
-            lines += [
-                "",
-                f"Устройств по данным H1 — <b>{len(state.devices)}/{limit}</b>",
-            ]
-            for index, item in enumerate(state.devices[:limit], start=1):
-                name = html.escape(str(item.get("name") or f"Устройство {index}"))
-                platform = html.escape(str(item.get("platform") or "").strip())
-                suffix = f" · {platform}" if platform else ""
-                lines.append(f"{index}. <b>{name}</b>{suffix}")
-
-        # H1 may retain only a hashed device or even a server-side
-        # fallback identity. Don't pretend an app updating its subscription
-        # is necessarily the device currently connected to the VPN.
         try:
             app_profiles = await db.list_subscription_device_hints(int(user["telegram_id"]))
+            probe = await db.subscription_device_probe(int(user["telegram_id"]))
         except Exception:
-            app_profiles = []
-        matched_models = {
-            (str(item.get("name") or ""), str(item.get("platform") or ""))
-            for item in state.devices
-            if item.get("identity_source") == "client-reported"
-        }
-        app_profiles = [
-            item for item in app_profiles
-            if (str(item.get("name") or ""), str(item.get("platform") or "")) not in matched_models
-        ]
+            app_profiles, probe = [], {}
+
+        lines += ["", f"<b>Обнаружено устройств: {len(app_profiles)}</b>"]
         if app_profiles:
-            lines.extend(["", "<b>Обновляли подписку:</b>"])
-            for item in app_profiles[:5]:
+            for index, item in enumerate(app_profiles[:10], start=1):
                 name = html.escape(str(item.get("name") or "Устройство"))
                 os_label = html.escape(str(item.get("platform") or ""))
-                lines.append(f"• {name}" + (f" · {os_label}" if os_label else ""))
-            lines.append("<i>Данные приложения, не подтверждение подключения.</i>")
+                lines.append(f"{index}. <b>{name}</b>" + (f" · {os_label}" if os_label else ""))
+            lines.append("<i>По обновлениям подписки, не по активным VPN-сессиям.</i>")
+        elif probe.get("last_happ_at") and not probe.get("last_hwid_at"):
+            lines += [
+                "<i>Happ обновляет подписку, но не передаёт HWID.</i>",
+                "Включите HWID в настройках Happ и обновите подписку.",
+            ]
+        else:
+            lines += [
+                "Откройте Happ и обновите подписку MGN VPN.",
+                "<i>Устройства появятся, когда приложение передаст HWID.</i>",
+            ]
 
         lines += [
             "",
