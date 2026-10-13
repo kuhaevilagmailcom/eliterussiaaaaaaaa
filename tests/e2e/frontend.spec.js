@@ -268,6 +268,7 @@ test('Admin can generate a gift QR and user can redeem it from Bonus scanner', a
   await page.setViewportSize({width:390,height:844});
   await routeFiles(page,true);
   await page.goto('http://mgn.test/app');
+  await page.locator('#bottomNav [data-nav="profile"]').click();
   await page.locator('#adminEntry').click();
   await page.locator('[data-admin-tab="gifts"]').click();
   await page.locator('[data-gift-days="30"]').click();
