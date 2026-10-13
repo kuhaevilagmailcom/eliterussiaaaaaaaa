@@ -1662,9 +1662,9 @@ def build_router(
                 logger.warning("Gift VPN sync deferred for %s: %s", message.from_user.id, type(exc).__name__)
             label = {30: "1 месяц", 90: "3 месяца", 365: "1 год"}[gift["days"]]
             await message.answer(
-                "🎁 <b>Вы получили подарок MGN VPN!</b>\\n\\n"
-                f"Подписка: <b>{label}</b>\\n"
-                f"До: <b>{gift['subscription_until'][:10]}</b>\\n\\n"
+                "🎁 <b>Вы получили подарок MGN VPN!</b>\n\n"
+                f"Подписка: <b>{label}</b>\n"
+                f"До: <b>{gift['subscription_until'][:10]}</b>\n\n"
                 "Подписка начислена. Откройте Mini App для подключения."
             )
             await show_home(message, message.from_user)
@@ -4826,7 +4826,7 @@ def build_router(
             await send_screen(
                 callback.message,
                 callback.from_user,
-                "🎁 <b>Подарочные подписки MGN VPN</b>\\n\\n"
+                "🎁 <b>Подарочные подписки MGN VPN</b>\n\n"
                 "Выберите срок. Система создаст одноразовый QR и ссылку "
                 "на Telegram-бота. Сканировать QR можно камерой телефона "
                 "или в Mini App → Бонусы.",
@@ -4853,8 +4853,8 @@ def build_router(
         await callback.message.answer_photo(
             photo=BufferedInputFile(png, filename="mgn-gift.png"),
             caption=(
-                f"🎁 <b>Подарочный MGN VPN · {label}</b>\\n\\n"
-                "Один QR = одна активация. QR действует 30 дней до использования.\\n"
+                f"🎁 <b>Подарочный MGN VPN · {label}</b>\n\n"
+                "Один QR = одна активация. QR действует 30 дней до использования.\n"
                 f"Ссылка: {html.escape(link)}"
             ),
             reply_markup=kb.as_markup(),
