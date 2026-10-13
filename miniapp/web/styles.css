@@ -1786,3 +1786,8 @@ body{background:#000;letter-spacing:-.01em}
 .gift-admin-result img{display:block;width:min(260px,100%);height:auto;aspect-ratio:1;object-fit:contain;background:#fff;border-radius:12px;margin:auto;padding:8px}
 .gift-admin-result p,.gift-admin-result a{overflow-wrap:anywhere;word-break:break-word;font-size:13px}
 .gift-admin-result a{color:#ff3aa7}
+
+/* Five admin sections remain comfortably tappable on narrow phones. */
+.admin-tabs{display:flex;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none}
+.admin-tabs::-webkit-scrollbar{display:none}
+.admin-tabs button{flex:0 0 auto;min-width:70px;padding-inline:10px}
