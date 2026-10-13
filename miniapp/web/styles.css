@@ -1772,3 +1772,17 @@ body{background:#000;letter-spacing:-.01em}
 
 /* Client-reported metadata must not look like a confirmed VPN connection. */
 .device-identity-note{font-size:12px;line-height:1.5;color:#92969e;margin:10px 4px 4px}
+
+
+/* MGN VPN gift QR — simple black/pink utility layout */
+.gift-redeem-card{display:grid;gap:12px;margin-top:20px;padding:16px;border:1px solid rgba(255,255,255,.1);border-radius:18px;background:#121214}
+.gift-redeem-card .page-section-head{margin:0}
+.gift-redeem-card .promo-field{margin:0}
+.gift-scan-button{width:100%;text-align:left}
+.gift-admin-buttons{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:14px 0}
+.gift-admin-buttons button{padding:12px 4px;border:1px solid rgba(255,255,255,.14);border-radius:10px;background:#1a1a1c;color:#fff;font:inherit;cursor:pointer}
+.gift-admin-buttons button:active{background:#2b2028}
+.gift-admin-result{display:grid;gap:10px;margin-top:14px}
+.gift-admin-result img{display:block;width:min(260px,100%);height:auto;aspect-ratio:1;object-fit:contain;background:#fff;border-radius:12px;margin:auto;padding:8px}
+.gift-admin-result p,.gift-admin-result a{overflow-wrap:anywhere;word-break:break-word;font-size:13px}
+.gift-admin-result a{color:#ff3aa7}
