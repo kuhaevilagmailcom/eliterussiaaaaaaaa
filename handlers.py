@@ -53,6 +53,7 @@ from catalog import (
 )
 from config import Config
 from db import Database, from_iso, utcnow
+from gift_qr import gift_link, gift_qr_png, parse_gift_token
 from emoji import EmojiBank
 from giveaway import (
     cancel_giveaway,
@@ -1645,6 +1646,30 @@ def build_router(
                     message.from_user.id,
                     int(raw),
                 )
+        # Keep gift token case exactly: secrets.token_urlsafe() is case sensitive.
+        # Camera scanners open a t.me/<bot>?start=g_<token> deep link.
+        if str(command.args or "").startswith("g_"):
+            token = parse_gift_token(str(command.args or ""))
+            gift = await db.redeem_gift_qr(token=token or "", telegram_id=message.from_user.id)
+            if not gift:
+                await message.answer(
+                    "🎁 Этот подарочный QR недействителен, истёк или уже был использован."
+                )
+                return
+            try:
+                await asyncio.wait_for(provider.provision(gift["user"]), timeout=7.0)
+            except Exception as exc:
+                logger.warning("Gift VPN sync deferred for %s: %s", message.from_user.id, type(exc).__name__)
+            label = {30: "1 месяц", 90: "3 месяца", 365: "1 год"}[gift["days"]]
+            await message.answer(
+                "🎁 <b>Вы получили подарок MGN VPN!</b>\\n\\n"
+                f"Подписка: <b>{label}</b>\\n"
+                f"До: <b>{gift['subscription_until'][:10]}</b>\\n\\n"
+                "Подписка начислена. Откройте Mini App для подключения."
+            )
+            await show_home(message, message.from_user)
+            return
+
         if not await require_channel_membership(message, message.from_user, user):
             return
         if start_arg in {"renew", "plans"}:
@@ -3615,6 +3640,9 @@ def build_router(
                 admin_inline_button("🎁 Розыгрыши", callback_data="admin:giveaways"),
             )
             kb.row(
+                admin_inline_button("▦ Подарочные QR", callback_data="admin:giftqr"),
+            )
+            kb.row(
                 admin_inline_button("📣 Рассылка", callback_data="admin:broadcast:start"),
                 admin_inline_button("📢 Публикация", callback_data="admin:ad:start"),
             )
@@ -4779,6 +4807,58 @@ def build_router(
         await safe_callback_answer(callback, )
         if callback.message:
             await show_admin(callback.message, callback.from_user)
+
+    @router.callback_query(F.data == "admin:giftqr")
+    async def admin_gift_qr_menu(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            admin_inline_button("1 месяц", callback_data="admin:giftqr:30"),
+            admin_inline_button("3 месяца", callback_data="admin:giftqr:90"),
+            admin_inline_button("1 год", callback_data="admin:giftqr:365"),
+        )
+        kb.adjust(2, 1)
+        kb.row(blue_inline_button("⬅️ Назад", callback_data="admin:home", premium_icon=False))
+        if callback.message:
+            await send_screen(
+                callback.message,
+                callback.from_user,
+                "🎁 <b>Подарочные подписки MGN VPN</b>\\n\\n"
+                "Выберите срок. Система создаст одноразовый QR и ссылку "
+                "на Telegram-бота. Сканировать QR можно камерой телефона "
+                "или в Mini App → Бонусы.",
+                reply_markup=kb.as_markup(),
+            )
+
+    @router.callback_query(F.data.regexp(r"^admin:giftqr:(30|90|365)$"))
+    async def admin_gift_qr_create(callback: CallbackQuery) -> None:
+        if not await has_full_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        if not callback.message:
+            await safe_callback_answer(callback)
+            return
+        days = int(callback.data.rsplit(":", 1)[-1])
+        gift = await db.create_gift_qr(created_by=callback.from_user.id, days=days)
+        username = str((await callback.bot.get_me()).username or "").strip()
+        link = gift_link(username, gift["token"])
+        png = gift_qr_png(link)
+        label = {30: "1 месяц", 90: "3 месяца", 365: "1 год"}[days]
+        await safe_callback_answer(callback, "QR создан")
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button("Открыть подарок", url=link))
+        await callback.message.answer_photo(
+            photo=BufferedInputFile(png, filename="mgn-gift.png"),
+            caption=(
+                f"🎁 <b>Подарочный MGN VPN · {label}</b>\\n\\n"
+                "Один QR = одна активация. QR действует 30 дней до использования.\\n"
+                f"Ссылка: {html.escape(link)}"
+            ),
+            reply_markup=kb.as_markup(),
+        )
 
     @router.callback_query(F.data == "admin:stats")
     async def admin_stats_callback(callback: CallbackQuery) -> None:
