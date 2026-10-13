@@ -476,6 +476,7 @@
     const adminEnabled=!!state.data?.admin?.enabled;
     $('#adminEntry').hidden=!adminEnabled;
     $('#adminRole').textContent=String(state.data?.admin?.role||'admin').toUpperCase();
+    $('#adminGiftsTab').hidden=!['owner','full'].includes(String(state.data?.admin?.role||''));
     icons();
     const loader=$('#loader');
     loader.classList.add('hidden');
@@ -628,7 +629,8 @@
   }
 
   function openAdminTab(tab){
-    if(!['overview','users','payments','servers'].includes(tab))tab='overview';
+    if(!['overview','users','payments','servers','gifts'].includes(tab))tab='overview';
+    if(tab==='gifts'&&!['owner','full'].includes(String(state.data?.admin?.role||'')))tab='overview';
     state.admin.tab=tab;
     $$('[data-admin-tab]').forEach(el=>el.classList.toggle('active',el.dataset.adminTab===tab));
     $$('[data-admin-panel]').forEach(el=>el.classList.toggle('active',el.dataset.adminPanel===tab));
@@ -929,6 +931,74 @@
     }catch(error){$('#promoPageResult').textContent=error.message;notify('error')}
   }
 
+  async function redeemGiftQr(code){
+    if(state.busy)return;
+    const resultElement=$('#giftRedeemResult');
+    if(!String(code||'').trim()){
+      resultElement.textContent='Отсканируйте QR или вставьте подарочную ссылку.';
+      return;
+    }
+    state.busy=true;
+    resultElement.textContent='Проверяем подарок…';
+    try{
+      const result=await request('/api/miniapp/gifts/redeem',{
+        method:'POST',body:JSON.stringify({code:String(code).trim()})
+      });
+      resultElement.textContent='🎁 Вы получили подарок MGN VPN · '+result.label+'! Подписка начислена.';
+      $('#giftCodePage').value='';
+      notify();
+      toast('Подарок активирован!');
+      await load(true);
+    }catch(error){
+      resultElement.textContent=error.message||'Не удалось активировать QR.';
+      notify('error');
+    }finally{state.busy=false}
+  }
+
+  function scanGiftQr(){
+    if(tg?.showScanQrPopup){
+      try{
+        tg.showScanQrPopup({text:'Наведите камеру на подарочный QR MGN VPN'},text=>{
+          if(!text)return false;
+          // Prevent closing Telegram's scanner for arbitrary QR codes.
+          const candidate=String(text).trim();
+          if(!/^https:\/\/(?:t\.me|telegram\.me|www\.t\.me)\/[^\s?]+\?/.test(candidate) && !/^MGN-GIFT:|^g_/.test(candidate)){
+            toast('Это не подарочный QR MGN VPN');
+            return false;
+          }
+          try{tg.closeScanQrPopup?.()}catch(_){}
+          $('#giftCodePage').value=candidate;
+          void redeemGiftQr(candidate);
+          return true;
+        });
+        return;
+      }catch(_){}
+    }
+    $('#giftRedeemResult').textContent='Сканер недоступен в этой версии Telegram. Отсканируйте QR обычной камерой телефона — он откроет бота, либо вставьте ссылку здесь.';
+    $('#giftCodePage').focus();
+  }
+
+  async function createAdminGift(days){
+    if(state.busy)return;
+    state.busy=true;
+    const status=$('#adminGiftStatus');
+    status.textContent='Создаём QR…';
+    try{
+      const result=await request('/api/miniapp/admin/gifts',{
+        method:'POST',body:JSON.stringify({days})
+      });
+      $('#adminGiftQrImage').src=result.qr_image;
+      $('#adminGiftCaption').textContent='MGN VPN · '+({30:'1 месяц',90:'3 месяца',365:'1 год'}[days]||days+' дней');
+      $('#adminGiftLink').href=result.link;
+      $('#adminGiftLink').textContent=result.link;
+      $('#adminGiftResult').hidden=false;
+      $('#adminGiftCopy').dataset.giftLink=result.link;
+      status.textContent='Одноразовый подарок создан. QR и ссылку можно отправить человеку.';
+      notify();icons();
+    }catch(error){status.textContent=error.message;notify('error')}
+    finally{state.busy=false}
+  }
+
   async function copyText(text,success){
     if(!text)return;
     try{
@@ -1072,6 +1142,10 @@
   $('#confirmDevicePurchase').onclick=buyExtraDevice;
   $('#applyPaymentPromo').onclick=applyPaymentPromo;
   $('#redeemPromo').onclick=redeemPromo;
+  $('#scanGiftQr').onclick=scanGiftQr;
+  $('#activateGiftQr').onclick=()=>redeemGiftQr($('#giftCodePage').value);
+  $('.gift-admin-buttons [data-gift-days]').forEach(button=>button.onclick=()=>createAdminGift(Number(button.dataset.giftDays)));
+  $('#adminGiftCopy').onclick=()=>copyText($('#adminGiftCopy').dataset.giftLink,'Подарочная ссылка скопирована');
   $('#supportSubmit').onclick=submitSupport;
   $('#supportNew').onclick=resetSupportComposer;
   $('#supportClose').onclick=closeSupport;
