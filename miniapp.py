@@ -1300,6 +1300,10 @@ class MiniAppServer:
                 if not self.provider.capabilities.supports_device_reset:
                     raise _json_error(409, "Провайдер не поддерживает сброс устройств")
                 await asyncio.wait_for(self.provider.reset_devices(row), timeout=30.0)
+                try:
+                    await self.db.clear_subscription_device_hints(target_id)
+                except Exception:
+                    logger.warning("Admin device-reset metadata cleanup unavailable for %s", target_id)
                 updated = row
             elif action == "regenerate_link":
                 old_token = str(row.get("sub_token") or "")
@@ -1976,10 +1980,15 @@ class MiniAppServer:
             state = await asyncio.wait_for(self.provider.reset_devices(row), 30.0)
             token = str(row["sub_token"])
             await self.invalidate_subscription_cache(token)
-            await self.db.clear_subscription_device_hints(uid)
         except Exception as exc:
             logger.warning("Mini App device reset failed for %s: %s", uid, exc)
             raise _json_error(503, "Не удалось сбросить устройства")
+
+        try:
+            await self.db.clear_subscription_device_hints(uid)
+        except Exception:
+            # H1 reset already succeeded; don't incorrectly report failure.
+            logger.warning("Device-reset metadata cleanup unavailable for %s", uid)
 
         return web.json_response({"ok": True, "devices": state.devices})
 
