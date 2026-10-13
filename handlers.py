@@ -74,30 +74,28 @@ PACK_UI = "TgAndroidIcons"
 PACK_PROGRESS = "progressBarEmoji"
 PACK_NEWS = "NewsEmoji"
 
-ADMIN_SERVER_ORDER = (
-    "🇳🇱 Нидерланды",
-    "🇫🇮 Финляндия",
-    "🇵🇱 Польша",
-    "🇵🇰 Пакистан",
-    "🇺🇸 США 1",
-    "🇺🇸 США 2",
-)
-
-
 def format_admin_server_status(servers: list[dict[str, Any]]) -> str:
-    """Render the intentionally terse server health block used in the admin UI."""
-    by_name = {str(item.get("name") or "").strip(): item for item in servers}
+    """Render exactly the countries currently reported by H1 federation.
+
+    Never invent 'offline' entries for sold nodes or hide newly added ones.
+    """
     lines = ["🖥 <b>Состояние серверов</b>"]
-    for label in ADMIN_SERVER_ORDER:
-        item = by_name.get(label)
-        if item is None:
-            lines.append(f"➖ <b>{label}</b>")
+    present: set[str] = set()
+    for item in servers:
+        name = str(item.get("name") or "").strip()
+        if not name or name in present:
             continue
+        present.add(name)
         available = item.get("available")
         icon = "✅" if available is True else "❌" if available is False else "⚪"
         latency = item.get("latency_ms")
-        latency_text = f" · {int(latency)} мс" if isinstance(latency, (int, float)) else ""
-        lines.append(f"{icon} <b>{label}</b>{latency_text}")
+        latency_text = (
+            f" · {int(latency)} мс"
+            if isinstance(latency, (int, float)) else ""
+        )
+        lines.append(f"{icon} <b>{html.escape(name)}</b>{latency_text}")
+    if not present:
+        lines.append("➖ H1 пока не вернул список серверов")
     return "\n".join(lines)
 
 REPLY_NAVIGATION_TEXTS = frozenset(
