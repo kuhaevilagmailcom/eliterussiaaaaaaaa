@@ -6,6 +6,10 @@ const root = path.resolve(__dirname, '../..');
 const read = relative => fs.readFileSync(path.join(root, relative));
 
 async function routeFiles(page, miniApp = false) {
+  if(miniApp){
+    page.on('pageerror',error=>console.log('[MINIAPP JS ERROR]',error.stack||error.message));
+    page.on('console',message=>{if(message.type()==='error')console.log('[MINIAPP CONSOLE]',message.text())});
+  }
   await page.route('https://telegram.org/js/telegram-web-app.js', route => route.fulfill({
     contentType: 'application/javascript',
     body: `window.Telegram={WebApp:{initData:'test-init-data',ready(){},expand(){},
@@ -16,9 +20,16 @@ async function routeFiles(page, miniApp = false) {
   await page.route('http://mgn.test/**', async route => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/public/catalog') return route.fulfill({ json: {
-      plans: ['30','90','180','365'].map((code, index) => ({code, price_rub: [70,170,420,920][index]})),
+      plans: ['30','90','180','365'].map((code, index) => ({code, price_rub: [70,170,370,777][index]})),
       max_devices: 5,
       extra_device_price_rub: 50
+    }});
+    if (url.pathname === '/api/miniapp/admin/gifts') return route.fulfill({json:{
+      ok:true,days:30,link:'https://t.me/mgnvpn_bot?start=g_'+('a'.repeat(43)),
+      qr_image:'data:image/png;base64,iVBORw0KGgo=',expires_at:'2026-11-12T00:00:00Z'
+    }});
+    if (url.pathname === '/api/miniapp/gifts/redeem') return route.fulfill({json:{
+      ok:true,days:30,label:'1 месяц',subscription_until:'2027-02-01T00:00:00Z'
     }});
     if (url.pathname === '/api/miniapp/promo/redeem') return route.fulfill({json:{
       ok:true,type:'discount',code:'MGN20',value:20
@@ -108,6 +119,7 @@ test('Mini App loads and navigates core screens', async ({page}) => {
   const errors=[]; page.on('pageerror', error => errors.push(error.message));
   await page.setViewportSize({width:390,height:844}); await routeFiles(page, true);
   await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
   await expect(page.locator('.app-shell')).toBeVisible();
   await page.waitForTimeout(500);
   await expect(page.locator('#bottomNav button')).toHaveCount(4);
@@ -135,6 +147,7 @@ test('Mini App checkout fills the viewport and keeps payment actions visible', a
   for (const viewport of [{width:320,height:700},{width:390,height:844}]) {
     await page.setViewportSize(viewport);
     await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
 
     await page.locator('[data-nav="plans"]:visible').first().click();
     await page.locator('[data-buy="30"]').click();
@@ -185,6 +198,7 @@ test('Mini App lets an active user choose Happ or INCY', async ({page}) => {
   await page.setViewportSize({width:390,height:844});
   await routeFiles(page, true);
   await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
   await page.locator('#openClientHome').click();
   await expect(page.locator('#clientSheet')).toBeVisible();
   await expect(page.locator('#clientList [data-client]')).toHaveCount(2);
@@ -196,6 +210,7 @@ test('Mini App saves a discount promo from Bonuses and carries it into checkout'
   await page.setViewportSize({width:390,height:844});
   await routeFiles(page, true);
   await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
 
   await page.locator('#bottomNav [data-nav="bonuses"]').click();
   await page.locator('#promoCodePage').fill('mgn20');
@@ -220,6 +235,7 @@ test('Mini App saves a discount promo from Bonuses and carries it into checkout'
 test('Mini App admin dashboard is available to an owner and stays compact', async ({page}) => {
   const errors=[]; page.on('pageerror', error => errors.push(error.message));
   await page.setViewportSize({width:390,height:844}); await routeFiles(page, true); await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
   await page.locator('[data-nav="profile"]').first().click();
   await expect(page.locator('#adminEntry')).toBeVisible();
   await page.locator('#adminEntry').click();
@@ -238,6 +254,7 @@ test('MGN checkout includes 2 devices and charges 50 RUB for each extra slot', a
   await page.setViewportSize({width:390,height:844});
   await routeFiles(page,true);
   await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
   await page.locator('[data-nav="plans"]:visible').first().click();
   await page.locator('[data-buy="30"]').click();
   const range=page.locator('#paymentDeviceRange');
@@ -253,4 +270,34 @@ test('MGN checkout includes 2 devices and charges 50 RUB for each extra slot', a
   await expect(page.locator('#sbpPrice')).toHaveText('220 ₽');
   await expect(page.locator('#paymentDeviceCount')).toHaveText('5');
   await expect(page.locator('#starsPrice')).toHaveText('138 Stars');
+});
+
+
+test('Admin can generate a gift QR and user can redeem it from Bonus scanner', async ({page})=>{
+  const errors=[];page.on('pageerror',error=>errors.push(error.message));
+  await page.setViewportSize({width:390,height:844});
+  await routeFiles(page,true);
+  await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
+  await page.locator('#bottomNav [data-nav="profile"]').click();
+  await page.locator('#adminEntry').click();
+  await page.locator('[data-admin-tab="gifts"]').click();
+  await page.locator('[data-gift-days="30"]').click();
+  await expect(page.locator('#adminGiftQrImage')).toHaveAttribute('src',/^data:image\/png;base64,/);
+  await expect(page.locator('#adminGiftLink')).toHaveAttribute('href',/t\.me\/mgnvpn_bot\?start=g_/);
+
+  await page.evaluate(()=>{
+    window.Telegram.WebApp.showScanQrPopup=(options,callback)=>{
+      callback('https://t.me/mgnvpn_bot?start=g_'+('a'.repeat(43)));
+    };
+    window.Telegram.WebApp.closeScanQrPopup=()=>{};
+  });
+  await page.locator('#bottomNav button[data-nav="bonuses"]').evaluate(el=>{
+    // Inner admin page has hidden bottom bar; use existing navigation event.
+    el.click();
+  });
+  await page.waitForTimeout(200);
+  await page.locator('#scanGiftQr').click();
+  await expect(page.locator('#giftRedeemResult')).toContainText('Вы получили подарок MGN VPN');
+  expect(errors).toEqual([]);
 });

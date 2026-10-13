@@ -249,7 +249,7 @@ def test_http_security_routes_and_subscription(tmp_path, monkeypatch):
             assert agreement.status == privacy.status == 200
             assert 'Пользовательское соглашение' in await agreement.text()
             assert 'Политика конфиденциальности' in await privacy.text()
-            assert all(f'{price} ₽' in root_html for price in (70,170,420,920))
+            assert all(f'{price} ₽' in root_html for price in (70,170,370,777))
             assert 'bottomNav' in await app.text()
             health_response = await client.get('/api/miniapp/health')
             assert health_response.status == 200
@@ -263,11 +263,11 @@ def test_http_security_routes_and_subscription(tmp_path, monkeypatch):
             assert catalog_response.status == 200
             catalog = await catalog_response.json()
             prices = {item['code']: item['price_rub'] for item in catalog['plans']}
-            assert prices == {'30': 70, '90': 170, '180': 420, '365': 920}
+            assert prices == {'30': 70, '90': 170, '180': 370, '365': 777}
             popular = [item['code'] for item in catalog['plans'] if item.get('popular')]
             assert popular == ['90']
             savings = {item['code']: item['savings_rub'] for item in catalog['plans']}
-            assert savings['90'] == 40 and savings['180'] == 0 and savings['365'] == 0
+            assert savings['90'] == 40 and savings['180'] == 50 and savings['365'] == 63
             assert catalog['max_devices'] == 5
             assert (await client.get('/api/miniapp/me')).status == 401
             await db.create_service_promo(

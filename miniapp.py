@@ -36,6 +36,7 @@ from catalog import (
 )
 from db import Database, from_iso, utcnow
 from device_identity import subscription_device_hint
+from gift_qr import gift_link, gift_qr_data_uri, parse_gift_token
 from payments import RollyPayError, create_payment, get_payment
 from legal import (
     AGREEMENT_SECTIONS,
@@ -475,7 +476,7 @@ class MiniAppServer:
             raise _json_error(400, "Некорректный JSON")
         if not isinstance(data, dict):
             raise _json_error(400, "Ожидается объект JSON")
-        for key, limit in (("plan_code", 16), ("code", 64), ("promo_code", 64), ("message", 3000)):
+        for key, limit in (("plan_code", 16), ("code", 64), ("promo_code", 64), ("gift_code", 200), ("message", 3000)):
             if key in data and (not isinstance(data[key], str) or len(data[key]) > limit):
                 raise _json_error(400, "Некорректное поле запроса")
         return data
@@ -1720,6 +1721,68 @@ class MiniAppServer:
             }
         )
 
+    async def admin_create_gift_qr(self, request: web.Request) -> web.Response:
+        actor_id, _tg, _row, role = await self._admin_auth(request)
+        if role not in {"owner", "full"}:
+            raise _json_error(403, "Для подарочных QR необходим полный доступ администратора")
+        data = await self._json_body(request)
+        try:
+            days = int(data.get("days"))
+        except (TypeError, ValueError) as exc:
+            raise _json_error(400, "Выберите 30, 90 или 365 дней") from exc
+        if days not in {30, 90, 365}:
+            raise _json_error(400, "Выберите 30, 90 или 365 дней")
+        voucher = await self.db.create_gift_qr(created_by=actor_id, days=days)
+        link = gift_link(await self._username(), voucher["token"])
+        return web.json_response({
+            "ok": True,
+            "days": days,
+            "link": link,
+            "qr_image": gift_qr_data_uri(link),
+            "expires_at": voucher["expires_at"],
+        }, headers={"Cache-Control": "no-store"})
+
+    async def redeem_gift_qr(self, request: web.Request) -> web.Response:
+        uid, _tg, _row = await self._auth(request)
+        data = await self._json_body(request)
+        token = parse_gift_token(data.get("gift_code"))
+        if token is None:
+            raise _json_error(400, "Некорректный подарочный QR")
+        result = await self.db.redeem_gift_qr(token=token, telegram_id=uid)
+        if not result:
+            raise _json_error(409, "QR-код недействителен, истёк или уже активирован")
+        updated = result["user"]
+        try:
+            await asyncio.wait_for(self.provider.provision(updated), timeout=7.0)
+        except Exception as exc:
+            logger.warning("Gift VPN provisioning deferred for %s: %s", uid, type(exc).__name__)
+        try:
+            await self._sync_bot_subscription_menu(updated)
+        except Exception as exc:
+            logger.warning("Gift VPN menu sync deferred for %s: %s", uid, type(exc).__name__)
+        days = int(result["days"])
+        label = {30: "1 месяц", 90: "3 месяца", 365: "1 год"}[days]
+        try:
+            await self.bot.send_message(
+                chat_id=uid,
+                text=(
+                    "🎁 <b>Вы получили подарок MGN VPN!</b>\n\n"
+                    f"Подписка: <b>{label}</b>\n"
+                    f"Доступ продлён до: <b>{escape(result['subscription_until'][:10])}</b>\n\n"
+                    "Откройте Mini App, чтобы подключить VPN."
+                ).replace("\n", "\n"),
+            )
+        except Exception as exc:
+            # Telegram may deny messages until user starts the bot.
+            logger.info("Gift redeemed; direct Telegram delivery unavailable for %s: %s", uid, type(exc).__name__)
+        return web.json_response({
+            "ok": True,
+            "days": days,
+            "label": label,
+            "subscription_until": result["subscription_until"],
+            "notification": "Подарок активирован. Подписка начислена.",
+        }, headers={"Cache-Control": "no-store"})
+
     async def promo_quote(self, request: web.Request) -> web.Response:
         uid, _tg_user, row = await self._auth(request)
         data = await self._json_body(request)
@@ -2046,7 +2109,7 @@ class MiniAppServer:
             response.headers.setdefault("Referrer-Policy", "no-referrer")
             response.headers.setdefault(
                 "Permissions-Policy",
-                "camera=(), microphone=(), geolocation=(), payment=()",
+                "camera=(self), microphone=(), geolocation=(), payment=()",
             )
             response.headers.setdefault("Content-Security-Policy",
                 "default-src 'self'; script-src 'self' https://telegram.org https://cdn.jsdelivr.net; "
@@ -2092,6 +2155,8 @@ class MiniAppServer:
         app.router.add_post("/api/miniapp/payment/sbp", self.sbp_create)
         app.router.add_get("/api/miniapp/payment/sbp/{payment_id}", self.sbp_check)
         app.router.add_post("/api/miniapp/shop/device", self.buy_extra_device)
+        app.router.add_post("/api/miniapp/admin/gifts", self.admin_create_gift_qr)
+        app.router.add_post("/api/miniapp/gifts/redeem", self.redeem_gift_qr)
         app.router.add_post("/api/miniapp/promo/quote", self.promo_quote)
         app.router.add_post("/api/miniapp/promo/redeem", self.promo_redeem)
         app.router.add_post("/api/miniapp/support", self.create_support_ticket)

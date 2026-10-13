@@ -284,6 +284,21 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_promo_uses_user
                 ON promo_uses(promo_id, telegram_id);
 
+                -- One-time gift vouchers; never persist plaintext bearer tokens.
+                CREATE TABLE IF NOT EXISTS gift_qr_codes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    days INTEGER NOT NULL CHECK(days IN (30,90,365)),
+                    created_by INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    redeemed_by INTEGER,
+                    redeemed_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_gift_qr_issued
+                ON gift_qr_codes(created_by, created_at DESC);
+
                 CREATE TABLE IF NOT EXISTS support_tickets (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     telegram_id INTEGER NOT NULL,
@@ -689,6 +704,14 @@ class Database:
                     "INSERT INTO service_migrations (name, applied_at) VALUES (?, ?)",
                     ("base_two_devices_v1", to_iso(utcnow())),
                 )
+
+            # Lock in the pricing cutover once, for already-created payment
+            # intents. Prior quotes remain valid, new ones use lower prices.
+            await db.execute(
+                "INSERT OR IGNORE INTO service_migrations (name, applied_at) "
+                "VALUES (?, ?)",
+                ("pricing_370_777_v1", to_iso(utcnow())),
+            )
 
             # Idempotent startup normalization; no new slot each restart.
             await db.execute(
@@ -1576,6 +1599,95 @@ class Database:
             await db.commit()
             return True
 
+    async def create_gift_qr(
+        self, *, created_by: int, days: int, valid_days: int = 30
+    ) -> dict[str, Any]:
+        """Issue a single-use, random voucher; no raw token stored in SQLite."""
+        if type(days) is not int or days not in {30, 90, 365}:
+            raise ValueError("invalid gift duration")
+        if type(valid_days) is not int or not 1 <= valid_days <= 90:
+            raise ValueError("invalid voucher expiry")
+        token = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+        now = utcnow()
+        until = now + timedelta(days=valid_days)
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute(
+                """
+                INSERT INTO gift_qr_codes
+                (token_hash, days, created_by, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (digest, int(days), int(created_by), to_iso(now), to_iso(until)),
+            )
+            await db.commit()
+        return {
+            "token": token,
+            "days": days,
+            "expires_at": to_iso(until),
+        }
+
+    async def redeem_gift_qr(
+        self, *, token: str, telegram_id: int
+    ) -> dict[str, Any] | None:
+        """Atomically consume a gift and extend an existing VPN subscription.
+
+        BEGIN IMMEDIATE serializes simultaneous scans. The first redemption
+        wins, and a losing scanner grants nothing. The subscriber keeps
+        previously purchased device slots and their canonical VPN client ID.
+        """
+        from gift_qr import parse_gift_token
+
+        parsed = parse_gift_token(token)
+        if parsed is None:
+            return None
+        digest = hashlib.sha256(parsed.encode("ascii")).hexdigest()
+        now = utcnow()
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (await db.execute(
+                "SELECT id, days, expires_at, redeemed_by "
+                "FROM gift_qr_codes WHERE token_hash=?", (digest,),
+            )).fetchone()
+            user = await (await db.execute(
+                "SELECT subscription_until, plan_name, is_blocked "
+                "FROM users WHERE telegram_id=?", (int(telegram_id),),
+            )).fetchone()
+            if (
+                row is None or user is None
+                or row["redeemed_by"] is not None
+                or bool(user["is_blocked"])
+                or from_iso(row["expires_at"]) <= now
+            ):
+                await db.rollback()
+                return None
+            start = max(now, from_iso(user["subscription_until"]) or now)
+            new_until = start + timedelta(days=int(row["days"]))
+            current_name = str(user["plan_name"] or "").strip()
+            plan_name = current_name if start > now and current_name else "Подарочная подписка"
+            claim = await db.execute(
+                "UPDATE gift_qr_codes SET redeemed_by=?, redeemed_at=? "
+                "WHERE id=? AND redeemed_by IS NULL AND expires_at>?",
+                (int(telegram_id), to_iso(now), int(row["id"]), to_iso(now)),
+            )
+            if claim.rowcount != 1:
+                await db.rollback()
+                return None
+            await db.execute(
+                "UPDATE users SET subscription_until=?, plan_name=? WHERE telegram_id=?",
+                (to_iso(new_until), plan_name, int(telegram_id)),
+            )
+            await db.commit()
+        updated = await self.get_user(telegram_id)
+        if updated is None:
+            raise RuntimeError("redeemed gift recipient missing")
+        return {
+            "user": updated,
+            "days": int(row["days"]),
+            "subscription_until": to_iso(new_until),
+        }
+
     async def create_payment_intent(
         self,
         *,
@@ -2124,10 +2236,26 @@ class Database:
         current = self._product_price(product_code, device_count)
         if original_amount == current:
             return False
-        if self._legacy_price(product_code, device_count) != original_amount:
-            raise ValueError("Payment price is outdated")
         created = from_iso(created_at)
         if created is None:
+            raise ValueError("Payment price is outdated")
+
+        # 6- and 12-month checkout prices changed without changing included
+        # slots. Honor an already-issued quote only if it predates the cutover.
+        previous_price = {"180": 420, "365": 920}.get(product_code)
+        old_total = (
+            previous_price + (max(BASE_DEVICES, min(MAX_DEVICES, int(device_count or BASE_DEVICES))) - BASE_DEVICES) * EXTRA_DEVICE_PRICE_RUB
+            if previous_price is not None else None
+        )
+        if old_total == original_amount:
+            pricing = await (await db.execute(
+                "SELECT applied_at FROM service_migrations WHERE name='pricing_370_777_v1'"
+            )).fetchone()
+            cutover = from_iso(pricing[0]) if pricing else None
+            if cutover and created < cutover:
+                return False  # no legacy one-device conversion
+
+        if self._legacy_price(product_code, device_count) != original_amount:
             raise ValueError("Payment price is outdated")
         migration = await (await db.execute(
             "SELECT applied_at FROM service_migrations WHERE name='base_two_devices_v1'"
