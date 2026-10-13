@@ -14,7 +14,7 @@ from typing import Any
 
 
 _HWID = re.compile(r"^[A-Za-z0-9._:=-]{6,160}$")
-_GENERIC_NAMES = {"", "устройство", "подключённое устройство", "unknown", "unknown device", "device", "desktop"}
+_GENERIC_NAMES = {"", "устройство", "подключённое устройство", "unknown", "unknown device", "device", "desktop", "устройство happ"}
 
 
 def device_fingerprint_key(user_id: int, hwid: str) -> str:
@@ -46,18 +46,39 @@ def _header(headers: Mapping[str, str], name: str) -> str:
 
 def subscription_device_hint(headers: Mapping[str, str]) -> dict[str, str] | None:
     """Accept only HWID-bearing requests, never a guess from IP or User-Agent."""
-    hwid = _header(headers, "X-HWID").strip()
+    hwid = next(
+        (
+            _header(headers, key).strip()
+            for key in ("X-HWID", "X-Happ-HWID", "X-Device-ID", "X-Client-Device-ID")
+            if _header(headers, key).strip()
+        ),
+        "",
+    )
     if not _HWID.fullmatch(hwid):
         return None
 
     model = _clean(_header(headers, "X-Device-Model"))
     os_name = _clean(_header(headers, "X-Device-OS"), 40)
     os_version = _clean(_header(headers, "X-Ver-OS"), 24)
-    if not model and not os_name:
-        return None
+    user_agent = _clean(_header(headers, "User-Agent"), 180)
+
+    # Some clients send HWID but not the optional OS/model metadata.
+    # Still show the identifiable installation without inventing a model.
+    if not os_name:
+        ua_low = user_agent.lower()
+        for os_marker, display in (
+            ("iphone", "iOS"), ("ipad", "iPadOS"), ("ios", "iOS"),
+            ("android", "Android"), ("windows", "Windows"),
+            ("macos", "macOS"), ("linux", "Linux"),
+        ):
+            if os_marker in ua_low:
+                os_name = display
+                break
+
+    app = "Happ" if "happ" in user_agent.lower() else ""
     return {
         "hwid": hwid,
-        "name": model or _fallback_name(os_name),
+        "name": model or (_fallback_name(os_name) if os_name else ("Устройство Happ" if app else "Устройство")),
         "platform": " ".join(x for x in (os_name, os_version) if x),
     }
 
@@ -97,11 +118,8 @@ def enrich_h1_devices(
             hint = by_key.get(device_fingerprint_key(user_id, fingerprint)) if _HWID.fullmatch(fingerprint) else None
         if hint is None and _HWID.fullmatch(identifier):
             hint = by_key.get(device_fingerprint_key(user_id, identifier))
-        # Older H1 versions only report device count. With a single device and
-        # a single recently refreshed subscription profile the hint is usable
-        # for the label, but still doesn't represent VPN connect activity.
-        if hint is None and len(rows) == 1 and len(hints) == 1 and identifier == "count-1":
-            hint = hints[0]
+        # A count-only H1 record cannot be reliably matched to a model.
+        # Never give a server-generated placeholder the identity of a phone.
         if hint is None:
             continue
         original_name = str(row.get("name") or "").strip().lower()
