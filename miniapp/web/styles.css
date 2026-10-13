@@ -1203,7 +1203,7 @@ button.pressing,
 }
 .device-range-dots{
   display:grid;
-  grid-template-columns:repeat(5,1fr);
+  grid-template-columns:repeat(4,1fr);
   margin-top:-1px;
   color:#73737d;
   font-size:9px;
