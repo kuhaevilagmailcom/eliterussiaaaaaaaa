@@ -240,7 +240,7 @@
   function renderHome(){
     const d=state.data;
     const active=!!d.subscription.active;
-    const used=(d.vpn.devices||[]).length;
+    const used=(d.vpn.device_profiles||[]).length;
     const limit=Math.max(1,Number(d.subscription.max_devices||1));
     const pct=Math.min(100,Math.round((used/limit)*100));
 
@@ -256,14 +256,14 @@
     $('#homePlan').textContent=active?(d.subscription.plan||'MGN VPN'):'Нет подписки';
     $('#homePlanNote').textContent=subscriptionNote(d);
     $('#homeRemaining').textContent=active?fmtRemain(d.subscription.remaining_seconds):'—';
-    $('#homeDeviceUsage').textContent=used+' из '+limit;
+    $('#homeDeviceUsage').textContent=used+' найдено';
     $('#homeTraffic').textContent=active
       ? fmtTraffic(d.vpn.traffic_used_gb,d.vpn.traffic_limit_gb)
       : '—';
     $('#deviceProgress').style.width=pct+'%';
     $('b',$('#homeSubscriptionAction')).textContent=active?'Продлить VPN':'Купить VPN';
 
-    $('#devicesActionNote').textContent=active?(used+' из '+limit+' устройств'):'Профиль и настройки';
+    $('#devicesActionNote').textContent=active?(used+' устройств по подписке'):'Профиль и настройки';
     $('#plansActionNote').textContent=active?'Продлить VPN':'Купить VPN';
 
     $('#bonusActionNote').textContent=active?'Промокод и скидка':'Скидка или бесплатные дни';
@@ -325,9 +325,11 @@
 
   function renderDevices(){
     const d=state.data;
-    const list=d.vpn.devices||[];
+    const h1=Array.isArray(d.vpn.devices)?d.vpn.devices:[];
+    const profiles=Array.isArray(d.vpn.device_profiles)?d.vpn.device_profiles:[];
+    const probe=d.vpn.device_probe||{};
     const limit=Math.max(1,Number(d.subscription.max_devices||1));
-    const used=list.length;
+    const used=profiles.length;
     if($('#deviceCount'))$('#deviceCount').textContent=used;
     if($('#deviceLimit'))$('#deviceLimit').textContent=limit;
     if($('#deviceCapacityBar'))$('#deviceCapacityBar').style.width=Math.min(100,(used/limit)*100)+'%';
@@ -335,48 +337,35 @@
     $('#buyDevicePrice').textContent='+1 устройство · '+Number(d.shop.extra_device_price_rub||50)+' ₽';
 
     const root=$('#deviceList');
-    const history=Array.isArray(d.vpn.device_history)?d.vpn.device_history:[];
-    const profiles=Array.isArray(d.vpn.device_profiles)?d.vpn.device_profiles:[];
-    const canRemove=Boolean(d.capabilities?.device_removal);
-    const canReset=Boolean(d.capabilities?.device_reset);
     const resetButton=$('#resetDevicesPage');
-    const activeHistory=history.filter(item=>Boolean(item.active));
-    const historyOnly=history.filter(item=>!item.active);
-    // H1's current device list takes priority over older database history.
-    const visible=list.length?list:activeHistory;
-    if(resetButton)resetButton.hidden=!(d.subscription.active&&canReset&&(list.length||activeHistory.length));
+    if(resetButton)resetButton.hidden=!(d.subscription.active&&d.capabilities?.device_reset&&(h1.length||profiles.length));
     if(!d.subscription.active){
-      root.innerHTML='<div class="empty">После активации подписки здесь появятся подключённые устройства.</div>';
-    }else if(!d.vpn.ready){
-      root.innerHTML='<div class="empty">VPN-сервер ещё не подключён. Лимит устройств уже сохранён.</div>';
-    }else if(!visible.length&&!historyOnly.length&&!profiles.length){
-      root.innerHTML='<div class="empty">Подключённых устройств пока нет. Они появятся после первого подключения к VPN.</div>';
-    }else{
-      const renderDevice=(item,index,isHistory)=>{
-        const id=String(item.device_id||item.id||'');
-        const name=esc(item.name||item.device_name||('Устройство '+(index+1)));
-        const platform=esc(item.platform||item.os||'MGN VPN');
-        const lastSeen=item.last_seen_at||item.last_seen;
-        const profileUpdated=item.profile_updated_at;
-        const meta=[item.ip_address||item.ip,item.country].filter(Boolean).map(esc).join(' · ');
-        const refreshNote=profileUpdated?'Профиль обновлён '+fmtDate(profileUpdated):'';
-        return '<article class="device '+(isHistory?'history ':'')+(item.suspicious?'suspicious':'')+'">'+
-          '<span class="device-symbol"><i data-lucide="'+deviceIcon(item)+'"></i></span>'+
-          '<span class="device-copy"><b>'+name+'</b><small>'+platform+(lastSeen?' · '+fmtDate(lastSeen):'')+'</small>'+(refreshNote?'<small>'+refreshNote+'</small>':'')+(meta?'<small>'+meta+'</small>':'')+'</span>'+
-          (item.suspicious?'<span class="device-warning" title="Подозрительное подключение">!</span>':'')+
-          (id&&canRemove&&!isHistory?'<button type="button" class="device-remove" aria-label="Отключить устройство" data-remove="'+encodeURIComponent(id)+'"><i data-lucide="trash-2"></i></button>':'')+
-        '</article>';
-      };
-      const currentHtml=visible.map((item,index)=>renderDevice(item,index,false)).join('');
-      const oldHtml=historyOnly.length?'<div class="device-history-title">История устройств</div>'+historyOnly.map((item,index)=>renderDevice(item,index,true)).join(''):'';
-      const matched=new Set(visible.filter(item=>item.identity_source==='client-reported').map(item=>String(item.name||'')+'|'+String(item.platform||'')));
-      const unmatched=profiles.filter(item=>!matched.has(String(item.name||'')+'|'+String(item.platform||''))).slice(0,5);
-      const modelHtml=unmatched.length?'<div class="device-history-title">Обновляли подписку</div>'+
-        unmatched.map((item,index)=>renderDevice({...item,profile_updated_at:item.updated_at},index,true)).join('')+
-        '<p class="device-identity-note">Данные от VPN-приложения, не подтверждение активного соединения.</p>':'';
-      root.innerHTML=currentHtml+modelHtml+oldHtml;
-      $$('[data-remove]',root).forEach(btn=>btn.onclick=()=>removeDevice(decodeURIComponent(btn.dataset.remove)));
+      root.innerHTML='<div class="empty">После активации подписки здесь появятся ваши устройства.</div>';
+      return;
     }
+
+    // These labels come from actual VPN apps, not BotHost's H1 aggregate fetch.
+    const listHtml=profiles.map(item=>{
+      const name=esc(item.name||'Устройство');
+      const platform=esc(item.platform||'Модель/ОС не переданы');
+      return '<article class="device">'+
+        '<span class="device-symbol"><i data-lucide="'+deviceIcon(item)+'"></i></span>'+
+        '<span class="device-copy"><b>'+name+'</b><small>'+platform+'</small>'+
+        '<small>Подписка обновлена · '+fmtDate(item.updated_at)+'</small></span>'+
+      '</article>';
+    }).join('');
+
+    let stateMessage='';
+    if(profiles.length){
+      stateMessage='<p class="device-identity-note">Обнаружено по обновлениям подписки. Это не список активных VPN-соединений.</p>';
+    }else if(probe.last_happ_at&&!probe.last_hwid_at){
+      stateMessage='<div class="empty">Happ запрашивает подписку, но не передаёт HWID. Включите передачу HWID в настройках Happ и обновите подписку.</div>';
+    }else if(probe.last_hwid_at){
+      stateMessage='<div class="empty">HWID получен. Проверьте, что используете свежую версию Mini App.</div>';
+    }else{
+      stateMessage='<div class="empty">Устройств пока не обнаружено. Откройте Happ и обновите подписку MGN VPN. Модель появится, если приложение передаёт HWID.</div>';
+    }
+    root.innerHTML=listHtml+'<p class="device-identity-note">Обнаружено: '+used+' · Оплачено слотов: '+limit+'</p>'+stateMessage;
   }
 
   function renderTrafficHistory(){
