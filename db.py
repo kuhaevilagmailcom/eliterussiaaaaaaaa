@@ -9,6 +9,8 @@ from typing import Any
 
 import aiosqlite
 
+from device_identity import device_fingerprint_key, enrich_h1_devices
+
 from catalog import (
     BASE_DEVICES,
     DEVICE_PRODUCT_CODE,
@@ -386,6 +388,20 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_device_history_user_seen
                 ON device_history(telegram_id, last_seen_at DESC);
+
+                -- Client-reported labels are hints, not additional H1 device slots.
+                -- Raw HWIDs are never written to disk.
+                CREATE TABLE IF NOT EXISTS subscription_device_metadata (
+                    telegram_id INTEGER NOT NULL,
+                    fingerprint_key TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    platform TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (telegram_id, fingerprint_key)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sub_device_metadata_seen
+                ON subscription_device_metadata(telegram_id, updated_at DESC);
 
                 CREATE TABLE IF NOT EXISTS admin_audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3002,6 +3018,68 @@ class Database:
             )
             await db.commit()
 
+    async def record_subscription_device(self, telegram_id: int, hint: dict[str, str]) -> None:
+        """Store a model/OS hint from a HWID-bearing subscription refresh.
+
+        Never count this as a VPN connection. H1 remains authoritative for that.
+        """
+        hwid = str(hint.get("hwid") or "")
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{6,160}", hwid):
+            return
+        name = str(hint.get("name") or "").strip()[:80]
+        platform = str(hint.get("platform") or "").strip()[:80]
+        if not name and not platform:
+            return
+        fingerprint_key = device_fingerprint_key(telegram_id, hwid)
+        now = to_iso(utcnow())
+        cutoff = to_iso(utcnow() - timedelta(days=90))
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute(
+                "DELETE FROM subscription_device_metadata WHERE telegram_id=? AND updated_at<?",
+                (int(telegram_id), cutoff),
+            )
+            await db.execute(
+                """
+                INSERT INTO subscription_device_metadata
+                (telegram_id, fingerprint_key, name, platform, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(telegram_id, fingerprint_key) DO UPDATE SET
+                    name=excluded.name, platform=excluded.platform,
+                    updated_at=excluded.updated_at
+                """,
+                (int(telegram_id), fingerprint_key, name, platform, now),
+            )
+            await db.commit()
+
+    async def list_subscription_device_hints(self, telegram_id: int) -> list[dict[str, str]]:
+        cutoff = to_iso(utcnow() - timedelta(days=30))
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(
+                "SELECT fingerprint_key, name, platform, updated_at "
+                "FROM subscription_device_metadata WHERE telegram_id=? AND updated_at>=? "
+                "ORDER BY updated_at DESC LIMIT 30",
+                (int(telegram_id), cutoff),
+            )).fetchall()
+        return [dict(row) for row in rows]
+
+    async def enrich_panel_devices(
+        self, telegram_id: int, devices: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if not devices:
+            return []
+        hints = await self.list_subscription_device_hints(telegram_id)
+        return enrich_h1_devices(telegram_id, devices, hints)
+
+    async def clear_subscription_device_hints(self, telegram_id: int) -> None:
+        """Clear old label mappings after H1 confirms a reset."""
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute(
+                "DELETE FROM subscription_device_metadata WHERE telegram_id=?",
+                (int(telegram_id),),
+            )
+            await db.commit()
+
     async def record_device_snapshot(self, telegram_id: int, devices: list[dict[str, Any]]) -> None:
         now = to_iso(utcnow())
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
@@ -3031,8 +3109,11 @@ class Database:
                         ip_address, country, first_seen_at, last_seen_at, active, suspicious
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                     ON CONFLICT(telegram_id, device_key) DO UPDATE SET
-                        device_id=excluded.device_id, name=excluded.name,
-                        platform=excluded.platform, ip_address=excluded.ip_address,
+                        device_id=excluded.device_id,
+                        name=CASE WHEN excluded.name IN ('Устройство', 'Подключённое устройство', 'Unknown device')
+                            THEN device_history.name ELSE excluded.name END,
+                        platform=CASE WHEN excluded.platform='' THEN device_history.platform ELSE excluded.platform END,
+                        ip_address=excluded.ip_address,
                         country=excluded.country, last_seen_at=excluded.last_seen_at,
                         active=1, suspicious=MAX(device_history.suspicious, excluded.suspicious)
                     """,
