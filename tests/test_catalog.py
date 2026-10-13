@@ -16,8 +16,8 @@ def test_prices_and_savings_are_centralized():
     }
     assert {code: plan_savings_rub(code) for code in ("90", "180", "365")} == {
         "90": 40,
-        "180": 0,
-        "365": 0,
+        "180": 50,
+        "365": 63,
     }
 
 
