@@ -48,3 +48,12 @@ def test_count_only_fallback_does_not_invent_extra_devices():
     count = [{"id": "count-1", "name": "Подключённое устройство", "fingerprint": ""}]
     assert enrich_h1_devices(7, count, [one])[0]["name"] == "iPhone"
     assert enrich_h1_devices(7, count, [one, two])[0]["name"] == "Подключённое устройство"
+
+
+def test_happ_base64_like_hwid_is_supported():
+    parsed = subscription_device_hint({
+        "X-HWID": "UE42LJXu4DbiCaBv==",
+        "X-Device-Model": "iPhone 13 Pro",
+    })
+    assert parsed is not None
+    assert parsed["name"] == "iPhone 13 Pro"
