@@ -476,7 +476,7 @@ class MiniAppServer:
             raise _json_error(400, "Некорректный JSON")
         if not isinstance(data, dict):
             raise _json_error(400, "Ожидается объект JSON")
-        for key, limit in (("plan_code", 16), ("code", 64), ("promo_code", 64), ("message", 3000)):
+        for key, limit in (("plan_code", 16), ("code", 64), ("promo_code", 64), ("gift_code", 200), ("message", 3000)):
             if key in data and (not isinstance(data[key], str) or len(data[key]) > limit):
                 raise _json_error(400, "Некорректное поле запроса")
         return data
@@ -1745,7 +1745,7 @@ class MiniAppServer:
     async def redeem_gift_qr(self, request: web.Request) -> web.Response:
         uid, _tg, _row = await self._auth(request)
         data = await self._json_body(request)
-        token = parse_gift_token(data.get("code"))
+        token = parse_gift_token(data.get("gift_code"))
         if token is None:
             raise _json_error(400, "Некорректный подарочный QR")
         result = await self.db.redeem_gift_qr(token=token, telegram_id=uid)
