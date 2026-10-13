@@ -22,13 +22,15 @@ GB = 1024 ** 3
 logger = logging.getLogger(__name__)
 
 
+# Preferred presentation order only. H1 federation / current subscription
+# determines which servers EXIST; this tuple must never create fake ones.
 BASE_MGN_SERVERS: tuple[tuple[str, str], ...] = (
     ("nl", "🇳🇱 Нидерланды"),
-    ("fi", "🇫🇮 Финляндия"),
-    ("pl", "🇵🇱 Польша"),
     ("pk", "🇵🇰 Пакистан"),
+    ("tr", "🇹🇷 Турция"),
+    ("de", "🇩🇪 Германия"),
     ("us1", "🇺🇸 США 1"),
-    ("us2", "🇺🇸 США 2"),
+    ("fi", "🇫🇮 Финляндия"),
 )
 
 LOCATION_LABELS = {
@@ -1974,149 +1976,79 @@ class H1CloudVpnProvider(VpnProvider):
                 if host and port:
                     existing_endpoints[endpoint] = len(servers) - 1
 
-        # Federation stores can expose the same physical node through both
-        # proxy and lproxy. Collapse only exact endpoint/id duplicates; never
-        # collapse different VLESS endpoints from the same country.
+        # Keep only entries actually reported by H1 or the live subscription.
+        # In particular, don't insert sold/removed locations as 'offline'
+        # placeholders. The old six-country fallback hid new Turkey/Germany.
         deduped: list[dict[str, Any]] = []
         seen_inventory: set[tuple[str, str, int]] = set()
         for item in servers:
             host = str(item.get("host") or "").lower().rstrip(".")
             port = int(item.get("port") or 0)
             node_id = str(item.get("id") or "")
-            if host and port:
-                key = ("endpoint", host, port)
-            else:
-                key = ("node", node_id, 0)
+            key = ("endpoint", host, port) if host and port else ("node", node_id, 0)
             if key in seen_inventory:
                 continue
             seen_inventory.add(key)
             deduped.append(item)
 
-        name_counts: dict[str, int] = {}
-        for item in deduped:
-            base_name = str(item.get("name") or "").strip() or "H1Cloud"
-            name_counts[base_name] = name_counts.get(base_name, 0) + 1
-            occurrence = name_counts[base_name]
-            if occurrence > 1:
-                item["name"] = f"{base_name} · {occurrence}"
-
-        def base_code(item: dict[str, Any]) -> str:
+        def name_for(item: dict[str, Any]) -> str:
+            # Prefer explicit MGN subscription labels, then node metadata.
+            # Only return country names when the identifier really supports it.
+            label = str(item.get("name") or "").strip()
             identity = " ".join(
-                str(item.get(key) or "")
-                for key in ("name", "host", "id")
+                str(item.get(field) or "")
+                for field in ("name", "host", "id")
             )
-            upper_identity = identity.upper()
-            label = _location_label(identity) or _flagged_h1_node_name(identity)
+            inferred = _location_label(identity) or _flagged_h1_node_name(identity)
+            if inferred:
+                if inferred == "🇺🇸 США":
+                    return "🇺🇸 США 1"
+                return inferred
+            return label or "🌐 Неизвестный узел"
 
-            if "Нидерланды" in label:
-                return "nl"
-            if "Финляндия" in label:
-                return "fi"
-            if "Польша" in label:
-                return "pl"
-            if "Пакистан" in label:
-                return "pk"
-
-            # Keep the two US locations separate. Explicit US2 markers win;
-            # any other configured US node is the first US location.
-            if (
-                "США 2" in label
-                or "MGN-US2" in upper_identity
-                or "MGN-USA2" in upper_identity
-                or "US2.H1CLOUD.NET" in upper_identity
-                or "USA2" in upper_identity
-            ):
-                return "us2"
-            if "США" in label:
-                return "us1"
-            return ""
-
-        present_base = {
-            code
-            for item in deduped
-            if (code := base_code(item))
+        preferred_order = {
+            name: index for index, (_code, name) in enumerate(BASE_MGN_SERVERS)
         }
-        for code, label in BASE_MGN_SERVERS:
-            if code in present_base:
-                continue
-            deduped.append(
-                {
-                    "kind": "main" if code == "nl" else "federation",
-                    "name": label,
-                    "id": f"base:{code}",
-                    "host": "",
-                    "port": 0,
-                    "proxy_kind": "direct" if code == "nl" else "federation",
-                    "available": None,
-                    "configured": True,
-                    "latency_ms": None,
-                    "check": "catalog_fallback",
-                    "error": "temporarily_not_reported",
-                    "probe_verified": False,
-                }
-            )
+        # A VPN country's federation entry and the same location in the H1
+        # aggregate are not two countries. Preserve the best confirmed entry.
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for item in deduped:
+            label = name_for(item)
+            groups.setdefault(label, []).append(item)
 
-        # Keep the stable MGN base locations first, then any extra H1 nodes.
-        base_order = {code: index for index, (code, _label) in enumerate(BASE_MGN_SERVERS)}
-        deduped.sort(
+        final_servers: list[dict[str, Any]] = []
+        for label, candidates in groups.items():
+            def rank(item: dict[str, Any]) -> tuple[int, int, int]:
+                kind = str(item.get("check") or "")
+                verified = kind in {"health", "inbounds", "vless_tcp"}
+                is_up = item.get("available") is True
+                return (
+                    0 if is_up and verified else 1 if is_up else 2,
+                    0 if item.get("host") else 1,
+                    int(item.get("latency_ms") or 999999),
+                )
+
+            chosen = dict(min(candidates, key=rank))
+            chosen["name"] = label
+            chosen["configured"] = True
+            final_servers.append(chosen)
+
+        final_servers.sort(
             key=lambda item: (
-                0 if base_code(item) in base_order else 1,
-                base_order.get(base_code(item), 999),
+                preferred_order.get(str(item.get("name") or ""), 999),
                 str(item.get("name") or ""),
             )
         )
 
-        base_labels = dict(BASE_MGN_SERVERS)
-        grouped: dict[str, list[dict[str, Any]]] = {
-            code: [] for code, _label in BASE_MGN_SERVERS
-        }
-        for item in deduped:
-            code = base_code(item)
-            if code in grouped:
-                grouped[code].append(item)
-
-        servers: list[dict[str, Any]] = []
-        for code, canonical_name in BASE_MGN_SERVERS:
-            candidates = grouped.get(code) or []
-            if candidates:
-                candidates.sort(
-                    key=lambda item: (
-                        0 if item.get("available") else 1,
-                        int(item.get("latency_ms") or 999999),
-                        0 if item.get("host") else 1,
-                    )
-                )
-                chosen = dict(candidates[0])
-                chosen["name"] = canonical_name
-                chosen["configured"] = True
-                servers.append(chosen)
-                continue
-
-            # This should be rare because the fallback catalog above already
-            # creates missing entries, but keep the admin inventory stable.
-            servers.append(
-                {
-                    "kind": "main" if code == "nl" else "federation",
-                    "name": base_labels[code],
-                    "id": f"base:{code}",
-                    "host": "",
-                    "port": 0,
-                    "proxy_kind": "direct" if code == "nl" else "federation",
-                    "available": None,
-                    "configured": True,
-                    "latency_ms": None,
-                    "check": "catalog_fallback",
-                    "error": "temporarily_not_reported",
-                    "probe_verified": False,
-                }
-            )
+        if subscription_links:
+            discovery_ok = True
 
         return {
             "provider": self.mode_name,
             "discovery_ok": discovery_ok,
-            "discovery_error": discovery_error,
+            "discovery_error": discovery_error if not discovery_ok else "",
             "sources": source_rows,
-            "servers": servers,
+            "servers": final_servers,
         }
 
     async def _probe_vless_endpoint(self, host: str, port: int) -> float | None:
