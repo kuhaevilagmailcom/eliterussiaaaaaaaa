@@ -142,6 +142,9 @@ class MiniAppServer:
         self._subscription_refresh_last: dict[int, float] = {}
         self._h1_semaphore = asyncio.Semaphore(4)
         self._subscription_cache: dict[str, dict] = {}
+        # Share a cold H1 fetch for simultaneous Happ clients belonging to
+        # the same account; don't multiply expensive federation calls.
+        self._subscription_inflight: dict[str, asyncio.Task] = {}
         self._subscription_cache_invalidated: set[str] = set()
         self._rate_events: dict[str, list[float]] = {}
         self._last_rate_cleanup = 0.0
@@ -927,11 +930,28 @@ class MiniAppServer:
             rendered, count = prettify_subscription_payload(body)
             return rendered, upstream_headers, count
 
+        # Single-flight only the expensive provider lookup. Per-request
+        # expiry, block checks and Happ response headers remain individual.
+        pending = self._subscription_inflight.get(token)
+        if pending is None or pending.done():
+            pending = asyncio.create_task(load_payload())
+            self._subscription_inflight[token] = pending
+
+            def clear_inflight(done: asyncio.Task) -> None:
+                if self._subscription_inflight.get(token) is done:
+                    self._subscription_inflight.pop(token, None)
+                if not done.cancelled():
+                    # Avoid an unhandled task exception if every waiting
+                    # client times out before the provider task finishes.
+                    done.exception()
+
+            pending.add_done_callback(clear_inflight)
+
         try:
-            # fetch_subscription performs a bounded main-panel self-heal. A
-            # second full federation provision made clients wait 30+ seconds.
+            # shield() ensures that one cancelled Happ request does not
+            # abort a shared refresh used by other devices.
             body, upstream_headers, count = await asyncio.wait_for(
-                load_payload(),
+                asyncio.shield(pending),
                 14.0,
             )
             if count < 1:
@@ -2098,13 +2118,18 @@ class MiniAppServer:
         )
 
     async def close(self) -> None:
-        tasks = list(self._reconcile_tasks.values()) + list(self._subscription_refresh_tasks.values())
+        tasks = (
+            list(self._reconcile_tasks.values())
+            + list(self._subscription_refresh_tasks.values())
+            + list(self._subscription_inflight.values())
+        )
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._reconcile_tasks.clear()
         self._subscription_refresh_tasks.clear()
+        self._subscription_inflight.clear()
 
         if self.runner is not None:
             await self.runner.cleanup()
