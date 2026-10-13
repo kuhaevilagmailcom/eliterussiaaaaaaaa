@@ -20,6 +20,13 @@ async function routeFiles(page, miniApp = false) {
       max_devices: 5,
       extra_device_price_rub: 50
     }});
+    if (url.pathname === '/api/miniapp/admin/gifts') return route.fulfill({json:{
+      ok:true,days:30,link:'https://t.me/mgnvpn_bot?start=g_'+('a'.repeat(43)),
+      qr_image:'data:image/png;base64,iVBORw0KGgo=',expires_at:'2026-11-12T00:00:00Z'
+    }});
+    if (url.pathname === '/api/miniapp/gifts/redeem') return route.fulfill({json:{
+      ok:true,days:30,label:'1 месяц',subscription_until:'2027-02-01T00:00:00Z'
+    }});
     if (url.pathname === '/api/miniapp/promo/redeem') return route.fulfill({json:{
       ok:true,type:'discount',code:'MGN20',value:20
     }});
@@ -253,4 +260,32 @@ test('MGN checkout includes 2 devices and charges 50 RUB for each extra slot', a
   await expect(page.locator('#sbpPrice')).toHaveText('220 ₽');
   await expect(page.locator('#paymentDeviceCount')).toHaveText('5');
   await expect(page.locator('#starsPrice')).toHaveText('138 Stars');
+});
+
+
+test('Admin can generate a gift QR and user can redeem it from Bonus scanner', async ({page})=>{
+  const errors=[];page.on('pageerror',error=>errors.push(error.message));
+  await page.setViewportSize({width:390,height:844});
+  await routeFiles(page,true);
+  await page.goto('http://mgn.test/app');
+  await page.locator('#adminEntry').click();
+  await page.locator('[data-admin-tab="gifts"]').click();
+  await page.locator('[data-gift-days="30"]').click();
+  await expect(page.locator('#adminGiftQrImage')).toHaveAttribute('src',/^data:image\/png;base64,/);
+  await expect(page.locator('#adminGiftLink')).toHaveAttribute('href',/t\.me\/mgnvpn_bot\?start=g_/);
+
+  await page.evaluate(()=>{
+    window.Telegram.WebApp.showScanQrPopup=(options,callback)=>{
+      callback('https://t.me/mgnvpn_bot?start=g_'+('a'.repeat(43)));
+    };
+    window.Telegram.WebApp.closeScanQrPopup=()=>{};
+  });
+  await page.locator('#bottomNav button[data-nav="bonuses"]').evaluate(el=>{
+    // Inner admin page has hidden bottom bar; use existing navigation event.
+    el.click();
+  });
+  await page.waitForTimeout(200);
+  await page.locator('#scanGiftQr').click();
+  await expect(page.locator('#giftRedeemResult')).toContainText('Вы получили подарок MGN VPN');
+  expect(errors).toEqual([]);
 });
