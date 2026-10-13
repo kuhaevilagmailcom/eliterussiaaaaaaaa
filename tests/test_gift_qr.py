@@ -141,7 +141,7 @@ def test_gift_miniapp_activation_notifies_user_and_admin_auth(tmp_path):
         assert created["qr_image"].startswith("data:image/png;base64,")
 
         scanned_request = make_mocked_request("POST", "/api/miniapp/gifts/redeem")
-        server._json_body = AsyncMock(return_value={"code": created["link"]})
+        server._json_body = AsyncMock(return_value={"gift_code": created["link"]})
         redeemed_response = await server.redeem_gift_qr(scanned_request)
         redeemed = json.loads(redeemed_response.body)
         assert redeemed["ok"] is True and redeemed["days"] == 30
