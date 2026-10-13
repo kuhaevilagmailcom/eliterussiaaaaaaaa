@@ -33,40 +33,45 @@ from vpn import H1CloudVpnProvider
 TOKEN = '123456:TEST_ONLY'
 
 
-def test_admin_server_status_is_exactly_the_compact_six_server_list():
+def test_admin_server_status_uses_live_h1_countries_not_old_static_list():
     servers = [
-        {"name": "🇺🇸 США 2", "available": True, "latency_ms": 97, "host": "hidden"},
-        {"name": "🇳🇱 Нидерланды", "available": True, "latency_ms": 119},
-        {"name": "🇫🇮 Финляндия", "available": True, "latency_ms": 159},
-        {"name": "🇵🇱 Польша", "available": True, "latency_ms": 117},
-        {"name": "🇵🇰 Пакистан", "available": True, "latency_ms": 127},
-        {"name": "🇺🇸 США 1", "available": True, "latency_ms": 167},
-        {"name": "Лишний технический узел", "available": True, "latency_ms": 1},
-    ]
-    assert format_admin_server_status(servers) == (
-        "🖥 <b>Состояние серверов</b>\n"
-        "✅ <b>🇳🇱 Нидерланды</b> · 119 мс\n"
-        "✅ <b>🇫🇮 Финляндия</b> · 159 мс\n"
-        "✅ <b>🇵🇱 Польша</b> · 117 мс\n"
-        "✅ <b>🇵🇰 Пакистан</b> · 127 мс\n"
-        "✅ <b>🇺🇸 США 1</b> · 167 мс\n"
-        "✅ <b>🇺🇸 США 2</b> · 97 мс"
-    )
-
-
-def test_admin_server_status_does_not_show_unknown_as_red():
-    servers = [
-        {"name": "🇳🇱 Нидерланды", "available": True, "latency_ms": 120},
-        {"name": "🇫🇮 Финляндия", "available": None, "latency_ms": None},
-        {"name": "🇵🇱 Польша", "available": False, "latency_ms": None},
-        {"name": "🇵🇰 Пакистан", "available": True, "latency_ms": None},
-        {"name": "🇺🇸 США 1", "available": True, "latency_ms": 160},
-        {"name": "🇺🇸 США 2", "available": True, "latency_ms": None},
+        {"name": "🇳🇱 Нидерланды", "available": True, "latency_ms": 30},
+        {"name": "🇵🇰 Пакистан", "available": True, "latency_ms": 33},
+        {"name": "🇹🇷 Турция", "available": True, "latency_ms": 56},
+        {"name": "🇩🇪 Германия", "available": True, "latency_ms": 72},
+        {"name": "🇺🇸 США 1", "available": True, "latency_ms": 163},
+        {"name": "🇫🇮 Финляндия", "available": True, "latency_ms": 102},
     ]
     rendered = format_admin_server_status(servers)
-    assert "⚪ <b>🇫🇮 Финляндия</b>" in rendered
-    assert "❌ <b>🇵🇱 Польша</b>" in rendered
-    assert "✅ <b>🇵🇰 Пакистан</b>" in rendered
+    assert rendered == (
+        "🖥 <b>Состояние серверов</b>\n"
+        "✅ <b>🇳🇱 Нидерланды</b> · 30 мс\n"
+        "✅ <b>🇵🇰 Пакистан</b> · 33 мс\n"
+        "✅ <b>🇹🇷 Турция</b> · 56 мс\n"
+        "✅ <b>🇩🇪 Германия</b> · 72 мс\n"
+        "✅ <b>🇺🇸 США 1</b> · 163 мс\n"
+        "✅ <b>🇫🇮 Финляндия</b> · 102 мс"
+    )
+    assert "Польша" not in rendered and "США 2" not in rendered
+
+
+def test_admin_server_status_distinguishes_unknown_and_escapes_names():
+    servers = [
+        {"name": "🇩🇪 Германия", "available": None, "latency_ms": None},
+        {"name": "🇹🇷 Турция", "available": False, "latency_ms": None},
+        {"name": "<script>hi</script>", "available": True, "latency_ms": 30},
+    ]
+    rendered = format_admin_server_status(servers)
+    assert "⚪ <b>🇩🇪 Германия</b>" in rendered
+    assert "❌ <b>🇹🇷 Турция</b>" in rendered
+    assert "&lt;script&gt;" in rendered and "<script>" not in rendered
+
+
+def test_admin_server_status_no_false_offline_placeholders():
+    assert format_admin_server_status([]) == (
+        "🖥 <b>Состояние серверов</b>\n"
+        "➖ H1 пока не вернул список серверов"
+    )
 
 
 def test_existing_channel_member_receives_one_trial_and_notification(tmp_path, monkeypatch):

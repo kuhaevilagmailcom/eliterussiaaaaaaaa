@@ -570,9 +570,10 @@
 
   function renderAdminServers(data){
     const rows=data.servers||[];
-    $('#adminServers').innerHTML=rows.length?rows.map(item=>
-      '<div class="admin-server '+(item.available&&!item.quarantined?'online':'offline')+'"><i class="admin-server-dot"></i><b>'+esc(item.name)+(item.quarantined?' · исключён':'')+'</b><span>'+(item.latency_ms===null?'—':adminNumber(item.latency_ms)+' мс')+'</span></div>'
-    ).join(''):'<p class="admin-empty">Серверы не найдены</p>';
+    $('#adminServers').innerHTML=rows.length?rows.map(item=>{
+      const status=item.quarantined?'offline':item.available===true?'online':item.available===false?'offline':'unknown';
+      return '<div class="admin-server '+status+'"><i class="admin-server-dot"></i><b>'+esc(item.name)+(item.quarantined?' · исключён':'')+'</b><span>'+(item.latency_ms==null?'—':adminNumber(item.latency_ms)+' мс')+'</span></div>';
+    }).join(''):'<p class="admin-empty">H1 пока не вернул список серверов</p>';
     const labels={expired:'Подписка закончилась',abandoned_payment:'Брошенный платёж',trial_ending:'Пробник заканчивается',inactive:'Долгая неактивность',renewal_discount:'Скидка на продление',suspicious_device:'Подозрительное устройство'};
     const notices=data.notifications||[];
     $('#adminNotificationLog').innerHTML=notices.length?notices.map(item=>'<div class="admin-row"><div class="admin-row-main"><b>'+esc(labels[item.kind]||item.kind)+'</b><small>ID '+Number(item.telegram_id)+' · '+fmtDate(item.sent_at||item.created_at)+'</small></div><span class="admin-tag '+(item.status==='sent'?'paid':'granted')+'">'+(item.status==='sent'?'ОТПРАВЛЕНО':'ОЖИДАЕТ')+'</span></div>').join(''):'<p class="admin-empty">Событий пока нет</p>';

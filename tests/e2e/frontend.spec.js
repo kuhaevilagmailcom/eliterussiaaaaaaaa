@@ -43,7 +43,7 @@ async function routeFiles(page, miniApp = false) {
     }});
     if (url.pathname === '/api/miniapp/admin/users') return route.fulfill({json:{users:[{telegram_id:42,first_name:'Тест',username:'test',created_at:'2026-09-01T00:00:00Z',subscription_until:'2027-01-01T00:00:00Z',plan_name:'30 дней',active:1,paid:1,granted:0}],total:1,page:0,page_size:20,pages:1}});
     if (url.pathname === '/api/miniapp/admin/payments') return route.fulfill({json:{summary:{rub_total:14800,stars_total:200,rub_month:14800,stars_month:200},payments:[{method:'СБП',telegram_id:42,plan_code:'30',rub:100,stars:0,status:'paid',created_at:'2026-09-26T00:00:00Z',first_name:'Тест'}]}});
-    if (url.pathname === '/api/miniapp/admin/servers') return route.fulfill({json:{servers:['🇳🇱 Нидерланды','🇫🇮 Финляндия','🇵🇱 Польша','🇵🇰 Пакистан','🇺🇸 США 1','🇺🇸 США 2'].map(name=>({name,available:true,latency_ms:100}))}});
+    if (url.pathname === '/api/miniapp/admin/servers') return route.fulfill({json:{servers:['🇳🇱 Нидерланды','🇵🇰 Пакистан','🇹🇷 Турция','🇩🇪 Германия','🇺🇸 США 1','🇫🇮 Финляндия'].map(name=>({name,available:true,latency_ms:100}))}});
     if (url.pathname === '/api/miniapp/me') return route.fulfill({ json: {
       user: {id:42,first_name:'Тест',username:'test',telegram_id:42,referrals:0,referral_rewards:0},
       subscription: {active:true,plan:'1 месяц',until:'2027-01-01T00:00:00+00:00',remaining_seconds:2592000,max_devices:2},
@@ -300,4 +300,20 @@ test('Admin can generate a gift QR and user can redeem it from Bonus scanner', a
   await page.locator('#scanGiftQr').click();
   await expect(page.locator('#giftRedeemResult')).toContainText('Вы получили подарок MGN VPN');
   expect(errors).toEqual([]);
+});
+
+test('Mini App servers shows H1 Turkey and Germany, not sold Poland or USA2', async ({page})=>{
+  await page.setViewportSize({width:390,height:844});
+  await routeFiles(page,true);
+  await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/);
+  await page.locator('#bottomNav [data-nav="profile"]').click();
+  await page.locator('#adminEntry').click();
+  await page.locator('[data-admin-tab="servers"]').click();
+  const servers=page.locator('#adminServers');
+  await expect(servers).toContainText('Турция');
+  await expect(servers).toContainText('Германия');
+  await expect(servers).not.toContainText('Польша');
+  await expect(servers).not.toContainText('США 2');
+  await expect(servers.locator('.admin-server')).toHaveCount(6);
 });

@@ -45,7 +45,7 @@ from legal import (
     agreement_html,
     privacy_html,
 )
-from vpn import BASE_MGN_SERVERS, VpnProvider, VpnState, prettify_subscription_payload
+from vpn import VpnProvider, VpnState, prettify_subscription_payload
 from vpn_clients import client_registry, get_client
 
 
@@ -157,7 +157,7 @@ class MiniAppServer:
         # Version the on-disk cache so a deployment that fixes subscription
         # composition never keeps serving an older NL-only payload.
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        return self._subscription_cache_dir / f"v9-{digest}.json"
+        return self._subscription_cache_dir / f"v10-{digest}.json"
 
     async def invalidate_subscription_cache(self, token: str) -> None:
         """Drop every cached form of a user's subscription after H1 sync."""
@@ -1421,18 +1421,25 @@ class MiniAppServer:
         except Exception as exc:
             logger.exception("Mini App admin server diagnostics failed: %s", type(exc).__name__)
             raise _json_error(503, "Не удалось проверить серверы") from exc
-        by_name = {
-            str(item.get("name") or "").strip(): item
-            for item in list(report.get("servers") or [])
-        }
-        servers = []
-        for _server_id, name in BASE_MGN_SERVERS:
-            item = by_name.get(name)
-            latency = item.get("latency_ms") if item else None
+        # The H1 diagnostic report is the source of truth, not a fixed
+        # country catalog. A sold server must disappear from the Mini App;
+        # newly attached federation countries appear without a code deploy.
+        servers: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in report.get("servers") or []:
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name") or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            latency = raw.get("latency_ms")
             servers.append({
                 "name": name,
-                "available": bool(item and item.get("available")),
+                "available": raw.get("available"),
                 "latency_ms": int(latency) if isinstance(latency, (int, float)) else None,
+                "configured": bool(raw.get("configured")),
+                "check": str(raw.get("check") or ""),
             })
         health_rows, notifications = await asyncio.gather(
             self.db.list_server_health(),
