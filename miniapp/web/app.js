@@ -1144,7 +1144,7 @@
   $('#redeemPromo').onclick=redeemPromo;
   $('#scanGiftQr').onclick=scanGiftQr;
   $('#activateGiftQr').onclick=()=>redeemGiftQr($('#giftCodePage').value);
-  $('.gift-admin-buttons [data-gift-days]').forEach(button=>button.onclick=()=>createAdminGift(Number(button.dataset.giftDays)));
+  $$('.gift-admin-buttons [data-gift-days]').forEach(button=>button.onclick=()=>createAdminGift(Number(button.dataset.giftDays)));
   $('#adminGiftCopy').onclick=()=>copyText($('#adminGiftCopy').dataset.giftLink,'Подарочная ссылка скопирована');
   $('#supportSubmit').onclick=submitSupport;
   $('#supportNew').onclick=resetSupportComposer;
