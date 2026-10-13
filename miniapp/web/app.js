@@ -395,7 +395,7 @@
     $('#profileUsername').textContent=d.user.username?('@'+d.user.username):'Telegram';
     $('#profileRewards').textContent='+'+Number(d.user.referral_rewards||0);
     $('#profileRefs').textContent=Number(d.user.referrals||0).toLocaleString('ru-RU');
-    const used=(d.vpn.devices||[]).length;
+    const used=(d.vpn.device_profiles||[]).length;
     const limit=Math.max(1,Number(d.subscription.max_devices||1));
     $('#profileDevices').textContent=used+' / '+limit;
     $('#profileTraffic').textContent=d.subscription.active
