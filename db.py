@@ -404,6 +404,16 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_sub_device_metadata_seen
                 ON subscription_device_metadata(telegram_id, updated_at DESC);
 
+                -- Only device-header presence and timestamps for diagnostics;
+                -- no IPs, User-Agent strings or raw HWIDs.
+                CREATE TABLE IF NOT EXISTS subscription_device_probe (
+                    telegram_id INTEGER PRIMARY KEY,
+                    last_happ_at TEXT,
+                    last_hwid_at TEXT,
+                    last_model_at TEXT,
+                    last_os_at TEXT
+                );
+
                 CREATE TABLE IF NOT EXISTS admin_audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     actor_id INTEGER NOT NULL,
@@ -3018,6 +3028,49 @@ class Database:
                 (to_iso(utcnow()), int(telegram_id), str(device_key)),
             )
             await db.commit()
+
+    async def note_subscription_device_probe(
+        self,
+        telegram_id: int,
+        *,
+        from_happ: bool,
+        has_hwid: bool,
+        has_model: bool,
+        has_os: bool,
+    ) -> None:
+        """Record only coarse diagnostics about requests to /sub/{token}."""
+        now = to_iso(utcnow())
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute(
+                """
+                INSERT INTO subscription_device_probe (
+                    telegram_id, last_happ_at, last_hwid_at, last_model_at, last_os_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(telegram_id) DO UPDATE SET
+                    last_happ_at=COALESCE(excluded.last_happ_at, subscription_device_probe.last_happ_at),
+                    last_hwid_at=COALESCE(excluded.last_hwid_at, subscription_device_probe.last_hwid_at),
+                    last_model_at=COALESCE(excluded.last_model_at, subscription_device_probe.last_model_at),
+                    last_os_at=COALESCE(excluded.last_os_at, subscription_device_probe.last_os_at)
+                """,
+                (
+                    int(telegram_id),
+                    now if from_happ else None,
+                    now if has_hwid else None,
+                    now if has_hwid and has_model else None,
+                    now if has_hwid and has_os else None,
+                ),
+            )
+            await db.commit()
+
+    async def subscription_device_probe(self, telegram_id: int) -> dict[str, Any]:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute(
+                "SELECT last_happ_at, last_hwid_at, last_model_at, last_os_at "
+                "FROM subscription_device_probe WHERE telegram_id=?",
+                (int(telegram_id),),
+            )).fetchone()
+        return dict(row) if row else {}
 
     async def record_subscription_device(self, telegram_id: int, hint: dict[str, str]) -> None:
         """Store a model/OS hint from a HWID-bearing subscription refresh.
