@@ -2390,19 +2390,11 @@ class H1CloudVpnProvider(VpnProvider):
                 except Exception:
                     pass
 
-        if links:
-            try:
-                links = await asyncio.wait_for(
-                    self._rank_live_vless_links(links),
-                    timeout=1.6,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "H1Cloud endpoint ranking timed out for %s; preserving all %s link(s)",
-                    name,
-                    len(links),
-                )
-
+        # Do not probe and sort tunnels from the BotHost machine here.
+        # Its RTT measures BotHost -> VPS, NOT the subscriber -> VPS route
+        # and definitely not VPN download throughput. This also removes
+        # unnecessary socket probes from the critical Happ import path.
+        # Preserve the upstream order; let the VPN app measure routes locally.
         if not links:
             raise RuntimeError("H1Cloud returned no VLESS links")
 
