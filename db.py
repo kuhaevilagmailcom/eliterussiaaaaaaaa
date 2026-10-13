@@ -2032,6 +2032,7 @@ class Database:
         self, db, *, promo_id: int | None, buyer_id: int, payment_id: str,
         product_code: str, original_amount: int, discount_amount: int,
         final_amount: int, device_count: int | None = None,
+        order_created_at: str | None = None,
     ) -> None:
         if promo_id is None:
             return
@@ -2057,12 +2058,14 @@ class Database:
         if int(used[0]) >= int(promo["per_user_limit"]):
             raise ValueError("Promo user limit reached")
 
-        expected_original = self._product_price(product_code, device_count)
-        expected_discount = expected_original * int(promo["value"]) // 100
-        expected_final = expected_original - expected_discount
+        await self._is_legacy_locked_quote(
+            db, product_code=product_code, device_count=device_count,
+            original_amount=int(original_amount), created_at=order_created_at,
+        )
+        expected_discount = int(original_amount) * int(promo["value"]) // 100
+        expected_final = int(original_amount) - expected_discount
         if (
-            int(original_amount) != expected_original
-            or int(discount_amount) != expected_discount
+            int(discount_amount) != expected_discount
             or int(final_amount) != expected_final
         ):
             raise ValueError("Promo payment amounts are invalid")
@@ -2082,6 +2085,44 @@ class Database:
         if product_code not in PLANS:
             raise ValueError("Unknown payment product")
         return plan_total_price_rub(None, product_code, device_count or BASE_DEVICES)
+
+    @staticmethod
+    def _legacy_price(product_code: str, device_count: int | None) -> int | None:
+        """Prices from before the two-device migration, for in-flight orders only."""
+        previous = {"30": 99, "90": 249, "180": 499, "365": 999}
+        if product_code == DEVICE_PRODUCT_CODE:
+            return EXTRA_DEVICE_PRICE_RUB
+        base = previous.get(product_code)
+        if base is None:
+            return None
+        old_count = max(1, min(MAX_DEVICES, int(device_count or 1)))
+        return base + (old_count - 1) * EXTRA_DEVICE_PRICE_RUB
+
+    async def _is_legacy_locked_quote(
+        self,
+        db: aiosqlite.Connection,
+        *,
+        product_code: str,
+        device_count: int | None,
+        original_amount: int,
+        created_at: str | None,
+    ) -> bool:
+        """Honor an already-created payment, never permit old prices for new orders."""
+        current = self._product_price(product_code, device_count)
+        if original_amount == current:
+            return False
+        if self._legacy_price(product_code, device_count) != original_amount:
+            raise ValueError("Payment price is outdated")
+        created = from_iso(created_at)
+        if created is None:
+            raise ValueError("Payment price is outdated")
+        migration = await (await db.execute(
+            "SELECT applied_at FROM service_migrations WHERE name='base_two_devices_v1'"
+        )).fetchone()
+        migrated_at = from_iso(migration[0]) if migration else None
+        if migrated_at is None or created >= migrated_at:
+            raise ValueError("Payment price is outdated")
+        return True
 
     async def redeem_full_discount(
         self, *, promo_id: int, buyer_id: int, target_id: int, product_code: str,
@@ -2123,8 +2164,12 @@ class Database:
             if row is None or row["status"] == "paid":
                 return False
             original_amount = int(row["original_amount_rub"] or row["amount_rub"])
-            if original_amount != self._product_price(str(row["plan_code"]), row["device_count"]):
-                raise ValueError("Payment price is outdated")
+            legacy_quote = await self._is_legacy_locked_quote(
+                db, product_code=str(row["plan_code"]),
+                device_count=row["device_count"],
+                original_amount=original_amount,
+                created_at=row["created_at"],
+            )
             if row["promo_id"] is None and (
                 int(row["discount_amount_rub"] or 0) != 0
                 or int(row["amount_rub"]) != original_amount
@@ -2140,12 +2185,16 @@ class Database:
                 discount_amount=int(row["discount_amount_rub"] or 0),
                 final_amount=int(row["amount_rub"]),
                 device_count=row["device_count"],
+                order_created_at=row["created_at"],
             )
+            effective_device_count = row["device_count"]
+            if legacy_quote and effective_device_count is not None and str(row["plan_code"]) != DEVICE_PRODUCT_CODE:
+                effective_device_count = min(MAX_DEVICES, int(effective_device_count) + 1)
             await self._apply_product(
                 db,
                 row["target_telegram_id"] or row["telegram_id"],
                 row["plan_code"],
-                row["device_count"],
+                effective_device_count,
             )
             await db.execute(
                 "UPDATE sbp_payments SET status='paid', paid_at=? WHERE payment_id=?",
@@ -2187,11 +2236,16 @@ class Database:
                 if intent["status"] != "created" or not expires_at or expires_at <= utcnow():
                     raise ValueError("Payment intent expired")
                 expected_stars = rub_to_stars(int(intent["final_amount_rub"]))
-                if (
-                    int(intent["original_amount_rub"])
-                    != self._product_price(plan_code, intent["device_count"])
-                    or expected_stars != stars
-                ):
+                try:
+                    legacy_quote = await self._is_legacy_locked_quote(
+                        db, product_code=plan_code,
+                        device_count=intent["device_count"],
+                        original_amount=int(intent["original_amount_rub"]),
+                        created_at=intent["created_at"],
+                    )
+                except ValueError as exc:
+                    raise ValueError("Payment intent price is invalid") from exc
+                if expected_stars != stars:
                     raise ValueError("Payment intent price is invalid")
                 await self._consume_paid_promo(
                     db,
@@ -2203,12 +2257,16 @@ class Database:
                     discount_amount=int(intent["discount_amount_rub"]),
                     final_amount=int(intent["final_amount_rub"]),
                     device_count=intent["device_count"],
+                    order_created_at=intent["created_at"],
                 )
+            effective_device_count = intent["device_count"] if intent else None
+            if intent and legacy_quote and effective_device_count is not None and plan_code != DEVICE_PRODUCT_CODE:
+                effective_device_count = min(MAX_DEVICES, int(effective_device_count) + 1)
             await self._apply_product(
                 db,
                 target_telegram_id,
                 plan_code,
-                intent["device_count"] if intent else None,
+                effective_device_count,
             )
             await db.execute(
                 "INSERT INTO star_payments VALUES (?, ?, ?, ?, ?, ?)",
