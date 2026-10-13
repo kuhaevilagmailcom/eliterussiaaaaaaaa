@@ -119,6 +119,7 @@ test('Mini App loads and navigates core screens', async ({page}) => {
   const errors=[]; page.on('pageerror', error => errors.push(error.message));
   await page.setViewportSize({width:390,height:844}); await routeFiles(page, true);
   await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
   await expect(page.locator('.app-shell')).toBeVisible();
   await page.waitForTimeout(500);
   await expect(page.locator('#bottomNav button')).toHaveCount(4);
@@ -146,6 +147,7 @@ test('Mini App checkout fills the viewport and keeps payment actions visible', a
   for (const viewport of [{width:320,height:700},{width:390,height:844}]) {
     await page.setViewportSize(viewport);
     await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
 
     await page.locator('[data-nav="plans"]:visible').first().click();
     await page.locator('[data-buy="30"]').click();
@@ -196,6 +198,7 @@ test('Mini App lets an active user choose Happ or INCY', async ({page}) => {
   await page.setViewportSize({width:390,height:844});
   await routeFiles(page, true);
   await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
   await page.locator('#openClientHome').click();
   await expect(page.locator('#clientSheet')).toBeVisible();
   await expect(page.locator('#clientList [data-client]')).toHaveCount(2);
@@ -207,6 +210,7 @@ test('Mini App saves a discount promo from Bonuses and carries it into checkout'
   await page.setViewportSize({width:390,height:844});
   await routeFiles(page, true);
   await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
 
   await page.locator('#bottomNav [data-nav="bonuses"]').click();
   await page.locator('#promoCodePage').fill('mgn20');
@@ -231,6 +235,7 @@ test('Mini App saves a discount promo from Bonuses and carries it into checkout'
 test('Mini App admin dashboard is available to an owner and stays compact', async ({page}) => {
   const errors=[]; page.on('pageerror', error => errors.push(error.message));
   await page.setViewportSize({width:390,height:844}); await routeFiles(page, true); await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
   await page.locator('[data-nav="profile"]').first().click();
   await expect(page.locator('#adminEntry')).toBeVisible();
   await page.locator('#adminEntry').click();
@@ -249,6 +254,7 @@ test('MGN checkout includes 2 devices and charges 50 RUB for each extra slot', a
   await page.setViewportSize({width:390,height:844});
   await routeFiles(page,true);
   await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
   await page.locator('[data-nav="plans"]:visible').first().click();
   await page.locator('[data-buy="30"]').click();
   const range=page.locator('#paymentDeviceRange');
@@ -272,6 +278,7 @@ test('Admin can generate a gift QR and user can redeem it from Bonus scanner', a
   await page.setViewportSize({width:390,height:844});
   await routeFiles(page,true);
   await page.goto('http://mgn.test/app');
+  await expect(page.locator('#loader')).toHaveClass(/hidden/,{timeout:3500});
   await page.locator('#bottomNav [data-nav="profile"]').click();
   await page.locator('#adminEntry').click();
   await page.locator('[data-admin-tab="gifts"]').click();
