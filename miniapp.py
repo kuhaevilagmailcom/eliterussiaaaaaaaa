@@ -7,6 +7,7 @@ import ipaddress
 import hmac
 import json
 import logging
+import os
 import re
 import secrets
 import time
@@ -35,7 +36,7 @@ from catalog import (
     rub_to_stars,
 )
 from db import Database, from_iso, utcnow
-from device_identity import enrich_h1_devices, subscription_device_hint
+from device_identity import enrich_h1_devices, subscription_device_hint, subscription_public_ip
 from gift_qr import gift_link, gift_qr_data_uri, parse_gift_token
 from payments import RollyPayError, create_payment, get_payment
 from legal import (
@@ -891,7 +892,12 @@ class MiniAppServer:
                     if hint:
                         await self.db.record_subscription_device(
                             int(user["telegram_id"]), hint,
-                            ip_address=self._client_identity(request),
+                            ip_address=subscription_public_ip(
+                                str(request.remote or ""),
+                                request.headers,
+                                trusted_proxy_ips=self.config.trusted_proxy_ips,
+                                bothost=bool(os.getenv("BOT_ID")),
+                            ),
                         )
                 except Exception:
                     # Never break a VPN subscription because of statistics.
