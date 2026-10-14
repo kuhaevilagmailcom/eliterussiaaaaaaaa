@@ -36,7 +36,12 @@ from catalog import (
     rub_to_stars,
 )
 from db import Database, from_iso, utcnow
-from device_identity import enrich_h1_devices, subscription_device_hint, subscription_public_ip
+from device_identity import (
+    enrich_h1_devices,
+    merge_profiles_with_panel_ips,
+    subscription_device_hint,
+    subscription_public_ip,
+)
 from gift_qr import gift_link, gift_qr_data_uri, parse_gift_token
 from payments import RollyPayError, create_payment, get_payment
 from legal import (
@@ -1141,6 +1146,11 @@ class MiniAppServer:
         state, vpn_ok = await self._load_state(row)
         if state.devices:
             await self.db.record_device_snapshot(uid, list(state.devices))
+        device_profiles = merge_profiles_with_panel_ips(
+            uid,
+            await self.db.list_subscription_device_hints(uid),
+            list(state.devices or []),
+        )
         local_day = utcnow().astimezone(self.config.display_tz).date().isoformat()
         if _active(row) and vpn_ok:
             await self.db.record_traffic_sample(
@@ -1195,9 +1205,12 @@ class MiniAppServer:
                             "name": hint["name"],
                             "platform": hint["platform"],
                             "ip_address": hint.get("ip_address") or "",
+                            "ip_source": hint.get("ip_source") or (
+                                "subscription_refresh" if hint.get("ip_address") else ""
+                            ),
                             "updated_at": hint["updated_at"],
                         }
-                        for hint in await self.db.list_subscription_device_hints(uid)
+                        for hint in device_profiles
                     ],
                     "device_probe": await self.db.subscription_device_probe(uid),
                 },
@@ -1301,14 +1314,17 @@ class MiniAppServer:
         # A panel that returns only device counts cannot expose this itself.
         profiles = await self.db.list_subscription_device_hints(user_id)
         devices: list[dict] = await self.db.list_device_history(user_id)
+        panel_devices: list[dict] = []
         if row and _active(row) and not row.get("is_blocked"):
             try:
                 state = await asyncio.wait_for(self.provider.get_state(row), timeout=8.0)
-                enriched = enrich_h1_devices(user_id, list(state.devices or []), profiles)
+                panel_devices = list(state.devices or [])
+                enriched = enrich_h1_devices(user_id, panel_devices, profiles)
                 await self.db.record_device_snapshot(user_id, enriched)
                 devices = await self.db.list_device_history(user_id)
             except Exception as exc:
                 logger.info("Admin user live state unavailable for %s: %s", user_id, type(exc).__name__)
+        profiles = merge_profiles_with_panel_ips(user_id, profiles, panel_devices)
         detail["devices"] = devices
         detail["device_profiles"] = [
             {
@@ -1316,6 +1332,9 @@ class MiniAppServer:
                 "name": profile["name"],
                 "platform": profile.get("platform") or "",
                 "ip_address": profile.get("ip_address") or "",
+                "ip_source": profile.get("ip_source") or (
+                    "subscription_refresh" if profile.get("ip_address") else ""
+                ),
                 "updated_at": profile["updated_at"],
             }
             for profile in profiles
