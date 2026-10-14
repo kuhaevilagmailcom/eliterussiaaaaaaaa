@@ -114,3 +114,23 @@ def test_model_is_cleaned_for_html_and_long_inputs():
     assert "<" not in result["name"]
     assert ">" not in result["name"]
     assert len(result["name"]) <= 80
+
+def test_device_ip_overlay_requires_matching_identity():
+    hwid = "phone-one-2026"
+    hint = {
+        "fingerprint_key": device_fingerprint_key(777, hwid),
+        "panel_id": h1_panel_device_id(hwid),
+        "name": "Samsung Galaxy",
+        "platform": "Android",
+        "ip_address": "8.8.8.8",
+        "updated_at": "2026-10-15T00:00:00+00:00",
+    }
+    device = {"id": hint["panel_id"], "name": "Устройство"}
+    matched = enrich_h1_devices(777, [device], [hint])
+    assert matched[0]["name"] == "Samsung Galaxy"
+    assert matched[0]["ip_address"] == "8.8.8.8"
+    assert matched[0]["ip_source"] == "subscription_refresh"
+    vpn_ip = enrich_h1_devices(777, [dict(device, ip_address="1.1.1.1")], [hint])
+    assert vpn_ip[0]["ip_address"] == "1.1.1.1"
+    unrelated = enrich_h1_devices(777, [{"id": "different"}], [hint])
+    assert not unrelated[0].get("ip_address")

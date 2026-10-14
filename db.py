@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import secrets
 import re
 from datetime import datetime, timedelta, timezone
@@ -412,6 +413,7 @@ class Database:
                     panel_id TEXT NOT NULL DEFAULT '',
                     name TEXT NOT NULL,
                     platform TEXT NOT NULL DEFAULT '',
+                    ip_address TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (telegram_id, fingerprint_key)
                 );
@@ -454,6 +456,17 @@ class Database:
                 );
                 """
             )
+
+            metadata_columns = {
+                row[1] for row in await (
+                    await db.execute("PRAGMA table_info(subscription_device_metadata)")
+                ).fetchall()
+            }
+            if "ip_address" not in metadata_columns:
+                await db.execute(
+                    "ALTER TABLE subscription_device_metadata "
+                    "ADD COLUMN ip_address TEXT NOT NULL DEFAULT ''"
+                )
 
             columns = {
                 row[1]
@@ -3280,7 +3293,9 @@ class Database:
             )).fetchone()
         return dict(row) if row else {}
 
-    async def record_subscription_device(self, telegram_id: int, hint: dict[str, str]) -> None:
+    async def record_subscription_device(
+        self, telegram_id: int, hint: dict[str, str], *, ip_address: str = ""
+    ) -> None:
         """Store a model/OS hint from a HWID-bearing subscription refresh.
 
         Never count this as a VPN connection. H1 remains authoritative for that.
@@ -3292,6 +3307,12 @@ class Database:
         platform = str(hint.get("platform") or "").strip()[:80]
         if not name and not platform:
             return
+        # Accept only a real public address from this client's /sub request.
+        try:
+            parsed_ip = ipaddress.ip_address(str(ip_address).strip())
+            ip_address = str(parsed_ip) if parsed_ip.is_global else ""
+        except ValueError:
+            ip_address = ""
         fingerprint_key = device_fingerprint_key(telegram_id, hwid)
         panel_id = h1_panel_device_id(hwid)
         now = to_iso(utcnow())
@@ -3304,13 +3325,20 @@ class Database:
             await db.execute(
                 """
                 INSERT INTO subscription_device_metadata
-                (telegram_id, fingerprint_key, panel_id, name, platform, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (telegram_id, fingerprint_key, panel_id, name, platform, ip_address, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(telegram_id, fingerprint_key) DO UPDATE SET
-                    panel_id=excluded.panel_id, name=excluded.name,
-                    platform=excluded.platform, updated_at=excluded.updated_at
+                    panel_id=excluded.panel_id,
+                    name=CASE WHEN excluded.name IN ('Устройство', 'Устройство Happ')
+                        AND subscription_device_metadata.name NOT IN ('Устройство', 'Устройство Happ')
+                        THEN subscription_device_metadata.name ELSE excluded.name END,
+                    platform=CASE WHEN excluded.platform=''
+                        THEN subscription_device_metadata.platform ELSE excluded.platform END,
+                    ip_address=CASE WHEN excluded.ip_address=''
+                        THEN subscription_device_metadata.ip_address ELSE excluded.ip_address END,
+                    updated_at=excluded.updated_at
                 """,
-                (int(telegram_id), fingerprint_key, panel_id, name, platform, now),
+                (int(telegram_id), fingerprint_key, panel_id, name, platform, ip_address, now),
             )
             await db.commit()
 
@@ -3319,7 +3347,7 @@ class Database:
         async with aiosqlite.connect(self.path, timeout=15.0) as db:
             db.row_factory = aiosqlite.Row
             rows = await (await db.execute(
-                "SELECT fingerprint_key, panel_id, name, platform, updated_at "
+                "SELECT fingerprint_key, panel_id, name, platform, ip_address, updated_at "
                 "FROM subscription_device_metadata WHERE telegram_id=? AND updated_at>=? "
                 "ORDER BY updated_at DESC LIMIT 30",
                 (int(telegram_id), cutoff),
@@ -3380,7 +3408,8 @@ class Database:
                         name=CASE WHEN excluded.name IN ('Устройство', 'Подключённое устройство', 'Unknown device')
                             THEN device_history.name ELSE excluded.name END,
                         platform=CASE WHEN excluded.platform='' THEN device_history.platform ELSE excluded.platform END,
-                        ip_address=excluded.ip_address,
+                        ip_address=CASE WHEN excluded.ip_address=''
+                            THEN device_history.ip_address ELSE excluded.ip_address END,
                         country=excluded.country, last_seen_at=excluded.last_seen_at,
                         active=1, suspicious=MAX(device_history.suspicious, excluded.suspicious)
                     """,

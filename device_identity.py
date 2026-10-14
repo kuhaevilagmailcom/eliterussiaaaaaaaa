@@ -127,6 +127,11 @@ def enrich_h1_devices(
             row["name"] = hint["name"]
         if hint.get("platform"):
             row["platform"] = hint["platform"]
+        # The real VPN-session IP wins if H1 knows it. Otherwise the most
+        # recent subscription refresh provides a separately-labelled address.
+        if hint.get("ip_address") and not (row.get("ip_address") or row.get("ip")):
+            row["ip_address"] = hint["ip_address"]
+            row["ip_source"] = "subscription_refresh"
         row["profile_updated_at"] = hint.get("updated_at")
         row["identity_source"] = "client-reported"
     return rows

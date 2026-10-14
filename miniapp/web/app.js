@@ -348,9 +348,11 @@
     const listHtml=profiles.map(item=>{
       const name=esc(item.name||'Устройство');
       const platform=esc(item.platform||'Модель/ОС не переданы');
+      const ip=item.ip_address?('IP при обновлении · '+esc(item.ip_address)):'IP пока неизвестен';
       return '<article class="device">'+
         '<span class="device-symbol"><i data-lucide="'+deviceIcon(item)+'"></i></span>'+
         '<span class="device-copy"><b>'+name+'</b><small>'+platform+'</small>'+
+        '<small>'+ip+'</small>'+
         '<small>Подписка обновлена · '+fmtDate(item.updated_at)+'</small></span>'+
       '</article>';
     }).join('');
@@ -581,6 +583,7 @@
 
   function renderAdminUser(data){
     const user=data.user||{},devices=data.devices||[];
+    const profiles=Array.isArray(data.device_profiles)?data.device_profiles:[];
     state.admin.selectedUser=Number(user.telegram_id);
     $('#adminUserTitle').textContent=user.first_name||user.username||('ID '+user.telegram_id);
     $('#adminUserHandle').textContent=(user.username?'@'+user.username+' · ':'')+'ID '+user.telegram_id;
@@ -588,10 +591,15 @@
     $('#adminUserStatus').classList.toggle('danger',!!user.is_blocked);
     $('#adminUserPlan').textContent=user.plan_name||'Нет подписки';
     $('#adminUserUntil').textContent=user.subscription_until?'до '+fmtDate(user.subscription_until):'не активна';
-    $('#adminUserDevices').textContent=devices.filter(item=>item.active).length+' / '+Number(user.max_devices||2);
+    $('#adminUserDevices').textContent=devices.filter(item=>item.active).length+' / '+Number(user.max_devices||2)+(profiles.length?' · Обнаружено: '+profiles.length:'');
     $('#adminUserLastSeen').textContent='активность '+fmtDate(user.last_activity_at);
     const block=$('#adminBlockUser');block.dataset.adminAction=user.is_blocked?'unblock':'block';block.classList.toggle('danger',!user.is_blocked);block.querySelector('b').textContent=user.is_blocked?'Разблокировать':'Заблокировать';block.querySelector('small').textContent=user.is_blocked?'Вернуть доступ в H1Cloud':'Остановить доступ в H1Cloud';
-    $('#adminUserDeviceHistory').innerHTML=devices.length?devices.map(item=>'<div class="admin-row"><div class="admin-row-main"><b>'+esc(item.name||'Устройство')+'</b><small>'+esc(item.platform||'MGN VPN')+(item.ip_address?' · '+esc(item.ip_address):'')+(item.country?' · '+esc(item.country):'')+'</small><div class="admin-tags">'+(item.active?'<span class="admin-tag online">ОНЛАЙН</span>':'<span class="admin-tag offline">ИСТОРИЯ</span>')+(item.suspicious?'<span class="admin-tag granted">ПОДОЗРИТЕЛЬНО</span>':'')+'</div></div><div class="admin-row-side"><small>'+fmtDate(item.last_seen_at)+'</small></div></div>').join(''):'<p class="admin-empty">История устройств пуста</p>';
+    // Refreshes identify apps, while H1 only confirms remembered slots.
+    const matchedIds=new Set(profiles.map(item=>item.panel_id).filter(Boolean));
+    const panelHistory=devices.filter(item=>!matchedIds.has(item.device_id));
+    const profilesHtml=profiles.map(item=>'<div class="admin-row"><div class="admin-row-main"><b>'+esc(item.name||'Устройство')+'</b><small>'+esc(item.platform||'ОС не передана')+' · '+(item.ip_address?'IP: '+esc(item.ip_address):'IP неизвестен')+'</small><div class="admin-tags"><span class="admin-tag granted">ПО ПОДПИСКЕ</span></div></div><div class="admin-row-side"><small>'+fmtDate(item.updated_at)+'</small></div></div>').join('');
+    const panelHtml=panelHistory.map(item=>'<div class="admin-row"><div class="admin-row-main"><b>'+esc(item.name||'Устройство')+'</b><small>'+esc(item.platform||'Модель неизвестна')+(item.ip_address?' · IP: '+esc(item.ip_address):'')+(item.country?' · '+esc(item.country):'')+'</small><div class="admin-tags">'+(item.active?'<span class="admin-tag online">В H1</span>':'<span class="admin-tag offline">ИСТОРИЯ</span>')+(item.suspicious?'<span class="admin-tag granted">ПОДОЗРИТЕЛЬНО</span>':'')+'</div></div><div class="admin-row-side"><small>'+fmtDate(item.last_seen_at)+'</small></div></div>').join('');
+    $('#adminUserDeviceHistory').innerHTML=(profiles.length?'<p class="device-identity-note">По обновлениям VPN-клиента · не активные сессии</p>'+profilesHtml:'')+(panelHistory.length?'<p class="device-identity-note">Записи панели H1</p>'+panelHtml:'')||'<p class="admin-empty">Устройств пока не обнаружено. Клиенту нужно обновить подписку в Happ с передачей HWID.</p>';
     const payments=data.payments||[],promos=data.promos||[];
     $('#adminUserPayments').innerHTML=(payments.map(item=>'<div class="admin-row"><div class="admin-row-main"><b>'+esc(item.method)+' · '+esc(item.plan_code||'—')+'</b><small>'+fmtDate(item.created_at)+'</small></div><div class="admin-row-side"><b>'+adminNumber(item.amount)+' '+esc(item.currency)+'</b><span class="admin-tag '+(item.status==='paid'?'paid':'granted')+'">'+esc(item.status)+'</span></div></div>').join('')+promos.map(item=>'<div class="admin-row"><div class="admin-row-main"><b>Промокод '+esc(item.code)+'</b><small>'+esc(item.type)+' · '+adminNumber(item.value)+'</small></div><small>'+fmtDate(item.used_at)+'</small></div>').join(''))||'<p class="admin-empty">Оплат и промокодов нет</p>';
     const actions={add_days:'Добавлено дней',remove_days:'Убрано дней',set_devices:'Изменён лимит',block:'Пользователь заблокирован',unblock:'Пользователь разблокирован',reset_devices:'Сброшены устройства',regenerate_link:'Пересоздана ссылка'};
