@@ -35,7 +35,7 @@ from catalog import (
     rub_to_stars,
 )
 from db import Database, from_iso, utcnow
-from device_identity import subscription_device_hint
+from device_identity import enrich_h1_devices, subscription_device_hint
 from gift_qr import gift_link, gift_qr_data_uri, parse_gift_token
 from payments import RollyPayError, create_payment, get_payment
 from legal import (
@@ -889,7 +889,10 @@ class MiniAppServer:
                         has_os=bool(request.headers.get("X-Device-OS")),
                     )
                     if hint:
-                        await self.db.record_subscription_device(int(user["telegram_id"]), hint)
+                        await self.db.record_subscription_device(
+                            int(user["telegram_id"]), hint,
+                            ip_address=self._client_identity(request),
+                        )
                 except Exception:
                     # Never break a VPN subscription because of statistics.
                     logger.warning("Subscription device identity storage unavailable")
@@ -1182,7 +1185,12 @@ class MiniAppServer:
                     "devices": state.devices,
                     "device_history": await self.db.list_device_history(uid),
                     "device_profiles": [
-                        {"name": hint["name"], "platform": hint["platform"], "updated_at": hint["updated_at"]}
+                        {
+                            "name": hint["name"],
+                            "platform": hint["platform"],
+                            "ip_address": hint.get("ip_address") or "",
+                            "updated_at": hint["updated_at"],
+                        }
                         for hint in await self.db.list_subscription_device_hints(uid)
                     ],
                     "device_probe": await self.db.subscription_device_probe(uid),
@@ -1283,15 +1291,29 @@ class MiniAppServer:
         if not detail:
             raise _json_error(404, "Пользователь не найден")
         row = await self.db.get_user(user_id)
+        # Model/IP metadata belongs to the selected user, not the admin.
+        # A panel that returns only device counts cannot expose this itself.
+        profiles = await self.db.list_subscription_device_hints(user_id)
         devices: list[dict] = await self.db.list_device_history(user_id)
         if row and _active(row) and not row.get("is_blocked"):
             try:
                 state = await asyncio.wait_for(self.provider.get_state(row), timeout=8.0)
-                await self.db.record_device_snapshot(user_id, list(state.devices or []))
+                enriched = enrich_h1_devices(user_id, list(state.devices or []), profiles)
+                await self.db.record_device_snapshot(user_id, enriched)
                 devices = await self.db.list_device_history(user_id)
             except Exception as exc:
                 logger.info("Admin user live state unavailable for %s: %s", user_id, type(exc).__name__)
         detail["devices"] = devices
+        detail["device_profiles"] = [
+            {
+                "panel_id": profile.get("panel_id") or "",
+                "name": profile["name"],
+                "platform": profile.get("platform") or "",
+                "ip_address": profile.get("ip_address") or "",
+                "updated_at": profile["updated_at"],
+            }
+            for profile in profiles
+        ]
         return web.json_response(detail)
 
     async def admin_user_action(self, request: web.Request) -> web.Response:
