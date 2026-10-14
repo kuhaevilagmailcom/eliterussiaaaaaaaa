@@ -1135,3 +1135,25 @@ def test_pre_migration_stars_intent_is_settled_at_locked_amount(tmp_path):
         assert (await db.get_user(10202))["max_devices"] == 2
 
     run(scenario())
+
+def test_subscription_device_ip_isolated_between_users_and_preserved(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "device-ips.sqlite3"))
+        await db.init()
+        await db.ensure_user(111, None, "User")
+        await db.ensure_user(222, None, "User")
+        hint = {"hwid": "device-abcdef", "name": "Pixel 9", "platform": "Android"}
+        await db.record_subscription_device(111, hint, ip_address="8.8.8.8")
+        await db.record_subscription_device(222, hint, ip_address="9.9.9.9")
+        await db.record_subscription_device(
+            111, {"hwid": "device-abcdef", "name": "Устройство", "platform": ""},
+            ip_address="10.0.0.1",
+        )
+        own = await db.list_subscription_device_hints(111)
+        other = await db.list_subscription_device_hints(222)
+        assert len(own) == len(other) == 1
+        assert own[0]["ip_address"] == "8.8.8.8"
+        assert own[0]["name"] == "Pixel 9"
+        assert other[0]["ip_address"] == "9.9.9.9"
+
+    run(scenario())
