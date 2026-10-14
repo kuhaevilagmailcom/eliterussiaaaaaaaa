@@ -183,3 +183,43 @@ def enrich_h1_devices(
         row["profile_updated_at"] = hint.get("updated_at")
         row["identity_source"] = "client-reported"
     return rows
+
+
+def merge_profiles_with_panel_ips(
+    user_id: int,
+    profiles: list[dict[str, Any]],
+    devices: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Add H1's actual last-connection IP only when HWID identity matches.
+
+    Do not merge based on model/name (two different phones may be identical).
+    Never mix client identities across accounts.
+    """
+    by_panel: dict[str, dict[str, Any]] = {}
+    by_fingerprint: dict[str, dict[str, Any]] = {}
+    for row in devices:
+        panel_id = str(row.get("id") or "").strip()
+        fingerprint = str(row.get("fingerprint") or "").strip()
+        if panel_id and not panel_id.startswith("count-"):
+            by_panel[panel_id] = row
+        if _HWID.fullmatch(fingerprint):
+            by_fingerprint[device_fingerprint_key(user_id, fingerprint)] = row
+
+    merged: list[dict[str, Any]] = []
+    for profile in profiles:
+        copy = dict(profile)
+        match = (
+            by_panel.get(str(copy.get("panel_id") or ""))
+            or by_fingerprint.get(str(copy.get("fingerprint_key") or ""))
+        )
+        if match:
+            candidate = str(match.get("ip_address") or match.get("ip") or "").strip()
+            try:
+                parsed = ipaddress.ip_address(candidate)
+            except ValueError:
+                parsed = None
+            if parsed and parsed.is_global:
+                copy["ip_address"] = str(parsed)
+                copy["ip_source"] = "vpn_connection"
+        merged.append(copy)
+    return merged
