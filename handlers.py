@@ -53,6 +53,7 @@ from catalog import (
 )
 from config import Config
 from db import Database, from_iso, utcnow
+from device_identity import merge_profiles_with_panel_ips
 from gift_qr import gift_link, gift_qr_png, parse_gift_token
 from emoji import EmojiBank
 from giveaway import (
@@ -784,8 +785,10 @@ def profile_text(
                 )
                 ip_address = html.escape(str(item.get("ip_address") or "").strip())
                 suffix = f" · {platform}" if platform else ""
-                if ip_address:
-                    suffix += f" · IP: <code>{ip_address}</code>"
+                suffix += (
+                    f" · IP: <code>{ip_address}</code>"
+                    if ip_address else " · IP: не определён"
+                )
                 lines.append(f"├ {name}{suffix}")
             lines.append("<i>Определено по обновлениям подписки Happ, не по VPN-сессиям.</i>")
         else:
@@ -1488,7 +1491,11 @@ def build_router(
         user = await ensure_actor(actor)
         state, ok = await load_state(user, provider, config, db)
         try:
-            device_profiles = await db.list_subscription_device_hints(int(user["telegram_id"]))
+            device_profiles = merge_profiles_with_panel_ips(
+                int(user["telegram_id"]),
+                await db.list_subscription_device_hints(int(user["telegram_id"])),
+                list(state.devices or []),
+            )
         except Exception:
             device_profiles = []
         kb = InlineKeyboardBuilder()
@@ -2345,7 +2352,11 @@ def build_router(
         ]
 
         try:
-            app_profiles = await db.list_subscription_device_hints(int(user["telegram_id"]))
+            app_profiles = merge_profiles_with_panel_ips(
+                int(user["telegram_id"]),
+                await db.list_subscription_device_hints(int(user["telegram_id"])),
+                list(state.devices or []),
+            )
             probe = await db.subscription_device_probe(int(user["telegram_id"]))
         except Exception:
             app_profiles, probe = [], {}
@@ -2357,8 +2368,10 @@ def build_router(
                 os_label = html.escape(str(item.get("platform") or ""))
                 ip_address = html.escape(str(item.get("ip_address") or "").strip())
                 suffix = (f" · {os_label}" if os_label else "")
-                if ip_address:
-                    suffix += f" · IP: <code>{ip_address}</code>"
+                suffix += (
+                    f" · IP: <code>{ip_address}</code>"
+                    if ip_address else " · IP: не определён"
+                )
                 lines.append(f"{index}. <b>{name}</b>{suffix}")
             lines.append("<i>По обновлениям подписки, не по активным VPN-сессиям.</i>")
         elif probe.get("last_happ_at") and not probe.get("last_hwid_at"):
@@ -4077,6 +4090,7 @@ def build_router(
         until = from_iso(user.get("subscription_until"))
         remaining_days = max(0, int(((until - utcnow()).total_seconds() + 86399) // 86400)) if until else 0
         device_count = 0
+        panel_devices: list[dict[str, Any]] = []
         try:
             client_devices = await db.list_subscription_device_hints(telegram_id)
         except Exception:
@@ -4084,9 +4098,13 @@ def build_router(
         if active and getattr(provider, "service_ready", True):
             try:
                 state = await asyncio.wait_for(provider.get_state(user), 5.0)
-                device_count = len(state.devices)
+                panel_devices = list(state.devices or [])
+                device_count = len(panel_devices)
             except Exception:
                 pass
+        client_devices = merge_profiles_with_panel_ips(
+            telegram_id, client_devices, panel_devices
+        )
 
         kb = InlineKeyboardBuilder()
 
@@ -4173,10 +4191,12 @@ def build_router(
                     platform = html.escape(str(item.get("platform") or ""))
                     ip_address = html.escape(str(item.get("ip_address") or ""))
                     suffix = f" · {platform}" if platform else ""
-                    if ip_address:
-                        suffix += f" · IP: <code>{ip_address}</code>"
+                    suffix += (
+                        f" · IP: <code>{ip_address}</code>"
+                        if ip_address else " · IP: не определён"
+                    )
                     lines.append(f"• {name}{suffix}")
-                lines.append("<i>Название и IP получены при обновлении подписки.</i>")
+                lines.append("<i>Данные из Happ и панели VPN; IP — последний известный.</i>")
         else:
             lines.append(
                 f"📱 Лимит устройств: <b>{int(user.get('max_devices') or BASE_DEVICES)}</b>"

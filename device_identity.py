@@ -7,6 +7,7 @@ Raw HWIDs are processed in memory and are not stored by this module.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import re
 import unicodedata
 from collections.abc import Mapping
@@ -43,6 +44,53 @@ def _header(headers: Mapping[str, str], name: str) -> str:
     # aiohttp CIMultiDict is case insensitive; support plain dicts in tests.
     return str(next((v for k, v in headers.items() if k.lower() == name.lower()), "") or "")
 
+
+
+
+def subscription_public_ip(
+    remote: str,
+    headers: Mapping[str, str],
+    *,
+    trusted_proxy_ips: tuple[str, ...] = (),
+    bothost: bool = False,
+) -> str:
+    """Resolve public client IP from a subscription request, not a VPN tunnel.
+
+    A regular public peer cannot assert its own IP via forwarded headers.
+    BotHost routes domain traffic via an internal Docker reverse proxy, so a
+    private/loopback peer in that environment can provide forwarded identity.
+    Other deployments must explicitly allowlist their reverse proxy peers.
+    """
+    raw_remote = str(remote or "").strip()
+    try:
+        peer = ipaddress.ip_address(raw_remote)
+    except ValueError:
+        return ""
+    explicit_proxy = raw_remote in trusted_proxy_ips
+    internal_bothost_proxy = bothost and (peer.is_private or peer.is_loopback)
+    if not (explicit_proxy or internal_bothost_proxy):
+        return str(peer) if peer.is_global else ""
+
+    def public_ip(value: str) -> str:
+        try:
+            parsed = ipaddress.ip_address(value.strip())
+        except ValueError:
+            return ""
+        return str(parsed) if parsed.is_global else ""
+
+    # In append-style XFF chains, the last global hop is harder to spoof by
+    # prepending an arbitrary address. Skip private inter-proxy hops.
+    forwarded = _header(headers, "X-Forwarded-For")
+    for candidate in reversed(forwarded.split(",")):
+        found = public_ip(candidate)
+        if found:
+            return found
+
+    for header in ("X-Real-IP", "CF-Connecting-IP", "True-Client-IP"):
+        found = public_ip(_header(headers, header))
+        if found:
+            return found
+    return ""
 
 def subscription_device_hint(headers: Mapping[str, str]) -> dict[str, str] | None:
     """Accept only HWID-bearing requests, never a guess from IP or User-Agent."""
@@ -135,3 +183,43 @@ def enrich_h1_devices(
         row["profile_updated_at"] = hint.get("updated_at")
         row["identity_source"] = "client-reported"
     return rows
+
+
+def merge_profiles_with_panel_ips(
+    user_id: int,
+    profiles: list[dict[str, Any]],
+    devices: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Add H1's actual last-connection IP only when HWID identity matches.
+
+    Do not merge based on model/name (two different phones may be identical).
+    Never mix client identities across accounts.
+    """
+    by_panel: dict[str, dict[str, Any]] = {}
+    by_fingerprint: dict[str, dict[str, Any]] = {}
+    for row in devices:
+        panel_id = str(row.get("id") or "").strip()
+        fingerprint = str(row.get("fingerprint") or "").strip()
+        if panel_id and not panel_id.startswith("count-"):
+            by_panel[panel_id] = row
+        if _HWID.fullmatch(fingerprint):
+            by_fingerprint[device_fingerprint_key(user_id, fingerprint)] = row
+
+    merged: list[dict[str, Any]] = []
+    for profile in profiles:
+        copy = dict(profile)
+        match = (
+            by_panel.get(str(copy.get("panel_id") or ""))
+            or by_fingerprint.get(str(copy.get("fingerprint_key") or ""))
+        )
+        if match:
+            candidate = str(match.get("ip_address") or match.get("ip") or "").strip()
+            try:
+                parsed = ipaddress.ip_address(candidate)
+            except ValueError:
+                parsed = None
+            if parsed and parsed.is_global:
+                copy["ip_address"] = str(parsed)
+                copy["ip_source"] = "vpn_connection"
+        merged.append(copy)
+    return merged

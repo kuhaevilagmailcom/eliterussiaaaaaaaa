@@ -3,6 +3,8 @@ from device_identity import (
     h1_panel_device_id,
     enrich_h1_devices,
     subscription_device_hint,
+    subscription_public_ip,
+    merge_profiles_with_panel_ips,
 )
 
 
@@ -134,3 +136,78 @@ def test_device_ip_overlay_requires_matching_identity():
     assert vpn_ip[0]["ip_address"] == "1.1.1.1"
     unrelated = enrich_h1_devices(777, [{"id": "different"}], [hint])
     assert not unrelated[0].get("ip_address")
+
+
+
+def test_bothost_internal_proxy_resolves_client_ip():
+    headers = {"X-Forwarded-For": "8.8.8.8", "X-Real-IP": "8.8.8.8"}
+    assert subscription_public_ip("172.18.0.3", headers, bothost=True) == "8.8.8.8"
+    assert subscription_public_ip("127.0.0.1", headers, bothost=True) == "8.8.8.8"
+    assert subscription_public_ip("172.18.0.3", headers, bothost=False) == ""
+    assert subscription_public_ip("172.18.0.3", headers, trusted_proxy_ips=("172.18.0.3",)) == "8.8.8.8"
+
+
+def test_client_ip_does_not_trust_headers_from_public_peer():
+    headers = {"X-Forwarded-For": "1.1.1.1", "CF-Connecting-IP": "9.9.9.9"}
+    assert subscription_public_ip("8.8.8.8", headers, bothost=True) == "8.8.8.8"
+
+
+def test_forwarded_chain_prefers_last_public_hop_not_spoofed_prefix():
+    headers = {"X-Forwarded-For": "1.1.1.1, 8.8.8.8, 172.18.0.4"}
+    assert subscription_public_ip("172.18.0.3", headers, bothost=True) == "8.8.8.8"
+
+
+def test_proxy_ip_resolution_rejects_invalid_and_private_addresses():
+    assert subscription_public_ip(
+        "172.18.0.3",
+        {"X-Forwarded-For": "192.168.0.1", "X-Real-IP": "bad"},
+        bothost=True,
+    ) == ""
+    assert subscription_public_ip("unknown", {"X-Forwarded-For": "8.8.8.8"}, bothost=True) == ""
+    assert subscription_public_ip(
+        "172.18.0.3", {"X-Real-IP": "9.9.9.9"}, bothost=True
+    ) == "9.9.9.9"
+
+
+
+def test_panel_ip_fallback_requires_matching_hwid_for_same_name_devices():
+    one = "phone-hwid-one"
+    two = "phone-hwid-two"
+    profiles = [
+        {
+            "panel_id": h1_panel_device_id(one),
+            "fingerprint_key": device_fingerprint_key(7, one),
+            "name": "TECNO LH7n", "platform": "Android 14",
+            "ip_address": "", "updated_at": "2026-10-15",
+        },
+        {
+            "panel_id": h1_panel_device_id(two),
+            "fingerprint_key": device_fingerprint_key(7, two),
+            "name": "TECNO LH7n", "platform": "Android 14",
+            "ip_address": "", "updated_at": "2026-10-15",
+        },
+    ]
+    panel = [
+        {"id": h1_panel_device_id(one), "ip_address": "8.8.8.8"},
+        {"id": h1_panel_device_id(two), "ip_address": "9.9.9.9"},
+    ]
+    merged = merge_profiles_with_panel_ips(7, profiles, panel)
+    assert [row["ip_address"] for row in merged] == ["8.8.8.8", "9.9.9.9"]
+    assert all(row["ip_source"] == "vpn_connection" for row in merged)
+    assert not profiles[0]["ip_address"]
+    assert merge_profiles_with_panel_ips(7, profiles, [{"id": "count-1", "ip_address": "1.1.1.1"}]) == profiles
+
+
+def test_panel_ip_cannot_leak_across_fingerprint_namespaces():
+    hwid = "phone-hwid-actual"
+    profile = {
+        "panel_id": "",
+        "fingerprint_key": device_fingerprint_key(7, hwid),
+        "ip_address": "",
+    }
+    panel = [{"id": "opaque", "fingerprint": hwid, "ip_address": "8.8.4.4"}]
+    assert merge_profiles_with_panel_ips(7, [profile], panel)[0]["ip_address"] == "8.8.4.4"
+    assert merge_profiles_with_panel_ips(8, [profile], panel)[0]["ip_address"] == ""
+    assert merge_profiles_with_panel_ips(
+        7, [profile], [{"id": "opaque", "fingerprint": hwid, "ip_address": "10.1.1.1"}]
+    )[0]["ip_address"] == ""
