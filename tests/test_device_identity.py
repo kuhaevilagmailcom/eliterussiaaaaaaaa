@@ -4,6 +4,7 @@ from device_identity import (
     enrich_h1_devices,
     subscription_device_hint,
     subscription_public_ip,
+    merge_profiles_with_panel_ips,
 )
 
 
@@ -166,3 +167,47 @@ def test_proxy_ip_resolution_rejects_invalid_and_private_addresses():
     assert subscription_public_ip(
         "172.18.0.3", {"X-Real-IP": "9.9.9.9"}, bothost=True
     ) == "9.9.9.9"
+
+
+
+def test_panel_ip_fallback_requires_matching_hwid_for_same_name_devices():
+    one = "phone-hwid-one"
+    two = "phone-hwid-two"
+    profiles = [
+        {
+            "panel_id": h1_panel_device_id(one),
+            "fingerprint_key": device_fingerprint_key(7, one),
+            "name": "TECNO LH7n", "platform": "Android 14",
+            "ip_address": "", "updated_at": "2026-10-15",
+        },
+        {
+            "panel_id": h1_panel_device_id(two),
+            "fingerprint_key": device_fingerprint_key(7, two),
+            "name": "TECNO LH7n", "platform": "Android 14",
+            "ip_address": "", "updated_at": "2026-10-15",
+        },
+    ]
+    panel = [
+        {"id": h1_panel_device_id(one), "ip_address": "8.8.8.8"},
+        {"id": h1_panel_device_id(two), "ip_address": "9.9.9.9"},
+    ]
+    merged = merge_profiles_with_panel_ips(7, profiles, panel)
+    assert [row["ip_address"] for row in merged] == ["8.8.8.8", "9.9.9.9"]
+    assert all(row["ip_source"] == "vpn_connection" for row in merged)
+    assert not profiles[0]["ip_address"]
+    assert merge_profiles_with_panel_ips(7, profiles, [{"id": "count-1", "ip_address": "1.1.1.1"}]) == profiles
+
+
+def test_panel_ip_cannot_leak_across_fingerprint_namespaces():
+    hwid = "phone-hwid-actual"
+    profile = {
+        "panel_id": "",
+        "fingerprint_key": device_fingerprint_key(7, hwid),
+        "ip_address": "",
+    }
+    panel = [{"id": "opaque", "fingerprint": hwid, "ip_address": "8.8.4.4"}]
+    assert merge_profiles_with_panel_ips(7, [profile], panel)[0]["ip_address"] == "8.8.4.4"
+    assert merge_profiles_with_panel_ips(8, [profile], panel)[0]["ip_address"] == ""
+    assert merge_profiles_with_panel_ips(
+        7, [profile], [{"id": "opaque", "fingerprint": hwid, "ip_address": "10.1.1.1"}]
+    )[0]["ip_address"] == ""
