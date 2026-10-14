@@ -782,7 +782,10 @@ def profile_text(
                 platform = html.escape(
                     str(item.get("platform") or item.get("os") or "").strip()
                 )
+                ip_address = html.escape(str(item.get("ip_address") or "").strip())
                 suffix = f" · {platform}" if platform else ""
+                if ip_address:
+                    suffix += f" · IP: <code>{ip_address}</code>"
                 lines.append(f"├ {name}{suffix}")
             lines.append("<i>Определено по обновлениям подписки Happ, не по VPN-сессиям.</i>")
         else:
@@ -2352,7 +2355,11 @@ def build_router(
             for index, item in enumerate(app_profiles[:10], start=1):
                 name = html.escape(str(item.get("name") or "Устройство"))
                 os_label = html.escape(str(item.get("platform") or ""))
-                lines.append(f"{index}. <b>{name}</b>" + (f" · {os_label}" if os_label else ""))
+                ip_address = html.escape(str(item.get("ip_address") or "").strip())
+                suffix = (f" · {os_label}" if os_label else "")
+                if ip_address:
+                    suffix += f" · IP: <code>{ip_address}</code>"
+                lines.append(f"{index}. <b>{name}</b>{suffix}")
             lines.append("<i>По обновлениям подписки, не по активным VPN-сессиям.</i>")
         elif probe.get("last_happ_at") and not probe.get("last_hwid_at"):
             lines += [
@@ -4070,6 +4077,10 @@ def build_router(
         until = from_iso(user.get("subscription_until"))
         remaining_days = max(0, int(((until - utcnow()).total_seconds() + 86399) // 86400)) if until else 0
         device_count = 0
+        try:
+            client_devices = await db.list_subscription_device_hints(telegram_id)
+        except Exception:
+            client_devices = []
         if active and getattr(provider, "service_ready", True):
             try:
                 state = await asyncio.wait_for(provider.get_state(user), 5.0)
@@ -4153,8 +4164,19 @@ def build_router(
         if active:
             lines += [
                 f"⏳ До: <b>{format_until(user, config)}</b> · осталось <b>{remaining_days} дн.</b>",
-                f"📱 Устройства: <b>{device_count}/{int(user.get('max_devices') or BASE_DEVICES)}</b>",
+                f"📱 Устройства H1: <b>{device_count}/{int(user.get('max_devices') or BASE_DEVICES)}</b>",
             ]
+            if client_devices:
+                lines.append("<b>Устройства по подписке:</b>")
+                for item in client_devices[:10]:
+                    name = html.escape(str(item.get("name") or "Устройство"))
+                    platform = html.escape(str(item.get("platform") or ""))
+                    ip_address = html.escape(str(item.get("ip_address") or ""))
+                    suffix = f" · {platform}" if platform else ""
+                    if ip_address:
+                        suffix += f" · IP: <code>{ip_address}</code>"
+                    lines.append(f"• {name}{suffix}")
+                lines.append("<i>Название и IP получены при обновлении подписки.</i>")
         else:
             lines.append(
                 f"📱 Лимит устройств: <b>{int(user.get('max_devices') or BASE_DEVICES)}</b>"
