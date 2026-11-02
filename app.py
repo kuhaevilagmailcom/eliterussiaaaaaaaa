@@ -24,6 +24,7 @@ from db import Database
 from emoji import EmojiBank, EmojiFallbackMiddleware
 from handlers import build_router
 from giveaway import giveaway_reconciliation_loop
+from vpn_nft_forward import run_worker as nft_forward_broadcast_worker
 from miniapp import MiniAppServer
 from payments import RollyPayError, get_payment
 from vpn import (
@@ -776,6 +777,9 @@ async def main() -> None:
     giveaway_task = asyncio.create_task(
         giveaway_reconciliation_loop(bot, db, config, provider)
     )
+    nft_forward_task = asyncio.create_task(
+        nft_forward_broadcast_worker(bot, db.path)
+    )
     federation_task = (
         asyncio.create_task(vpn_federation_reconciliation_loop(db, provider, miniapp))
         if config.vpn_mode == "h1cloud"
@@ -818,6 +822,7 @@ async def main() -> None:
         trial_task.cancel()
         server_alert_task.cancel()
         giveaway_task.cancel()
+        nft_forward_task.cancel()
         if federation_task:
             federation_task.cancel()
         try:
@@ -842,6 +847,10 @@ async def main() -> None:
             pass
         try:
             await giveaway_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await nft_forward_task
         except asyncio.CancelledError:
             pass
         if federation_task:
