@@ -2577,6 +2577,7 @@ class Database:
         if mode not in {
             "new", "user_reply", "admin_reply", "admin_search", "admin_days", "gift",
             "ad_text", "ad_photo", "ad_url", "ad_button", "ad_channel", "ad_confirm",
+            "nftforward_wait", "nftforward_confirm",
             "giveaway_text", "giveaway_photo", "giveaway_winners", "giveaway_days",
             "giveaway_end_value", "giveaway_channels", "giveaway_confirm",
         }:

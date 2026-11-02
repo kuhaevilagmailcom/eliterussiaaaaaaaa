@@ -140,3 +140,29 @@ def test_cancel_queued_job(tmp_path):
         assert not await cancel_job(path, job_id)
         assert (await job_by_id(path, job_id))["status"] == "cancelled"
     asyncio.run(scenario())
+
+
+def test_nft_forward_button_opens_persistent_session(tmp_path):
+    """Regression: admin NFT button used to throw invalid support session."""
+    async def scenario():
+        path = str(tmp_path / "vpn.sqlite3")
+        db = Database(path)
+        await db.init()
+        owner_id = 101
+        await db.ensure_user(owner_id, "owner", "Owner")
+        await db.set_support_session(owner_id, "nftforward_wait", payload="{}")
+        waiting = await db.get_support_session(owner_id)
+        assert waiting is not None
+        assert waiting["mode"] == "nftforward_wait"
+        await db.set_support_session(
+            owner_id, "nftforward_confirm",
+            payload='{"origin_key":"channel:-10042:7","chat_id":101,"message_id":20}',
+        )
+        ready = await db.get_support_session(owner_id)
+        assert ready is not None
+        assert ready["mode"] == "nftforward_confirm"
+        assert '"origin_key":"channel:-10042:7"' in str(ready["payload"])
+        await db.clear_support_session(owner_id)
+        assert await db.get_support_session(owner_id) is None
+
+    asyncio.run(scenario())
