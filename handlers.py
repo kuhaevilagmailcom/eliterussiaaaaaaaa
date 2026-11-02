@@ -6872,6 +6872,10 @@ def build_router(
 
     @router.message()
     async def unsupported_support_input(message: Message) -> None:
+        # A forwarded channel post may be an animation or document.
+        # Let the NFT-forward session process it instead of rejecting the post.
+        if await handle_support_input(message):
+            return
         if message.from_user and await db.get_support_session(message.from_user.id):
             await message.answer("Можно отправить текст, фото или видео.")
 
