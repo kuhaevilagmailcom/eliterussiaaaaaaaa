@@ -68,6 +68,14 @@ from payments import RollyPayError, create_payment, get_payment
 from legal import agreement_telegram
 from vpn import VpnProvider, VpnState
 from vpn_clients import CLIENTS, client_redirect_url
+from vpn_nft_forward import (
+    audience_size as nft_forward_audience_size,
+    channel_origin_key as nft_forward_origin_key,
+    enqueue as enqueue_nft_forward,
+    job_by_id as nft_forward_job,
+    cancel_job as cancel_nft_forward,
+    raffle_keyboard as nft_forward_keyboard,
+)
 
 
 PACK_CRYPTO = "CryptoGIFTPODARKI"
@@ -3665,6 +3673,9 @@ def build_router(
                 admin_inline_button("📢 Публикация", callback_data="admin:ad:start"),
             )
             kb.row(
+                admin_inline_button("🎁 NFT из поста", callback_data="admin:nftforward:start"),
+            )
+            kb.row(
                 admin_inline_button("⚙️ Система", callback_data="admin:system"),
             )
         if role == "owner":
@@ -5536,6 +5547,105 @@ def build_router(
             await callback.message.answer(text)
         await show_admin_giveaways(callback.message, callback.from_user)
 
+    @router.callback_query(F.data == "admin:nftforward:start")
+    async def admin_nft_forward_start(callback: CallbackQuery) -> None:
+        if not callback.from_user or not await has_full_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нужна полная админка.", show_alert=True)
+            return
+        if not callback.message or callback.message.chat.type != "private":
+            await safe_callback_answer(callback, "Откройте админку в личке.", show_alert=True)
+            return
+        await db.set_support_session(callback.from_user.id, "nftforward_wait", payload="{}")
+        await safe_callback_answer(callback)
+        kb = InlineKeyboardBuilder()
+        kb.row(blue_inline_button(
+            "❌ Отмена", callback_data="admin:nftforward:cancel", premium_icon=False,
+        ))
+        await callback.message.answer(
+            "🎁 <b>Рассылка NFT из поста</b>\n\n"
+            "Перешлите сюда исходный пост из Telegram-канала "
+            "(обычной пересылкой, не скрывая отправителя).\n\n"
+            "Бот покажет пост с кнопкой «Участвовать», а затем попросит "
+            "подтвердить рассылку всем пользователям MGN VPN.",
+            reply_markup=kb.as_markup(),
+        )
+
+    @router.callback_query(F.data == "admin:nftforward:cancel")
+    async def admin_nft_forward_cancel(callback: CallbackQuery) -> None:
+        if not callback.from_user or not await has_full_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        session = await db.get_support_session(callback.from_user.id)
+        if session and str(session.get("mode", "")).startswith("nftforward_"):
+            await db.clear_support_session(callback.from_user.id)
+        await safe_callback_answer(callback, "Отменено")
+        if callback.message:
+            await callback.message.answer("Черновик NFT-рассылки отменён.")
+
+    @router.callback_query(F.data == "admin:nftforward:send")
+    async def admin_nft_forward_send(callback: CallbackQuery) -> None:
+        if not callback.from_user or not await has_full_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        if not callback.message or callback.message.chat.type != "private":
+            await safe_callback_answer(callback, "Только в личном чате.", show_alert=True)
+            return
+        session = await db.get_support_session(callback.from_user.id)
+        if not session or session.get("mode") != "nftforward_confirm":
+            await safe_callback_answer(callback, "Предпросмотр устарел.", show_alert=True)
+            return
+        try:
+            draft = json.loads(str(session.get("payload") or "{}"))
+            origin_key = str(draft["origin_key"])
+            source_message_id = int(draft["message_id"])
+            source_chat_id = int(draft["chat_id"])
+            if not origin_key.startswith("channel:") or source_message_id <= 0:
+                raise ValueError("Bad NFT draft")
+        except (ValueError, KeyError, TypeError):
+            await safe_callback_answer(callback, "Некорректный черновик.", show_alert=True)
+            return
+        outcome, job_id, audience = await enqueue_nft_forward(
+            db.path, actor_id=callback.from_user.id, origin_key=origin_key,
+            source_chat_id=source_chat_id, source_message_id=source_message_id,
+        )
+        if outcome == "queued":
+            await db.clear_support_session(callback.from_user.id)
+            await safe_callback_answer(callback, "Рассылка поставлена в очередь.")
+            kb = InlineKeyboardBuilder()
+            kb.row(blue_inline_button(
+                "⛔ Остановить рассылку", callback_data=f"admin:nftforward:stop:{job_id}",
+                premium_icon=False,
+            ))
+            await callback.message.answer(
+                "✅ <b>Рассылка NFT запущена</b>\n\n"
+                f"В очереди: <b>{audience}</b> пользователей MGN VPN.\n"
+                "Каждому придёт копия поста с inline-кнопкой «Участвовать».\n"
+                "Отчёт о доставке придёт после завершения.",
+                reply_markup=kb.as_markup(),
+            )
+            return
+        await safe_callback_answer(callback, "Рассылка не запущена", show_alert=True)
+        await callback.message.answer(
+            "Этот пост уже рассылался." if outcome == "duplicate" else
+            "Другая NFT-рассылка уже запущена. Дождитесь завершения "
+            "или остановите предыдущую."
+        )
+
+    @router.callback_query(F.data.regexp(r"^admin:nftforward:stop:\d+$"))
+    async def admin_nft_forward_stop(callback: CallbackQuery) -> None:
+        if not callback.from_user or not await has_full_admin_access(callback.from_user.id):
+            await safe_callback_answer(callback, "Нет доступа", show_alert=True)
+            return
+        job_id = int((callback.data or "").rsplit(":", 1)[-1])
+        stopped = await cancel_nft_forward(db.path, job_id)
+        job = await nft_forward_job(db.path, job_id)
+        await safe_callback_answer(callback, "Рассылка остановлена" if stopped else "Рассылка уже завершена")
+        if callback.message:
+            await callback.message.answer(
+                f"⛔ Рассылка #{job_id} остановлена." if stopped else
+                f"Рассылка #{job_id} уже завершена или недоступна."
+            )
+
     @router.callback_query(F.data == "admin:broadcast:start")
     async def admin_broadcast_start(callback: CallbackQuery) -> None:
         if not await has_full_admin_access(callback.from_user.id):
@@ -6354,6 +6464,60 @@ def build_router(
         session = await db.get_support_session(user_id)
         if not session:
             return False
+
+        if session["mode"] in ("nftforward_wait", "nftforward_confirm"):
+            if not await has_full_admin_access(user_id) or message.chat.type != "private":
+                await db.clear_support_session(user_id)
+                return True
+            if session["mode"] == "nftforward_confirm":
+                await message.answer("Черновик готов. Нажмите «Начать рассылку» или «Отмена».")
+                return True
+            origin_key = nft_forward_origin_key(message)
+            if not origin_key or not (message.text or message.photo or message.video
+                                     or message.animation or message.document):
+                await message.answer(
+                    "Перешлите сообщение из канала обычной пересылкой. "
+                    "Нужен пост с текстом, фото, видео, GIF или файлом."
+                )
+                return True
+            draft = {
+                "origin_key": origin_key,
+                "chat_id": int(message.chat.id),
+                "message_id": int(message.message_id),
+            }
+            try:
+                await message.bot.copy_message(
+                    chat_id=user_id,
+                    from_chat_id=message.chat.id,
+                    message_id=message.message_id,
+                    reply_markup=nft_forward_keyboard(),
+                )
+            except (TelegramBadRequest, TelegramForbiddenError) as exc:
+                logger.warning("Could not preview NFT forward: %s", type(exc).__name__)
+                await message.answer(
+                    "Не удалось скопировать пост. Перешлите другое сообщение из канала."
+                )
+                return True
+            await db.set_support_session(
+                user_id, "nftforward_confirm", payload=json.dumps(draft),
+            )
+            audience = await nft_forward_audience_size(db.path)
+            kb = InlineKeyboardBuilder()
+            kb.row(blue_inline_button(
+                "✅ Начать рассылку", callback_data="admin:nftforward:send",
+            ))
+            kb.row(blue_inline_button(
+                "❌ Отмена", callback_data="admin:nftforward:cancel",
+                premium_icon=False,
+            ))
+            await message.answer(
+                "👆 <b>Так пост увидят пользователи VPN.</b>\n\n"
+                f"Получателей: <b>{audience}</b>.\n"
+                "Кнопка ведёт в бот розыгрыша. "
+                "Рассылка начнётся только после подтверждения.",
+                reply_markup=kb.as_markup(),
+            )
+            return True
 
         if session["mode"] == "admin_search" and await has_admin_access(user_id):
             query = str(message.text or "").strip()
