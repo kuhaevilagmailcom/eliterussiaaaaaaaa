@@ -249,11 +249,11 @@ def test_http_security_routes_and_subscription(tmp_path, monkeypatch):
             root_html=await root.text()
             assert 'hero-copy' in root_html
             assert 'agreement-part' not in root_html
-            agreement = await client.get('/agreement')
-            privacy = await client.get('/privacy')
-            assert agreement.status == privacy.status == 200
-            assert 'Пользовательское соглашение' in await agreement.text()
-            assert 'Политика конфиденциальности' in await privacy.text()
+            agreement = await client.get('/agreement', allow_redirects=False)
+            privacy = await client.get('/privacy', allow_redirects=False)
+            assert agreement.status == privacy.status == 302
+            assert agreement.headers['Location'] == 'https://telegra.ph/PUBLICHNAYA-OFERTA-08-12-15'
+            assert privacy.headers['Location'] == 'https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-08-12-99'
             assert all(f'{price} ₽' in root_html for price in (70,170,370,777))
             assert 'bottomNav' in await app.text()
             health_response = await client.get('/api/miniapp/health')

@@ -622,24 +622,10 @@ class MiniAppServer:
                             headers={"Cache-Control": "public, max-age=60"})
 
     async def agreement(self, request: web.Request) -> web.StreamResponse:
-        page = self.web_dir / "site" / "agreement.html"
-        if not page.exists():
-            raise web.HTTPNotFound(text="MGN VPN agreement is missing")
-        html = await asyncio.to_thread(page.read_text, encoding="utf-8")
-        html = html.replace("{{AGREEMENT_HTML}}", agreement_html())
-        html = html.replace("{{AGREEMENT_UPDATED}}", AGREEMENT_UPDATED)
-        return web.Response(text=html, content_type="text/html",
-                            headers={"Cache-Control": "public, max-age=60"})
+        raise web.HTTPFound(location="https://telegra.ph/PUBLICHNAYA-OFERTA-08-12-15")
 
     async def privacy(self, request: web.Request) -> web.StreamResponse:
-        page = self.web_dir / "site" / "privacy.html"
-        if not page.exists():
-            raise web.HTTPNotFound(text="MGN VPN privacy policy is missing")
-        html = await asyncio.to_thread(page.read_text, encoding="utf-8")
-        html = html.replace("{{PRIVACY_HTML}}", privacy_html())
-        html = html.replace("{{PRIVACY_UPDATED}}", PRIVACY_UPDATED)
-        return web.Response(text=html, content_type="text/html",
-                            headers={"Cache-Control": "public, max-age=60"})
+        raise web.HTTPFound(location="https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-08-12-99")
 
     async def index(self, request: web.Request) -> web.StreamResponse:
         index = self.web_dir / "index.html"
