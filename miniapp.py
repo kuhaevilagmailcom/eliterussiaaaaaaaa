@@ -48,8 +48,12 @@ from legal import (
     AGREEMENT_SECTIONS,
     AGREEMENT_UPDATED,
     PRIVACY_UPDATED,
+    OFFER_UPDATED,
+    REFUNDS_UPDATED,
     agreement_html,
     privacy_html,
+    offer_html,
+    refunds_html,
 )
 from vpn import VpnProvider, VpnState, prettify_subscription_payload
 from vpn_clients import client_registry, get_client
@@ -638,6 +642,26 @@ class MiniAppServer:
         html = await asyncio.to_thread(page.read_text, encoding="utf-8")
         html = html.replace("{{PRIVACY_HTML}}", privacy_html())
         html = html.replace("{{PRIVACY_UPDATED}}", PRIVACY_UPDATED)
+        return web.Response(text=html, content_type="text/html",
+                            headers={"Cache-Control": "public, max-age=60"})
+
+    async def offer(self, request: web.Request) -> web.StreamResponse:
+        page = self.web_dir / "site" / "offer.html"
+        if not page.exists():
+            raise web.HTTPNotFound(text="MGN VPN offer is missing")
+        html = await asyncio.to_thread(page.read_text, encoding="utf-8")
+        html = html.replace("{{OFFER_HTML}}", offer_html())
+        html = html.replace("{{OFFER_UPDATED}}", OFFER_UPDATED)
+        return web.Response(text=html, content_type="text/html",
+                            headers={"Cache-Control": "public, max-age=60"})
+
+    async def refunds(self, request: web.Request) -> web.StreamResponse:
+        page = self.web_dir / "site" / "refunds.html"
+        if not page.exists():
+            raise web.HTTPNotFound(text="MGN VPN refund rules are missing")
+        html = await asyncio.to_thread(page.read_text, encoding="utf-8")
+        html = html.replace("{{REFUNDS_HTML}}", refunds_html())
+        html = html.replace("{{REFUNDS_UPDATED}}", REFUNDS_UPDATED)
         return web.Response(text=html, content_type="text/html",
                             headers={"Cache-Control": "public, max-age=60"})
 
@@ -2183,6 +2207,10 @@ class MiniAppServer:
         app.router.add_get("/agreement/", self.agreement)
         app.router.add_get("/privacy", self.privacy)
         app.router.add_get("/privacy/", self.privacy)
+        app.router.add_get("/offer", self.offer)
+        app.router.add_get("/offer/", self.offer)
+        app.router.add_get("/refunds", self.refunds)
+        app.router.add_get("/refunds/", self.refunds)
         app.router.add_get("/app", self.index)
         app.router.add_get("/app/", self.index)
         # Keep old Mini App paths alive for already cached Telegram links.
