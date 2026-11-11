@@ -138,9 +138,9 @@ def test_h1_subscription_merges_federation_and_excludes_removed_netherlands():
         provider._get_client = AsyncMock(side_effect=get_client)
         provider._fetch_public_subscription = AsyncMock(
             return_value=base64.b64encode(
-                b"vless://uuid-1@nl.example:443#MGN-NL\\n"
-                b"vless://uuid-1@us.example:443#MGN-US\\n"
-                b"vless://uuid-1@fi.example:443#MGN-FI\\n"
+                b"vless://uuid-1@nl.example:443#MGN-NL\n"
+                b"vless://uuid-1@us.example:443#MGN-US\n"
+                b"vless://uuid-1@fi.example:443#MGN-FI\n"
             )
         )
         provider._federated_nodes = AsyncMock(
@@ -492,11 +492,11 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
         )
         provider._fetch_public_subscription = AsyncMock(
             return_value=(
-                "vless://u@fi5.h1cloud.net:443#MGN-FI\\n"
-                "vless://u@pk1.h1cloud.net:443#MGN-PK\\n"
-                "vless://u@tr1.example.net:443#MGN-TR\\n"
-                "vless://u@de1.example.net:443#MGN-DE\\n"
-                "vless://u@us3.h1cloud.net:443#MGN-US\\n"
+                "vless://u@fi5.h1cloud.net:443#MGN-FI\n"
+                "vless://u@pk1.h1cloud.net:443#MGN-PK\n"
+                "vless://u@tr1.example.net:443#MGN-TR\n"
+                "vless://u@de1.example.net:443#MGN-DE\n"
+                "vless://u@us3.h1cloud.net:443#MGN-US\n"
             ).encode()
         )
 
