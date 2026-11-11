@@ -678,3 +678,55 @@ def test_h1_set_suspended_reports_remote_node_failures():
 
     asyncio.run(run())
 
+def test_h1_provision_fails_when_federation_inventory_is_unavailable():
+    async def run():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider._name = lambda _user: "mgn_test"
+        provider._desired_expiry = lambda _user: 4102444800
+        provider._get_client = AsyncMock(return_value=None)
+        provider._upsert_location = AsyncMock(return_value={"uuid": "uuid-1"})
+        provider._federated_nodes = AsyncMock(return_value=[])
+        provider._federation_discovery_ok = False
+
+        with pytest.raises(RuntimeError, match="inventory is unavailable"):
+            await provider.provision(
+                {
+                    "telegram_id": 42,
+                    "traffic_limit_gb": 0,
+                    "max_devices": 2,
+                }
+            )
+
+        provider._upsert_location.assert_awaited_once()
+
+    asyncio.run(run())
+
+
+def test_h1_provision_reports_remote_node_sync_failures():
+    async def run():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider._name = lambda _user: "mgn_test"
+        provider._desired_expiry = lambda _user: 4102444800
+        provider._get_client = AsyncMock(return_value={"uuid": "uuid-1"})
+        provider._federated_nodes = AsyncMock(
+            return_value=[{"id": "remote-1", "proxy_kind": "proxy"}]
+        )
+        provider._federation_discovery_ok = True
+
+        async def upsert(**kwargs):
+            if kwargs.get("prefix"):
+                raise RuntimeError("node_login_failed")
+            return {"uuid": "uuid-1"}
+
+        provider._upsert_location = AsyncMock(side_effect=upsert)
+        with pytest.raises(RuntimeError, match="every active federation node"):
+            await provider.provision(
+                {
+                    "telegram_id": 42,
+                    "traffic_limit_gb": 0,
+                    "max_devices": 2,
+                }
+            )
+
+    asyncio.run(run())
+
