@@ -6171,8 +6171,63 @@ def build_router(
             await safe_callback_answer(callback, "Некорректный пользователь", show_alert=True)
             return
         uid = int(raw)
-        await db.revoke_subscription(uid)
-        await safe_callback_answer(callback, "Подписка отключена")
+        user = await db.get_user(uid)
+        if not user:
+            await safe_callback_answer(callback, "Пользователь не найден", show_alert=True)
+            return
+
+        # The database controls the public subscription URL, but old imported
+        # VLESS profiles are enforced by H1. Suspend the same identity on the
+        # main panel and every discovered federation node before clearing DB.
+        try:
+            await asyncio.wait_for(provider.set_suspended(user, True), timeout=30.0)
+        except Exception as exc:
+            logger.warning(
+                "Admin subscription revoke could not suspend H1 access for %s: %s",
+                uid,
+                type(exc).__name__,
+            )
+            await safe_callback_answer(
+                callback,
+                "Не удалось отключить VPN на всех серверах. Подписка не изменена.",
+                show_alert=True,
+            )
+            return
+
+        try:
+            revoked = await db.revoke_subscription(uid)
+        except Exception as exc:
+            try:
+                await asyncio.wait_for(provider.set_suspended(user, False), timeout=30.0)
+            except Exception as rollback_exc:
+                logger.error(
+                    "Could not restore H1 access for %s after revoke DB failure: %s",
+                    uid,
+                    type(rollback_exc).__name__,
+                )
+            logger.warning(
+                "Admin subscription revoke DB update failed for %s: %s",
+                uid,
+                type(exc).__name__,
+            )
+            await safe_callback_answer(
+                callback,
+                "Не удалось сохранить отключение подписки. Попробуйте ещё раз.",
+                show_alert=True,
+            )
+            return
+
+        if not revoked:
+            await safe_callback_answer(callback, "Пользователь не найден", show_alert=True)
+            return
+
+        await db.add_admin_audit(
+            callback.from_user.id,
+            uid,
+            "revoke_subscription",
+            "{}",
+        )
+        await safe_callback_answer(callback, "Подписка отключена на всех серверах")
         if callback.message:
             await show_admin_user(callback.message, callback.from_user, uid)
 
