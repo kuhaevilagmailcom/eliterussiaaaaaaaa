@@ -1337,9 +1337,10 @@ class MiniAppServer:
         target_id = int(raw_id)
         if target_id == actor_id:
             raise _json_error(409, "Нельзя изменять собственный доступ из Mini App")
-        row = await self.db.get_user(target_id)
-        if not row:
-            raise _json_error(404, "Пользователь не найден")
+        try:
+            row = await self.db.get_user(target_id)
+        except KeyError as exc:
+            raise _json_error(404, "Пользователь не найден") from exc
         data = await self._json_body(request)
         action = str(data.get("action") or "")
         details: dict[str, Any] = {}
@@ -1393,9 +1394,10 @@ class MiniAppServer:
                     raise
                 if not revoked:
                     raise _json_error(404, "Подписка не найдена")
-                updated = await self.db.get_user(target_id)
-                if not updated:
-                    raise _json_error(404, "Пользователь не найден")
+                try:
+                    updated = await self.db.get_user(target_id)
+                except KeyError as exc:
+                    raise _json_error(404, "Пользователь не найден") from exc
                 await self.invalidate_subscription_cache(old_token)
                 details = {"revoked": True}
             elif action == "reset_devices":
