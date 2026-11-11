@@ -12,8 +12,8 @@ from miniapp import MiniAppServer
 def test_admin_api_uses_current_h1_inventory_instead_of_sold_legacy_fleet(tmp_path):
     async def scenario():
         names = [
-            "🇳🇱 Нидерланды", "🇵🇰 Пакистан", "🇹🇷 Турция",
-            "🇩🇪 Германия", "🇺🇸 США 1", "🇫🇮 Финляндия",
+            "🇫🇮 Финляндия", "🇵🇰 Пакистан", "🇹🇷 Турция",
+            "🇩🇪 Германия", "🇺🇸 США 1",
         ]
         report = {
             "servers": [
