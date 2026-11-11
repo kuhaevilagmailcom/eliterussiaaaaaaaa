@@ -912,7 +912,10 @@ class H1CloudVpnProvider(VpnProvider):
         await asyncio.gather(load_linked(), load_registry(), load_lagg())
         self._federation_discovery_ok = bool(successful_sources)
 
-        main_label = _location_label(self.api_url) or self.server_name
+        main_label = (
+            _location_label(str(getattr(self, "api_url", "") or ""))
+            or str(getattr(self, "server_name", "") or "")
+        )
         active_nodes: list[dict[str, Any]] = []
         removed_count = 0
         duplicate_main_count = 0
