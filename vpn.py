@@ -500,7 +500,12 @@ class H1CloudVpnProvider(VpnProvider):
         self.api_url = api_url.rstrip("/")
         self.api_token = api_token
         self.subscription_template = subscription_template.strip()
-        self.server_name = _location_label(api_url) or server_name or "🇫🇮 Финляндия"
+        configured_server_name = str(server_name or "").strip()
+        self.server_name = _location_label(api_url) or (
+            "🇫🇮 Финляндия"
+            if configured_server_name.lower() in {"", "mgn vpn"}
+            else configured_server_name
+        )
         self.allow_insecure = bool(allow_insecure)
         self.verify_ssl = effective_verify_ssl
         self.ssl_context: ssl.SSLContext | bool = (
