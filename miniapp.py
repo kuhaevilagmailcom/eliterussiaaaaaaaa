@@ -1373,7 +1373,7 @@ class MiniAppServer:
                 # already-imported VLESS configurations usable on remote nodes.
                 await asyncio.wait_for(
                     self.provider.set_suspended(row, True),
-                    timeout=30.0,
+                    timeout=60.0,
                 )
                 try:
                     revoked = await self.db.revoke_subscription(target_id)
