@@ -6180,7 +6180,7 @@ def build_router(
         # VLESS profiles are enforced by H1. Suspend the same identity on the
         # main panel and every discovered federation node before clearing DB.
         try:
-            await asyncio.wait_for(provider.set_suspended(user, True), timeout=30.0)
+            await asyncio.wait_for(provider.set_suspended(user, True), timeout=60.0)
         except Exception as exc:
             logger.warning(
                 "Admin subscription revoke could not suspend H1 access for %s: %s",
