@@ -4146,14 +4146,13 @@ def build_router(
                     callback_data=f"admin:devicemenu:{telegram_id}",
                 ),
             )
-            if active:
-                kb.row(
-                    admin_inline_button(
-                        "🚫 Отключить подписку",
-                        callback_data=f"admin:revokeconfirm:{telegram_id}",
-                        style="danger",
-                    )
+            kb.row(
+                admin_inline_button(
+                    "🚫 Отозвать подписку",
+                    callback_data=f"admin:revokeconfirm:{telegram_id}",
+                    style="danger",
                 )
+            )
 
         if actor_role == "owner" and telegram_id not in config.admin_ids:
             kb.row(
@@ -6159,7 +6158,7 @@ def build_router(
         kb.row(blue_inline_button("Отключить", callback_data=f"admin:revoke:{uid}"))
         kb.row(blue_inline_button("❌ Отмена", callback_data=f"admin:user:{uid}", premium_icon=False))
         await safe_callback_answer(callback, )
-        await send_screen(callback.message, callback.from_user, f"<b>Отключить подписку?</b>\n\nПользователь <code>{uid}</code> потеряет доступ.", reply_markup=kb.as_markup())
+        await send_screen(callback.message, callback.from_user, f"<b>Отозвать VPN-доступ?</b>\n\nПодписка пользователя <code>{uid}</code> будет отключена на основном и всех доступных узлах.", reply_markup=kb.as_markup())
 
     @router.callback_query(F.data.startswith("admin:revoke:"))
     async def admin_revoke(callback: CallbackQuery) -> None:
@@ -6171,8 +6170,9 @@ def build_router(
             await safe_callback_answer(callback, "Некорректный пользователь", show_alert=True)
             return
         uid = int(raw)
-        user = await db.get_user(uid)
-        if not user:
+        try:
+            user = await db.get_user(uid)
+        except KeyError:
             await safe_callback_answer(callback, "Пользователь не найден", show_alert=True)
             return
 
