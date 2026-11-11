@@ -160,10 +160,10 @@ class MiniAppServer:
         )
 
     def _subscription_cache_path(self, token: str) -> Path:
-        # Version the on-disk cache so a deployment that fixes subscription
-        # composition never keeps serving an older NL-only payload.
+        # Version the on-disk cache so a deployment that removes a location
+        # never keeps serving a previously cached subscription with that node.
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        return self._subscription_cache_dir / f"v10-{digest}.json"
+        return self._subscription_cache_dir / f"v11-{digest}.json"
 
     async def invalidate_subscription_cache(self, token: str) -> None:
         """Drop every cached form of a user's subscription after H1 sync."""
