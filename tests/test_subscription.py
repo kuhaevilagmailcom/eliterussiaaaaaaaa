@@ -523,8 +523,8 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
 
         finland = next(item for item in servers if item["name"] == "🇫🇮 Финляндия")
         assert finland["available"] is True
-        assert finland["latency_ms"] is None
-        assert finland["check"] == "subscription_present"
+        assert finland["latency_ms"] is not None
+        assert finland["check"] == "health"
 
         usa1 = next(item for item in servers if item["name"] == "🇺🇸 США 1")
         turkey = next(item for item in servers if item["name"] == "🇹🇷 Турция")
