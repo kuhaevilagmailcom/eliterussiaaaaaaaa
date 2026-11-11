@@ -4146,14 +4146,13 @@ def build_router(
                     callback_data=f"admin:devicemenu:{telegram_id}",
                 ),
             )
-            if active:
-                kb.row(
-                    admin_inline_button(
-                        "🚫 Отключить подписку",
-                        callback_data=f"admin:revokeconfirm:{telegram_id}",
-                        style="danger",
-                    )
+            kb.row(
+                admin_inline_button(
+                    "🚫 Отозвать подписку",
+                    callback_data=f"admin:revokeconfirm:{telegram_id}",
+                    style="danger",
                 )
+            )
 
         if actor_role == "owner" and telegram_id not in config.admin_ids:
             kb.row(
@@ -6159,7 +6158,7 @@ def build_router(
         kb.row(blue_inline_button("Отключить", callback_data=f"admin:revoke:{uid}"))
         kb.row(blue_inline_button("❌ Отмена", callback_data=f"admin:user:{uid}", premium_icon=False))
         await safe_callback_answer(callback, )
-        await send_screen(callback.message, callback.from_user, f"<b>Отключить подписку?</b>\n\nПользователь <code>{uid}</code> потеряет доступ.", reply_markup=kb.as_markup())
+        await send_screen(callback.message, callback.from_user, f"<b>Отозвать VPN-доступ?</b>\n\nПодписка пользователя <code>{uid}</code> будет отключена на основном и всех доступных узлах.", reply_markup=kb.as_markup())
 
     @router.callback_query(F.data.startswith("admin:revoke:"))
     async def admin_revoke(callback: CallbackQuery) -> None:
@@ -6171,8 +6170,64 @@ def build_router(
             await safe_callback_answer(callback, "Некорректный пользователь", show_alert=True)
             return
         uid = int(raw)
-        await db.revoke_subscription(uid)
-        await safe_callback_answer(callback, "Подписка отключена")
+        try:
+            user = await db.get_user(uid)
+        except KeyError:
+            await safe_callback_answer(callback, "Пользователь не найден", show_alert=True)
+            return
+
+        # The database controls the public subscription URL, but old imported
+        # VLESS profiles are enforced by H1. Suspend the same identity on the
+        # main panel and every discovered federation node before clearing DB.
+        try:
+            await asyncio.wait_for(provider.set_suspended(user, True), timeout=60.0)
+        except Exception as exc:
+            logger.warning(
+                "Admin subscription revoke could not suspend H1 access for %s: %s",
+                uid,
+                type(exc).__name__,
+            )
+            await safe_callback_answer(
+                callback,
+                "Не удалось подтвердить отключение VPN на всех серверах. Подписка в базе не изменена.",
+                show_alert=True,
+            )
+            return
+
+        try:
+            revoked = await db.revoke_subscription(uid)
+        except Exception as exc:
+            try:
+                await asyncio.wait_for(provider.set_suspended(user, False), timeout=30.0)
+            except Exception as rollback_exc:
+                logger.error(
+                    "Could not restore H1 access for %s after revoke DB failure: %s",
+                    uid,
+                    type(rollback_exc).__name__,
+                )
+            logger.warning(
+                "Admin subscription revoke DB update failed for %s: %s",
+                uid,
+                type(exc).__name__,
+            )
+            await safe_callback_answer(
+                callback,
+                "Не удалось сохранить отключение подписки. Попробуйте ещё раз.",
+                show_alert=True,
+            )
+            return
+
+        if not revoked:
+            await safe_callback_answer(callback, "Пользователь не найден", show_alert=True)
+            return
+
+        await db.add_admin_audit(
+            callback.from_user.id,
+            uid,
+            "revoke_subscription",
+            "{}",
+        )
+        await safe_callback_answer(callback, "Подписка отключена на всех серверах")
         if callback.message:
             await show_admin_user(callback.message, callback.from_user, uid)
 

@@ -169,3 +169,136 @@ def test_h1_federation_accepts_nested_and_object_response_shapes():
     assert ("lproxy", "de-1") in pairs
     assert ("proxy", "pl-1") in pairs
     assert ("lproxy", "us-1") in pairs
+
+def test_revoke_subscription_clears_only_access_fields_and_is_idempotent(tmp_path):
+    async def scenario():
+        db = Database(str(tmp_path / "revoke.sqlite3"))
+        await db.init()
+        await db.ensure_user(42, "buyer", "Buyer")
+        async with aiosqlite.connect(db.path) as connection:
+            await connection.execute(
+                "UPDATE users SET subscription_until=?, plan_name='30 дней' WHERE telegram_id=?",
+                ("2030-01-01T00:00:00+00:00", 42),
+            )
+            await connection.commit()
+
+        assert await db.revoke_subscription(42) is True
+        revoked = await db.get_user(42)
+        assert revoked["subscription_until"] is None
+        assert revoked["plan_name"] == ""
+        assert revoked["max_devices"] == 2
+
+        # Repeating the operation for an existing user is safe.
+        assert await db.revoke_subscription(42) is True
+        assert await db.revoke_subscription(404) is False
+
+    run(scenario())
+
+
+def test_miniapp_revoke_suspends_h1_before_clearing_database():
+    async def scenario():
+        row = {
+            "telegram_id": 42,
+            "sub_token": "old-token",
+            "subscription_until": "2030-01-01T00:00:00+00:00",
+            "plan_name": "30 дней",
+        }
+        updated = {
+            **row,
+            "subscription_until": None,
+            "plan_name": "",
+        }
+        events = []
+
+        async def suspend(user, value):
+            events.append(("provider", value))
+
+        async def revoke(user_id):
+            events.append(("database", user_id))
+            return True
+
+        server = object.__new__(MiniAppServer)
+        server._admin_auth = AsyncMock(return_value=(999, {}, {}, "owner"))
+        server._json_body = AsyncMock(return_value={"action": "revoke_subscription"})
+        server.db = SimpleNamespace(
+            get_user=AsyncMock(side_effect=[row, updated]),
+            revoke_subscription=AsyncMock(side_effect=revoke),
+            add_admin_audit=AsyncMock(),
+            admin_user_detail=AsyncMock(return_value={"user": updated}),
+        )
+        server.provider = SimpleNamespace(set_suspended=AsyncMock(side_effect=suspend))
+        server.invalidate_subscription_cache = AsyncMock()
+        server._sync_bot_subscription_menu = AsyncMock()
+
+        response = await server.admin_user_action(
+            SimpleNamespace(match_info={"user_id": "42"})
+        )
+        assert response.status == 200
+        assert events == [("provider", True), ("database", 42)]
+        server.invalidate_subscription_cache.assert_awaited_once_with("old-token")
+        server.db.add_admin_audit.assert_awaited_once()
+        server._sync_bot_subscription_menu.assert_awaited_once_with(updated)
+
+    run(scenario())
+
+
+def test_miniapp_revoke_does_not_clear_database_when_h1_suspension_fails():
+    async def scenario():
+        row = {
+            "telegram_id": 42,
+            "sub_token": "old-token",
+            "subscription_until": "2030-01-01T00:00:00+00:00",
+            "plan_name": "30 дней",
+        }
+        server = object.__new__(MiniAppServer)
+        server._admin_auth = AsyncMock(return_value=(999, {}, {}, "owner"))
+        server._json_body = AsyncMock(return_value={"action": "revoke_subscription"})
+        server.db = SimpleNamespace(
+            get_user=AsyncMock(return_value=row),
+            revoke_subscription=AsyncMock(return_value=True),
+        )
+        server.provider = SimpleNamespace(
+            set_suspended=AsyncMock(side_effect=RuntimeError("remote node offline"))
+        )
+
+        try:
+            await server.admin_user_action(
+                SimpleNamespace(match_info={"user_id": "42"})
+            )
+        except Exception as exc:
+            assert getattr(exc, "status", None) == 503
+        else:
+            raise AssertionError("H1 suspension failure must return HTTP 503")
+
+        server.db.revoke_subscription.assert_not_awaited()
+
+    run(scenario())
+
+def test_h1_federation_discovery_excludes_removed_netherlands_nodes():
+    async def scenario():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider.api_url = "https://fi5.h1cloud.net/api"
+        provider.server_name = "🇫🇮 Финляндия"
+
+        async def request(_method, path, **_kwargs):
+            if path == "/fed/link":
+                return {
+                    "links": [
+                        {"id": "nl-node", "name": "MGN-NL"},
+                        {"id": "fi-node", "name": "MGN-FI"},
+                        {"id": "de-node", "name": "MGN-DE"},
+                    ]
+                }
+            if path == "/fed/registry":
+                return {"nodes": []}
+            if path == "/fed/lagg":
+                return None
+            raise AssertionError(path)
+
+        provider._request = request
+        nodes = await provider._discover_federated_nodes()
+        assert [provider._node_id(node) for node in nodes] == ["de-node"]
+        assert provider._federation_discovery_ok is True
+
+    run(scenario())
+

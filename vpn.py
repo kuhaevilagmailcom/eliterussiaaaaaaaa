@@ -25,12 +25,11 @@ logger = logging.getLogger(__name__)
 # Preferred presentation order only. H1 federation / current subscription
 # determines which servers EXIST; this tuple must never create fake ones.
 BASE_MGN_SERVERS: tuple[tuple[str, str], ...] = (
-    ("nl", "🇳🇱 Нидерланды"),
+    ("fi", "🇫🇮 Финляндия"),
     ("pk", "🇵🇰 Пакистан"),
     ("tr", "🇹🇷 Турция"),
     ("de", "🇩🇪 Германия"),
     ("us1", "🇺🇸 США 1"),
-    ("fi", "🇫🇮 Финляндия"),
 )
 
 LOCATION_LABELS = {
@@ -466,6 +465,15 @@ class H1CloudVpnProvider(VpnProvider):
 
         parsed_api = urlsplit(api_url)
         api_host = (parsed_api.hostname or "").lower().rstrip(".")
+        if (
+            _location_label(api_url) == "🇳🇱 Нидерланды"
+            or _location_label(server_name) == "🇳🇱 Нидерланды"
+            or _flagged_h1_node_name(server_name).startswith("🇳🇱")
+        ):
+            raise RuntimeError(
+                "H1 primary configuration still points to the removed Netherlands server; "
+                "set H1_API_URL and VPN_SERVER_NAME to the Finland node"
+            )
         legacy_h1_http = (
             parsed_api.scheme == "http"
             and (api_host == "h1cloud.net" or api_host.endswith(".h1cloud.net"))
@@ -492,7 +500,12 @@ class H1CloudVpnProvider(VpnProvider):
         self.api_url = api_url.rstrip("/")
         self.api_token = api_token
         self.subscription_template = subscription_template.strip()
-        self.server_name = server_name
+        configured_server_name = str(server_name or "").strip()
+        self.server_name = _location_label(api_url) or (
+            "🇫🇮 Финляндия"
+            if configured_server_name.lower() in {"", "mgn vpn"}
+            else configured_server_name
+        )
         self.allow_insecure = bool(allow_insecure)
         self.verify_ssl = effective_verify_ssl
         self.ssl_context: ssl.SSLContext | bool = (
@@ -802,6 +815,7 @@ class H1CloudVpnProvider(VpnProvider):
         """Merge every H1 federation store and tolerate response-shape changes."""
         nodes: list[dict[str, Any]] = []
         index_by_key: dict[tuple[str, str], int] = {}
+        successful_sources: set[str] = set()
 
         def add_value(value: Any, proxy_kind: str) -> None:
             if isinstance(value, dict):
@@ -836,6 +850,8 @@ class H1CloudVpnProvider(VpnProvider):
                     self._request("GET", "/fed/link"),
                     timeout=2.5,
                 )
+                if data is not None:
+                    successful_sources.add("/fed/link")
                 raw = self._federation_collection(
                     data,
                     "links",
@@ -858,6 +874,8 @@ class H1CloudVpnProvider(VpnProvider):
                     self._request("GET", "/fed/registry"),
                     timeout=2.5,
                 )
+                if data is not None:
+                    successful_sources.add("/fed/registry")
                 raw = self._federation_collection(
                     data,
                     "nodes",
@@ -879,6 +897,8 @@ class H1CloudVpnProvider(VpnProvider):
                     self._request("GET", "/fed/lagg", allow_missing=True),
                     timeout=4.0,
                 )
+                if data is not None:
+                    successful_sources.add("/fed/lagg")
                 raw = self._federation_collection(
                     data,
                     "nodes",
@@ -895,6 +915,37 @@ class H1CloudVpnProvider(VpnProvider):
                 )
 
         await asyncio.gather(load_linked(), load_registry(), load_lagg())
+        self._federation_discovery_ok = bool(successful_sources)
+
+        main_label = (
+            _location_label(str(getattr(self, "api_url", "") or ""))
+            or str(getattr(self, "server_name", "") or "")
+        )
+        active_nodes: list[dict[str, Any]] = []
+        removed_count = 0
+        duplicate_main_count = 0
+        for node in nodes:
+            if self._is_removed_netherlands_node(node):
+                removed_count += 1
+                continue
+            # The primary Finland panel must not be provisioned a second time
+            # through its own federation alias (for example MGN-FI).
+            if main_label and self._diagnostic_node_label(node) == main_label:
+                duplicate_main_count += 1
+                continue
+            active_nodes.append(node)
+
+        if removed_count:
+            logger.info(
+                "H1Cloud federation discovery skipped %s removed Netherlands node(s)",
+                removed_count,
+            )
+        if duplicate_main_count:
+            logger.info(
+                "H1Cloud federation discovery skipped %s node(s) already represented by the main panel",
+                duplicate_main_count,
+            )
+        nodes = active_nodes
 
         logger.info(
             "H1Cloud federation discovery: %s remote node(s): %s",
@@ -956,6 +1007,40 @@ class H1CloudVpnProvider(VpnProvider):
             if value is not None and str(value).strip():
                 return str(value).strip()
         return ""
+
+    @staticmethod
+    def _is_removed_netherlands_node(node: dict[str, Any] | str) -> bool:
+        if isinstance(node, dict):
+            fields = (
+                "name", "label", "remark", "country", "country_code",
+                "location", "region", "host", "hostname", "domain", "server",
+            )
+            identity = " ".join(
+                str(node.get(key) or "").strip()
+                for key in fields
+                if str(node.get(key) or "").strip()
+            )
+            if not identity:
+                identity = " ".join(
+                    str(node.get(key) or "").strip()
+                    for key in ("node_id", "id", "server_id", "service_id")
+                    if str(node.get(key) or "").strip()
+                )
+        else:
+            identity = str(node or "").strip()
+
+        return (
+            _location_label(identity) == "🇳🇱 Нидерланды"
+            or _flagged_h1_node_name(identity).startswith("🇳🇱")
+        )
+
+    @staticmethod
+    def _is_removed_netherlands_link(link: str) -> bool:
+        identity = unquote(str(link or "")).strip()
+        return (
+            _location_label(identity) == "🇳🇱 Нидерланды"
+            or _flagged_h1_node_name(identity).startswith("🇳🇱")
+        )
 
     @staticmethod
     def _first_vless(client: dict[str, Any]) -> str:
@@ -1211,6 +1296,11 @@ class H1CloudVpnProvider(VpnProvider):
         )
 
         nodes = await self._federated_nodes()
+        if not getattr(self, "_federation_discovery_ok", False):
+            raise RuntimeError(
+                "H1Cloud federation inventory is unavailable; "
+                "the main client was updated but remote locations were not synced"
+            )
         remote_nodes = [
             node
             for node in nodes
@@ -1254,8 +1344,8 @@ class H1CloudVpnProvider(VpnProvider):
                 message = str(exc).strip() or type(exc).__name__
                 return label, message
 
-        # Remote panels are independent. Sync them concurrently so a slow or
-        # broken country cannot hold the whole purchase/Mini App for 20+ sec.
+        # Remote panels are independent. Sync them concurrently so healthy
+        # locations still update when another node is slow or unavailable.
         results = await asyncio.gather(
             *(sync_node(node) for node in remote_nodes),
             return_exceptions=False,
@@ -1267,9 +1357,13 @@ class H1CloudVpnProvider(VpnProvider):
         ]
         if errors:
             logger.warning(
-                "H1Cloud federation partial for %s: %s",
+                "H1Cloud federation sync incomplete for %s: %s",
                 name,
                 "; ".join(errors),
+            )
+            raise RuntimeError(
+                "H1Cloud could not sync every active federation node: "
+                + "; ".join(errors)
             )
 
         return await self.get_state(user)
@@ -1441,7 +1535,7 @@ class H1CloudVpnProvider(VpnProvider):
         ]
 
         # A connected device may be remembered by the country node it actually
-        # uses rather than by the main NL panel. When the main panel reports
+        # uses rather than by the main Finland panel. When the main panel reports
         # fewer devices than the account allows, inspect federation nodes in
         # parallel and merge the same user's device records.
         if len(device_groups[0]) < max_devices:
@@ -1545,26 +1639,38 @@ class H1CloudVpnProvider(VpnProvider):
         return await self.get_state(user)
 
     async def set_suspended(self, user: dict[str, Any], suspended: bool) -> None:
-        """Suspend/resume the same H1 identity without deleting its history."""
+        """Suspend/resume the same H1 identity on the main and every linked node."""
         if not suspended:
             await self.provision(user)
             return
+
         name = self._name(user)
         expires_at = int(datetime.now().timestamp()) - 60
+        try:
+            nodes = await asyncio.wait_for(self._federated_nodes(), timeout=4.5)
+        except Exception as exc:
+            raise RuntimeError(
+                "H1Cloud federation discovery failed; subscription was not revoked"
+            ) from exc
+
+        if not getattr(self, "_federation_discovery_ok", False):
+            raise RuntimeError(
+                "H1Cloud federation inventory is unavailable; "
+                "subscription was not revoked on an incomplete server list"
+            )
+
         await self._request(
             "PATCH",
             f"/clients/{quote(name, safe='')}",
             json={"expires_at": expires_at},
+            allow_missing=True,
         )
-        try:
-            nodes = await asyncio.wait_for(self._federated_nodes(), timeout=4.5)
-        except Exception:
-            nodes = []
 
-        async def suspend_remote(node: dict[str, Any]) -> None:
+        async def suspend_remote(node: dict[str, Any]) -> tuple[str, str | None]:
             prefix = self._node_prefix(node)
+            label = f"{node.get('proxy_kind')}:{self._node_id(node)}"
             if not prefix:
-                return
+                return label, "missing_node_route"
             try:
                 await asyncio.wait_for(
                     self._request(
@@ -1575,10 +1681,32 @@ class H1CloudVpnProvider(VpnProvider):
                     ),
                     timeout=5.0,
                 )
+                return label, None
             except Exception as exc:
-                logger.warning("H1Cloud remote suspension deferred for %s: %s", name, type(exc).__name__)
+                return label, type(exc).__name__
 
-        await asyncio.gather(*(suspend_remote(node) for node in nodes))
+        results = await asyncio.gather(
+            *(suspend_remote(node) for node in nodes),
+            return_exceptions=False,
+        )
+        errors = [f"{label}: {error}" for label, error in results if error]
+        if errors:
+            # Keep SQLite authoritative: if a remote node could not be
+            # confirmed, best-effort restore the still-active subscription
+            # before reporting failure to the admin.
+            if self._desired_expiry(user) > int(datetime.now().timestamp()):
+                try:
+                    await self.provision(user)
+                except Exception as rollback_exc:
+                    logger.error(
+                        "H1Cloud suspension rollback incomplete for %s: %s",
+                        name,
+                        type(rollback_exc).__name__,
+                    )
+            raise RuntimeError(
+                "H1Cloud could not confirm subscription suspension on every "
+                f"federation node: {'; '.join(errors)}"
+            )
 
     async def health(self) -> dict[str, Any]:
         data = await self._request("GET", "/health")
@@ -1707,6 +1835,8 @@ class H1CloudVpnProvider(VpnProvider):
             else:
                 node_id = str(value or "").strip()
                 node = {"id": node_id}
+            if self._is_removed_netherlands_node(node):
+                return
             key = (proxy_kind, node_id)
             if not node_id:
                 return
@@ -1877,8 +2007,12 @@ class H1CloudVpnProvider(VpnProvider):
                     "error": type(exc).__name__,
                 }
 
-        # Дедуплицируем реальные VLESS, но не отбрасываем медленные/неотвечающие.
-        subscription_links = list(dict.fromkeys(subscription_links))
+        # Keep the current fleet only. Old cached NL links are also invalidated
+        # by the subscription cache version bump in MiniAppServer.
+        subscription_links = [
+            link for link in dict.fromkeys(subscription_links)
+            if not self._is_removed_netherlands_link(link)
+        ]
         if subscription_links:
             source_rows["subscription"] = {
                 "available": True,
@@ -2224,7 +2358,9 @@ class H1CloudVpnProvider(VpnProvider):
 
         def add_many(values: list[str]) -> None:
             for value in values:
-                if value and value not in seen:
+                if not value or self._is_removed_netherlands_link(value):
+                    continue
+                if value not in seen:
                     seen.add(value)
                     links.append(value)
 

@@ -602,7 +602,7 @@
     $('#adminUserDeviceHistory').innerHTML=(profiles.length?'<p class="device-identity-note">По обновлениям VPN-клиента · не активные сессии</p>'+profilesHtml:'')+(panelHistory.length?'<p class="device-identity-note">Записи панели H1</p>'+panelHtml:'')||'<p class="admin-empty">Устройств пока не обнаружено. Клиенту нужно обновить подписку в Happ с передачей HWID.</p>';
     const payments=data.payments||[],promos=data.promos||[];
     $('#adminUserPayments').innerHTML=(payments.map(item=>'<div class="admin-row"><div class="admin-row-main"><b>'+esc(item.method)+' · '+esc(item.plan_code||'—')+'</b><small>'+fmtDate(item.created_at)+'</small></div><div class="admin-row-side"><b>'+adminNumber(item.amount)+' '+esc(item.currency)+'</b><span class="admin-tag '+(item.status==='paid'?'paid':'granted')+'">'+esc(item.status)+'</span></div></div>').join('')+promos.map(item=>'<div class="admin-row"><div class="admin-row-main"><b>Промокод '+esc(item.code)+'</b><small>'+esc(item.type)+' · '+adminNumber(item.value)+'</small></div><small>'+fmtDate(item.used_at)+'</small></div>').join(''))||'<p class="admin-empty">Оплат и промокодов нет</p>';
-    const actions={add_days:'Добавлено дней',remove_days:'Убрано дней',set_devices:'Изменён лимит',block:'Пользователь заблокирован',unblock:'Пользователь разблокирован',reset_devices:'Сброшены устройства',regenerate_link:'Пересоздана ссылка'};
+    const actions={add_days:'Добавлено дней',remove_days:'Убрано дней',set_devices:'Изменён лимит',block:'Пользователь заблокирован',unblock:'Пользователь разблокирован',revoke_subscription:'Подписка отозвана',reset_devices:'Сброшены устройства',regenerate_link:'Пересоздана ссылка'};
     $('#adminUserAudit').innerHTML=(data.audit||[]).length?(data.audit||[]).map(item=>'<div class="admin-row"><div class="admin-row-main"><b>'+esc(actions[item.action]||item.action)+'</b><small>Админ '+Number(item.actor_id)+'</small></div><small>'+fmtDate(item.created_at)+'</small></div>').join(''):'<p class="admin-empty">Действий пока нет</p>';
     icons();
   }
@@ -623,8 +623,8 @@
       const value=window.prompt('Новый лимит устройств: от 2 до 5','2');
       if(value===null)return;payload.limit=Number(value);
     }
-    if(['block','reset_devices','regenerate_link'].includes(action)){
-      const labels={block:'Заблокировать пользователя и остановить VPN?',reset_devices:'Сбросить все запомненные устройства?',regenerate_link:'Пересоздать VPN-конфигурацию? Старые подключения перестанут работать.'};
+    if(['block','reset_devices','regenerate_link','revoke_subscription'].includes(action)){
+      const labels={block:'Заблокировать пользователя и остановить VPN?',reset_devices:'Сбросить все запомненные устройства?',regenerate_link:'Пересоздать VPN-конфигурацию? Старые подключения перестанут работать.',revoke_subscription:'Отозвать подписку и отключить её на всех серверах H1Cloud? Действие можно отменить только новой выдачей доступа.'};
       if(!window.confirm(labels[action]))return;
     }
     state.busy=true;
@@ -633,7 +633,7 @@
 
   async function loadAdminServers(force=false){
     if(state.admin.loaded.servers&&!force)return;
-    $('#adminServers').innerHTML='<p class="admin-empty">Проверяем шесть узлов H1Cloud…</p>';
+    $('#adminServers').innerHTML='<p class="admin-empty">Проверяем серверы H1Cloud…</p>';
     try{renderAdminServers(await request('/api/miniapp/admin/servers?_='+Date.now()));state.admin.loaded.servers=true}catch(error){$('#adminServers').innerHTML='<p class="admin-empty">'+esc(error.message)+'</p>'}
   }
 

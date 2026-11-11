@@ -160,10 +160,10 @@ class MiniAppServer:
         )
 
     def _subscription_cache_path(self, token: str) -> Path:
-        # Version the on-disk cache so a deployment that fixes subscription
-        # composition never keeps serving an older NL-only payload.
+        # Version the on-disk cache so a deployment that removes a location
+        # never keeps serving a previously cached subscription with that node.
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        return self._subscription_cache_dir / f"v10-{digest}.json"
+        return self._subscription_cache_dir / f"v11-{digest}.json"
 
     async def invalidate_subscription_cache(self, token: str) -> None:
         """Drop every cached form of a user's subscription after H1 sync."""
@@ -1337,9 +1337,10 @@ class MiniAppServer:
         target_id = int(raw_id)
         if target_id == actor_id:
             raise _json_error(409, "Нельзя изменять собственный доступ из Mini App")
-        row = await self.db.get_user(target_id)
-        if not row:
-            raise _json_error(404, "Пользователь не найден")
+        try:
+            row = await self.db.get_user(target_id)
+        except KeyError as exc:
+            raise _json_error(404, "Пользователь не найден") from exc
         data = await self._json_body(request)
         action = str(data.get("action") or "")
         details: dict[str, Any] = {}
@@ -1366,6 +1367,39 @@ class MiniAppServer:
                 await asyncio.wait_for(self.provider.set_suspended(row, blocked), timeout=30.0)
                 updated = await self.db.set_user_blocked(target_id, blocked, actor_id)
                 details = {"blocked": blocked}
+            elif action == "revoke_subscription":
+                old_token = str(row.get("sub_token") or "")
+                # Expire the H1 identity first; clearing SQLite alone leaves
+                # already-imported VLESS configurations usable on remote nodes.
+                await asyncio.wait_for(
+                    self.provider.set_suspended(row, True),
+                    timeout=60.0,
+                )
+                try:
+                    revoked = await self.db.revoke_subscription(target_id)
+                except Exception:
+                    # If the local transaction fails, restore the previous
+                    # H1 expiry so the database and provider do not disagree.
+                    try:
+                        await asyncio.wait_for(
+                            self.provider.set_suspended(row, False),
+                            timeout=30.0,
+                        )
+                    except Exception as rollback_exc:
+                        logger.error(
+                            "Could not restore H1 access for %s after revoke DB failure: %s",
+                            target_id,
+                            type(rollback_exc).__name__,
+                        )
+                    raise
+                if not revoked:
+                    raise _json_error(404, "Подписка не найдена")
+                try:
+                    updated = await self.db.get_user(target_id)
+                except KeyError as exc:
+                    raise _json_error(404, "Пользователь не найден") from exc
+                await self.invalidate_subscription_cache(old_token)
+                details = {"revoked": True}
             elif action == "reset_devices":
                 if not self.provider.capabilities.supports_device_reset:
                     raise _json_error(409, "Провайдер не поддерживает сброс устройств")
