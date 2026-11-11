@@ -1366,6 +1366,38 @@ class MiniAppServer:
                 await asyncio.wait_for(self.provider.set_suspended(row, blocked), timeout=30.0)
                 updated = await self.db.set_user_blocked(target_id, blocked, actor_id)
                 details = {"blocked": blocked}
+            elif action == "revoke_subscription":
+                old_token = str(row.get("sub_token") or "")
+                # Expire the H1 identity first; clearing SQLite alone leaves
+                # already-imported VLESS configurations usable on remote nodes.
+                await asyncio.wait_for(
+                    self.provider.set_suspended(row, True),
+                    timeout=30.0,
+                )
+                try:
+                    revoked = await self.db.revoke_subscription(target_id)
+                except Exception:
+                    # If the local transaction fails, restore the previous
+                    # H1 expiry so the database and provider do not disagree.
+                    try:
+                        await asyncio.wait_for(
+                            self.provider.set_suspended(row, False),
+                            timeout=30.0,
+                        )
+                    except Exception as rollback_exc:
+                        logger.error(
+                            "Could not restore H1 access for %s after revoke DB failure: %s",
+                            target_id,
+                            type(rollback_exc).__name__,
+                        )
+                    raise
+                if not revoked:
+                    raise _json_error(404, "Подписка не найдена")
+                updated = await self.db.get_user(target_id)
+                if not updated:
+                    raise _json_error(404, "Пользователь не найден")
+                await self.invalidate_subscription_cache(old_token)
+                details = {"revoked": True}
             elif action == "reset_devices":
                 if not self.provider.capabilities.supports_device_reset:
                     raise _json_error(409, "Провайдер не поддерживает сброс устройств")
