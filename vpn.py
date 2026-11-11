@@ -1273,6 +1273,11 @@ class H1CloudVpnProvider(VpnProvider):
         )
 
         nodes = await self._federated_nodes()
+        if not getattr(self, "_federation_discovery_ok", False):
+            raise RuntimeError(
+                "H1Cloud federation inventory is unavailable; "
+                "the main client was updated but remote locations were not synced"
+            )
         remote_nodes = [
             node
             for node in nodes
@@ -1329,9 +1334,13 @@ class H1CloudVpnProvider(VpnProvider):
         ]
         if errors:
             logger.warning(
-                "H1Cloud federation partial for %s: %s",
+                "H1Cloud federation sync incomplete for %s: %s",
                 name,
                 "; ".join(errors),
+            )
+            raise RuntimeError(
+                "H1Cloud could not sync every active federation node: "
+                + "; ".join(errors)
             )
 
         return await self.get_state(user)
