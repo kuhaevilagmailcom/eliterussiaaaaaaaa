@@ -594,7 +594,6 @@
     $('#adminUserDevices').textContent=devices.filter(item=>item.active).length+' / '+Number(user.max_devices||2)+(profiles.length?' · Обнаружено: '+profiles.length:'');
     $('#adminUserLastSeen').textContent='активность '+fmtDate(user.last_activity_at);
     const block=$('#adminBlockUser');block.dataset.adminAction=user.is_blocked?'unblock':'block';block.classList.toggle('danger',!user.is_blocked);block.querySelector('b').textContent=user.is_blocked?'Разблокировать':'Заблокировать';block.querySelector('small').textContent=user.is_blocked?'Вернуть доступ в H1Cloud':'Остановить доступ в H1Cloud';
-    $('#adminRevokeSubscription').hidden=!user.subscription_until;
     // Refreshes identify apps, while H1 only confirms remembered slots.
     const matchedIds=new Set(profiles.map(item=>item.panel_id).filter(Boolean));
     const panelHistory=devices.filter(item=>!matchedIds.has(item.device_id));
