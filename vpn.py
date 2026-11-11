@@ -1668,6 +1668,18 @@ class H1CloudVpnProvider(VpnProvider):
         )
         errors = [f"{label}: {error}" for label, error in results if error]
         if errors:
+            # Keep SQLite authoritative: if a remote node could not be
+            # confirmed, best-effort restore the still-active subscription
+            # before reporting failure to the admin.
+            if self._desired_expiry(user) > int(datetime.now().timestamp()):
+                try:
+                    await self.provision(user)
+                except Exception as rollback_exc:
+                    logger.error(
+                        "H1Cloud suspension rollback incomplete for %s: %s",
+                        name,
+                        type(rollback_exc).__name__,
+                    )
             raise RuntimeError(
                 "H1Cloud could not confirm subscription suspension on every "
                 f"federation node: {'; '.join(errors)}"
