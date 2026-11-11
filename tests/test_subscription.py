@@ -673,8 +673,16 @@ def test_h1_set_suspended_reports_remote_node_failures():
             raise AssertionError(path)
 
         provider._request = AsyncMock(side_effect=request)
+        provider.provision = AsyncMock()
         with pytest.raises(RuntimeError, match="every federation node"):
-            await provider.set_suspended({"telegram_id": 42}, True)
+            await provider.set_suspended(
+                {
+                    "telegram_id": 42,
+                    "subscription_until": "2030-01-01T00:00:00+00:00",
+                },
+                True,
+            )
+        provider.provision.assert_awaited_once()
 
     asyncio.run(run())
 
