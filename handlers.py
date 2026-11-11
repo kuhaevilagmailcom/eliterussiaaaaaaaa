@@ -6189,7 +6189,7 @@ def build_router(
             )
             await safe_callback_answer(
                 callback,
-                "Не удалось отключить VPN на всех серверах. Подписка не изменена.",
+                "Не удалось подтвердить отключение VPN на всех серверах. Подписка в базе не изменена.",
                 show_alert=True,
             )
             return
