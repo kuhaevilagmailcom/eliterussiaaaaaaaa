@@ -45,7 +45,7 @@ def test_us1_and_us2_nodes_keep_explicit_names():
 def test_h1_legacy_h1cloud_http_api_is_accepted_without_extra_env_flag():
     async def run():
         provider = H1CloudVpnProvider(
-            api_url="http://nl1.h1cloud.net:25364/api",
+            api_url="http://fi5.h1cloud.net:25364/api",
             api_token="test-token",
             subscription_template="",
             server_name="MGN VPN",
@@ -53,7 +53,7 @@ def test_h1_legacy_h1cloud_http_api_is_accepted_without_extra_env_flag():
             allow_insecure=False,
         )
         try:
-            assert provider.api_url == "http://nl1.h1cloud.net:25364/api"
+            assert provider.api_url == "http://fi5.h1cloud.net:25364/api"
             assert provider.verify_ssl is False
             assert provider.ssl_context is False
         finally:
@@ -109,25 +109,26 @@ def test_h1_manual_upsert_keeps_channels_that_produce_links():
     asyncio.run(run())
 
 
-def test_h1_subscription_merges_new_federation_country_even_if_aggregate_is_stale():
+
+def test_h1_subscription_merges_federation_and_excludes_removed_netherlands():
     async def run():
         provider = object.__new__(H1CloudVpnProvider)
         provider.subscription_template = ""
-        provider.server_name = "MGN VPN"
+        provider.server_name = "🇫🇮 Финляндия"
 
         main = {
             "name": "mgn_private",
             "uuid": "uuid-1",
-            "sub_url": "https://nl1.h1cloud.net/sub/test",
+            "sub_url": "https://fi5.h1cloud.net/sub/test",
             "links": {
-                "nl": "vless://uuid-1@nl.example:443#NL",
+                "fi": "vless://uuid-1@fi.example:443#MGN-FI",
             },
         }
         germany = {
             "name": "mgn_private",
             "uuid": "uuid-1",
             "links": {
-                "de": "vless://uuid-1@de.example:443#DE",
+                "de": "vless://uuid-1@de.example:443#MGN-DE",
             },
         }
 
@@ -137,15 +138,14 @@ def test_h1_subscription_merges_new_federation_country_even_if_aggregate_is_stal
         provider._get_client = AsyncMock(side_effect=get_client)
         provider._fetch_public_subscription = AsyncMock(
             return_value=base64.b64encode(
-                b"vless://uuid-1@nl.example:443#NL\n"
-                b"vless://uuid-1@us.example:443#US\n"
-                b"vless://uuid-1@fi.example:443#FI\n"
+                b"vless://uuid-1@nl.example:443#MGN-NL\\n"
+                b"vless://uuid-1@us.example:443#MGN-US\\n"
+                b"vless://uuid-1@fi.example:443#MGN-FI\\n"
             )
         )
         provider._federated_nodes = AsyncMock(
             return_value=[{"id": "de-node", "proxy_kind": "proxy"}]
         )
-        # A BotHost TCP RTT probe cannot judge the user's VPN route speed.
         provider._rank_live_vless_links = AsyncMock(
             side_effect=AssertionError("never probe from subscription import")
         )
@@ -161,12 +161,12 @@ def test_h1_subscription_merges_new_federation_country_even_if_aggregate_is_stal
         )
         links = provider._subscription_vless_links(payload)
         assert any("@de.example:" in link for link in links)
-        assert len(links) == 4
-        assert "@nl.example:" in links[0]
+        assert len(links) == 3
+        assert "@fi.example:" in links[0]
+        assert not any("@nl.example:" in link for link in links)
         provider._rank_live_vless_links.assert_not_awaited()
 
     asyncio.run(run())
-
 
 def test_h1_get_state_finds_device_on_remote_federation_node():
     async def run():
@@ -176,7 +176,7 @@ def test_h1_get_state_finds_device_on_remote_federation_node():
 
         main_client = {
             "name": "mgn_private",
-            "sub_url": "https://nl1.h1cloud.net/sub/test",
+            "sub_url": "https://fi5.h1cloud.net/sub/test",
             "devices": [],
             "traffic_used_gb": 0,
             "traffic_limit_gb": 0,
@@ -403,24 +403,25 @@ def test_h1_smart_selection_preserves_transient_probe_failures():
     asyncio.run(run())
 
 
-def test_h1_server_diagnostics_reports_exact_mgn_fleet():
+
+def test_h1_server_diagnostics_reports_finland_primary_and_active_fleet():
     async def run():
         provider = object.__new__(H1CloudVpnProvider)
-        provider.api_url = "https://nl1.h1cloud.net/api"
-        provider.server_name = "MGN VPN"
+        provider.api_url = "https://fi5.h1cloud.net/api"
+        provider.server_name = "🇫🇮 Финляндия"
 
         async def request(method, path, **kwargs):
             assert method == "GET"
             if path == "/health":
                 return {"ok": True}
             if path == "/fed/link":
-                return {"links": ["MGN-FI"]}
+                return {"links": ["MGN-DE"]}
             if path == "/fed/registry":
                 return {"nodes": [{"id": "us-node", "name": "MGN-US"}]}
-            if path == "/fed/lproxy/MGN-FI/health":
+            if path == "/fed/lproxy/MGN-DE/health":
                 raise RuntimeError("health endpoint unavailable")
-            if path == "/fed/lproxy/MGN-FI/inbounds":
-                return {"inbounds": [{"id": "11", "remark": "MGN-FI"}]}
+            if path == "/fed/lproxy/MGN-DE/inbounds":
+                return {"inbounds": [{"id": "11", "remark": "MGN-DE"}]}
             if path in {
                 "/fed/proxy/us-node/health",
                 "/fed/proxy/us-node/inbounds",
@@ -429,8 +430,8 @@ def test_h1_server_diagnostics_reports_exact_mgn_fleet():
             raise AssertionError(path)
 
         provider._request = AsyncMock(side_effect=request)
-
         report = await provider.server_diagnostics()
+
         assert report["provider"] == "h1cloud"
         assert report["discovery_ok"] is True
         assert report["sources"]["/fed/link"]["count"] == 1
@@ -438,20 +439,22 @@ def test_h1_server_diagnostics_reports_exact_mgn_fleet():
 
         servers = report["servers"]
         assert [item["name"] for item in servers] == [
-            "🇳🇱 Нидерланды",
-            "🇺🇸 США 1",
             "🇫🇮 Финляндия",
+            "🇩🇪 Германия",
+            "🇺🇸 США 1",
         ]
         assert len(servers) == 3
         assert all(item["configured"] is True for item in servers)
-        assert not any(
-            "Польша" in item["name"] or "США 2" in item["name"]
-            for item in servers
-        )
+        assert not any("Нидерланды" in item["name"] for item in servers)
 
-        finland = next(item for item in servers if "Финляндия" in item["name"])
+        finland = next(item for item in servers if item["name"] == "🇫🇮 Финляндия")
+        assert finland["kind"] == "main"
         assert finland["available"] is True
-        assert finland["check"] == "inbounds"
+        assert finland["check"] == "health"
+
+        germany = next(item for item in servers if item["name"] == "🇩🇪 Германия")
+        assert germany["available"] is True
+        assert germany["check"] == "inbounds"
 
         usa1 = next(item for item in servers if item["name"] == "🇺🇸 США 1")
         assert usa1["available"] is True
@@ -463,8 +466,8 @@ def test_h1_server_diagnostics_reports_exact_mgn_fleet():
 def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty():
     async def run():
         provider = object.__new__(H1CloudVpnProvider)
-        provider.api_url = "https://nl1.h1cloud.net/api"
-        provider.server_name = "Нидерланды"
+        provider.api_url = "https://fi5.h1cloud.net/api"
+        provider.server_name = "🇫🇮 Финляндия"
         provider._endpoint_health_cache = {}
         provider._endpoint_failure_streak = {}
 
@@ -483,18 +486,17 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
         provider._request = AsyncMock(side_effect=request)
         provider._get_client = AsyncMock(
             return_value={
-                "sub_url": "https://nl1.h1cloud.net/sub/test",
+                "sub_url": "https://fi5.h1cloud.net/sub/test",
                 "links": {},
             }
         )
         provider._fetch_public_subscription = AsyncMock(
             return_value=(
-                "vless://u@nl1.h1cloud.net:443#MGN-NL\n"
-                "vless://u@fi5.h1cloud.net:443#MGN-FI\n"
-                "vless://u@tr1.example.net:443#MGN-TR\n"
-                "vless://u@de1.example.net:443#MGN-DE\n"
-                "vless://u@pk1.h1cloud.net:443#MGN-PK\n"
-                "vless://u@us3.h1cloud.net:443#MGN-US\n"
+                "vless://u@fi5.h1cloud.net:443#MGN-FI\\n"
+                "vless://u@pk1.h1cloud.net:443#MGN-PK\\n"
+                "vless://u@tr1.example.net:443#MGN-TR\\n"
+                "vless://u@de1.example.net:443#MGN-DE\\n"
+                "vless://u@us3.h1cloud.net:443#MGN-US\\n"
             ).encode()
         )
 
@@ -504,27 +506,22 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
             return 42.0
 
         provider._probe_vless_endpoint = probe
-
         report = await provider.server_diagnostics(
-            {
-                "telegram_id": 42,
-                "vpn_client_id": "sample",
-            }
+            {"telegram_id": 42, "vpn_client_id": "sample"}
         )
         servers = report["servers"]
-        assert len(servers) == 6
+        assert len(servers) == 5
         assert [item["name"] for item in servers] == [
-            "🇳🇱 Нидерланды",
+            "🇫🇮 Финляндия",
             "🇵🇰 Пакистан",
             "🇹🇷 Турция",
             "🇩🇪 Германия",
             "🇺🇸 США 1",
-            "🇫🇮 Финляндия",
         ]
         assert all(item["configured"] for item in servers)
-        assert not any("Польша" in item["name"] or "США 2" in item["name"] for item in servers)
+        assert not any("Нидерланды" in item["name"] for item in servers)
 
-        finland = next(item for item in servers if "Финляндия" in item["name"])
+        finland = next(item for item in servers if item["name"] == "🇫🇮 Финляндия")
         assert finland["available"] is True
         assert finland["latency_ms"] is None
         assert finland["check"] == "subscription_present"
@@ -535,8 +532,7 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
         assert usa1["host"] == "us3.h1cloud.net"
         assert turkey["host"] == "tr1.example.net"
         assert germany["host"] == "de1.example.net"
-        assert report["sources"]["subscription"]["count"] == 6
-        assert next(item for item in servers if item["name"] == "🇳🇱 Нидерланды")["port"] == 443
+        assert report["sources"]["subscription"]["count"] == 5
 
     asyncio.run(run())
 
@@ -544,8 +540,8 @@ def test_h1_server_diagnostics_uses_real_subscription_when_federation_is_empty()
 def test_h1_server_diagnostics_distinguishes_empty_federation_from_main_config():
     async def run():
         provider = object.__new__(H1CloudVpnProvider)
-        provider.api_url = "https://nl1.h1cloud.net/api"
-        provider.server_name = "Нидерланды"
+        provider.api_url = "https://fi5.h1cloud.net/api"
+        provider.server_name = "🇫🇮 Финляндия"
 
         async def request(method, path, **kwargs):
             assert method == "GET"
@@ -560,25 +556,19 @@ def test_h1_server_diagnostics_distinguishes_empty_federation_from_main_config()
             raise AssertionError(path)
 
         provider._request = AsyncMock(side_effect=request)
-
         report = await provider.server_diagnostics()
         assert report["discovery_ok"] is True
         assert len(report["servers"]) == 1
         assert [item["name"] for item in report["servers"]] == [
-            "🇳🇱 Нидерланды",
+            "🇫🇮 Финляндия",
         ]
         assert report["servers"][0]["kind"] == "main"
         assert report["servers"][0]["available"] is True
-        assert all(
-            item["configured"] is True
-            for item in report["servers"]
-        )
+        assert all(item["configured"] is True for item in report["servers"])
         assert report["sources"]["/fed/link"]["count"] == 0
         assert report["sources"]["/fed/registry"]["count"] == 0
 
     asyncio.run(run())
-
-
 
 def test_h1_node_labels_include_flags_and_variants():
     assert H1CloudVpnProvider._diagnostic_node_label(
@@ -593,35 +583,98 @@ def test_h1_node_labels_include_flags_and_variants():
 
 
 
+
 def test_h1_explicit_health_down_is_the_only_remote_red_state():
     async def run():
         provider = object.__new__(H1CloudVpnProvider)
-        provider.api_url = "https://nl1.h1cloud.net/api"
-        provider.server_name = "MGN VPN"
+        provider.api_url = "https://fi5.h1cloud.net/api"
+        provider.server_name = "🇫🇮 Финляндия"
 
         async def request(method, path, **kwargs):
             assert method == "GET"
             if path == "/health":
                 return {"ok": True}
             if path == "/fed/link":
-                return {"links": ["MGN-FI"]}
+                return {"links": ["MGN-DE"]}
             if path == "/fed/registry":
                 return {"nodes": []}
             if path == "/fed/lagg":
                 return None
-            if path == "/fed/lproxy/MGN-FI/health":
+            if path == "/fed/lproxy/MGN-DE/health":
                 return {"ok": False}
-            if path == "/fed/lproxy/MGN-FI/inbounds":
+            if path == "/fed/lproxy/MGN-DE/inbounds":
                 raise RuntimeError("explicitly unavailable")
             raise AssertionError(path)
 
         provider._request = AsyncMock(side_effect=request)
         report = await provider.server_diagnostics()
-        finland = next(
+        germany = next(
             item for item in report["servers"]
-            if item["name"] == "🇫🇮 Финляндия"
+            if item["name"] == "🇩🇪 Германия"
         )
-        assert finland["available"] is False
-        assert finland["check"] == "h1_explicit_down"
+        assert germany["available"] is False
+        assert germany["check"] == "h1_explicit_down"
 
     asyncio.run(run())
+
+def test_h1_rejects_removed_netherlands_primary_api():
+    with pytest.raises(RuntimeError, match="removed Netherlands server"):
+        H1CloudVpnProvider(
+            api_url="https://nl1.h1cloud.net/api",
+            api_token="test-token",
+            subscription_template="",
+            server_name="MGN VPN",
+        )
+
+
+def test_h1_removed_netherlands_location_detection():
+    assert H1CloudVpnProvider._is_removed_netherlands_node(
+        {"id": "nl-node", "name": "MGN-NL"}
+    )
+    assert H1CloudVpnProvider._is_removed_netherlands_link(
+        "vless://uuid@nl1.h1cloud.net:443#MGN-NL"
+    )
+    assert not H1CloudVpnProvider._is_removed_netherlands_link(
+        "vless://uuid@fi5.h1cloud.net:443#MGN-FI"
+    )
+
+
+def test_h1_set_suspended_fails_closed_when_federation_inventory_is_unavailable():
+    async def run():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider._name = lambda _user: "mgn_test"
+        provider._federated_nodes = AsyncMock(return_value=[])
+        provider._federation_discovery_ok = False
+        provider._request = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="inventory is unavailable"):
+            await provider.set_suspended({"telegram_id": 42}, True)
+
+        provider._request.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_h1_set_suspended_reports_remote_node_failures():
+    async def run():
+        provider = object.__new__(H1CloudVpnProvider)
+        provider._name = lambda _user: "mgn_test"
+        provider._federated_nodes = AsyncMock(
+            return_value=[{"id": "remote-1", "proxy_kind": "proxy"}]
+        )
+        provider._federation_discovery_ok = True
+
+        async def request(method, path, **kwargs):
+            assert method == "PATCH"
+            if path == "/clients/mgn_test":
+                return {}
+            if path == "/fed/proxy/remote-1/clients/mgn_test":
+                raise RuntimeError("remote panel offline")
+            raise AssertionError(path)
+
+        provider._request = AsyncMock(side_effect=request)
+        with pytest.raises(RuntimeError, match="every federation node"):
+            await provider.set_suspended({"telegram_id": 42}, True)
+
+    asyncio.run(run())
+
