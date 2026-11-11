@@ -740,12 +740,17 @@ def test_h1_provision_reports_remote_node_sync_failures():
     asyncio.run(run())
 
 def test_h1_generic_server_name_defaults_to_finland_for_custom_panel_host():
-    provider = H1CloudVpnProvider(
-        api_url="https://panel.example.net/api",
-        api_token="test-token",
-        subscription_template="",
-        server_name="MGN VPN",
-    )
-    assert provider.server_name == "🇫🇮 Финляндия"
-    asyncio.run(provider.close())
+    async def run():
+        provider = H1CloudVpnProvider(
+            api_url="https://panel.example.net/api",
+            api_token="test-token",
+            subscription_template="",
+            server_name="MGN VPN",
+        )
+        try:
+            assert provider.server_name == "🇫🇮 Финляндия"
+        finally:
+            await provider.close()
+
+    asyncio.run(run())
 \n
