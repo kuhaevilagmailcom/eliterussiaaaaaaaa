@@ -163,7 +163,7 @@ class Config:
             vpn_sub_base_url=configured_subscription.rstrip("/"),
             vpn_api_url=os.getenv("VPN_API_URL", "").rstrip("/"),
             vpn_api_token=os.getenv("VPN_API_TOKEN", ""),
-            vpn_server_name=os.getenv("VPN_SERVER_NAME", "MGN VPN"),
+            vpn_server_name=os.getenv("VPN_SERVER_NAME", "🇫🇮 Финляндия"),
             h1_api_url=os.getenv("H1_API_URL", "").rstrip("/"),
             h1_api_token=os.getenv("H1_API_TOKEN", "").strip(),
             h1_subscription_template=os.getenv(
