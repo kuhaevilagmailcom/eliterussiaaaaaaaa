@@ -465,10 +465,14 @@ class H1CloudVpnProvider(VpnProvider):
 
         parsed_api = urlsplit(api_url)
         api_host = (parsed_api.hostname or "").lower().rstrip(".")
-        if _location_label(api_url) == "🇳🇱 Нидерланды":
+        if (
+            _location_label(api_url) == "🇳🇱 Нидерланды"
+            or _location_label(server_name) == "🇳🇱 Нидерланды"
+            or _flagged_h1_node_name(server_name).startswith("🇳🇱")
+        ):
             raise RuntimeError(
-                "H1_API_URL still points to the removed Netherlands server; "
-                "set it to the Finland H1 panel API endpoint"
+                "H1 primary configuration still points to the removed Netherlands server; "
+                "set H1_API_URL and VPN_SERVER_NAME to the Finland node"
             )
         legacy_h1_http = (
             parsed_api.scheme == "http"
@@ -496,7 +500,7 @@ class H1CloudVpnProvider(VpnProvider):
         self.api_url = api_url.rstrip("/")
         self.api_token = api_token
         self.subscription_template = subscription_template.strip()
-        self.server_name = server_name
+        self.server_name = _location_label(api_url) or server_name or "🇫🇮 Финляндия"
         self.allow_insecure = bool(allow_insecure)
         self.verify_ssl = effective_verify_ssl
         self.ssl_context: ssl.SSLContext | bool = (
@@ -1499,7 +1503,7 @@ class H1CloudVpnProvider(VpnProvider):
         ]
 
         # A connected device may be remembered by the country node it actually
-        # uses rather than by the main NL panel. When the main panel reports
+        # uses rather than by the main Finland panel. When the main panel reports
         # fewer devices than the account allows, inspect federation nodes in
         # parallel and merge the same user's device records.
         if len(device_groups[0]) < max_devices:
