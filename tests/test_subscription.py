@@ -54,6 +54,7 @@ def test_h1_legacy_h1cloud_http_api_is_accepted_without_extra_env_flag():
         )
         try:
             assert provider.api_url == "http://fi5.h1cloud.net:25364/api"
+            assert provider.server_name == "🇫🇮 Финляндия"
             assert provider.verify_ssl is False
             assert provider.ssl_context is False
         finally:
