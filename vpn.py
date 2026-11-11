@@ -912,15 +912,30 @@ class H1CloudVpnProvider(VpnProvider):
         await asyncio.gather(load_linked(), load_registry(), load_lagg())
         self._federation_discovery_ok = bool(successful_sources)
 
-        active_nodes = [
-            node for node in nodes
-            if not self._is_removed_netherlands_node(node)
-        ]
-        removed_count = len(nodes) - len(active_nodes)
+        main_label = _location_label(self.api_url) or self.server_name
+        active_nodes: list[dict[str, Any]] = []
+        removed_count = 0
+        duplicate_main_count = 0
+        for node in nodes:
+            if self._is_removed_netherlands_node(node):
+                removed_count += 1
+                continue
+            # The primary Finland panel must not be provisioned a second time
+            # through its own federation alias (for example MGN-FI).
+            if main_label and self._diagnostic_node_label(node) == main_label:
+                duplicate_main_count += 1
+                continue
+            active_nodes.append(node)
+
         if removed_count:
             logger.info(
                 "H1Cloud federation discovery skipped %s removed Netherlands node(s)",
                 removed_count,
+            )
+        if duplicate_main_count:
+            logger.info(
+                "H1Cloud federation discovery skipped %s node(s) already represented by the main panel",
+                duplicate_main_count,
             )
         nodes = active_nodes
 
