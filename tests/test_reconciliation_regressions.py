@@ -277,6 +277,8 @@ def test_miniapp_revoke_does_not_clear_database_when_h1_suspension_fails():
 def test_h1_federation_discovery_excludes_removed_netherlands_nodes():
     async def scenario():
         provider = object.__new__(H1CloudVpnProvider)
+        provider.api_url = "https://fi5.h1cloud.net/api"
+        provider.server_name = "🇫🇮 Финляндия"
 
         async def request(_method, path, **_kwargs):
             if path == "/fed/link":
@@ -284,6 +286,7 @@ def test_h1_federation_discovery_excludes_removed_netherlands_nodes():
                     "links": [
                         {"id": "nl-node", "name": "MGN-NL"},
                         {"id": "fi-node", "name": "MGN-FI"},
+                        {"id": "de-node", "name": "MGN-DE"},
                     ]
                 }
             if path == "/fed/registry":
@@ -294,7 +297,7 @@ def test_h1_federation_discovery_excludes_removed_netherlands_nodes():
 
         provider._request = request
         nodes = await provider._discover_federated_nodes()
-        assert [provider._node_id(node) for node in nodes] == ["fi-node"]
+        assert [provider._node_id(node) for node in nodes] == ["de-node"]
         assert provider._federation_discovery_ok is True
 
     run(scenario())
