@@ -1321,8 +1321,8 @@ class H1CloudVpnProvider(VpnProvider):
                 message = str(exc).strip() or type(exc).__name__
                 return label, message
 
-        # Remote panels are independent. Sync them concurrently so a slow or
-        # broken country cannot hold the whole purchase/Mini App for 20+ sec.
+        # Remote panels are independent. Sync them concurrently so healthy
+        # locations still update when another node is slow or unavailable.
         results = await asyncio.gather(
             *(sync_node(node) for node in remote_nodes),
             return_exceptions=False,
