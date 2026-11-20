@@ -112,7 +112,7 @@ test('legal links lead directly to the supplied Telegraph documents', async ({pa
   await expect(page.locator('footer a[href="https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-08-12-99"]')).toBeVisible();
   await expect(page.locator('.renew-form a[href="https://telegra.ph/PUBLICHNAYA-OFERTA-08-12-15"]')).toBeVisible();
   await expect(page.locator('.renew-form a[href="https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-08-12-99"]')).toBeVisible();
-  await expect(page.locator('footer [data-support-link]')).toHaveAttribute('href', /t\.me\/mgnvpn_bot/);
+  await expect(page.locator('footer [data-support-link]')).toHaveAttribute('href', /t\.me\/mgnvpnsup/);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
 });
 
