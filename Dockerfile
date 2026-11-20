@@ -14,6 +14,9 @@ RUN addgroup --system mgn && adduser --system --ingroup mgn --home /app mgn \
 
 COPY --chown=mgn:mgn . .
 
+# Ensure aiohttp can traverse Mini App files after BotHost's checkout.
+RUN chmod -R u=rwX,g=rX,o=rX /app
+
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
