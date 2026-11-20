@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from aiohttp import web
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+import httpx
 
 from admin_notifications import notify_purchase_admins
 from catalog import (
@@ -2131,6 +2132,122 @@ class MiniAppServer:
 
         return web.json_response({"ok": True, "devices": state.devices})
 
+    async def post_removal_result(self, request: web.Request) -> web.Response:
+        success = request.path.endswith("/success")
+        title = "Оплата принята" if success else "Оплата не завершена"
+        text = (
+            "Платёж подтверждается. Пост удалится автоматически в течение нескольких секунд."
+            if success else
+            "Пост не удалён. Вернитесь в Telegram и попробуйте оплатить ещё раз."
+        )
+        return web.Response(
+            text=(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                f"<title>{title}</title><body style='font-family:system-ui;background:#0d1117;color:#fff;"
+                "display:grid;place-items:center;min-height:100vh;margin:0'><main style='max-width:560px;"
+                "padding:32px;text-align:center'><h1>" + title + "</h1><p style='color:#b7c0cc'>" + text +
+                "</p><a style='color:#6ee7b7' href='https://t.me/PozorMgnBot'>Вернуться в Telegram</a>"
+                "</main></body></html>"
+            ),
+            content_type="text/html",
+        )
+
+    async def _delete_shop_post_message(self, chat_id: str, message_id: int) -> None:
+        token = self.config.post_removal_bot_token
+        if not token:
+            raise web.HTTPServiceUnavailable(text="POST_REMOVAL_BOT_TOKEN is not configured")
+        url = f"https://api.telegram.org/bot{token}/deleteMessage"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8, connect=3)) as client:
+            response = await client.post(url, json={"chat_id": chat_id, "message_id": message_id})
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        if response.is_success and body.get("ok") is True:
+            return
+        description = str(body.get("description") or "").lower()
+        if "message to delete not found" in description:
+            return
+        raise web.HTTPBadGateway(text="Telegram could not delete the paid post")
+
+    async def rollypay_webhook(self, request: web.Request) -> web.Response:
+        secret = self.config.rollypay_signing_secret
+        if not secret:
+            raise web.HTTPServiceUnavailable(text="ROLLYPAY_SIGNING_SECRET is not configured")
+        raw = await request.read()
+        signature = request.headers.get("X-Signature", "").strip().lower()
+        timestamp = request.headers.get("X-Timestamp", "").strip()
+        try:
+            sent_at = int(timestamp)
+        except ValueError:
+            raise web.HTTPForbidden(text="Invalid timestamp")
+        if abs(int(time.time()) - sent_at) > 300:
+            raise web.HTTPForbidden(text="Stale timestamp")
+        expected = hmac.new(
+            secret.encode("utf-8"), timestamp.encode("ascii") + b"." + raw,
+            hashlib.sha256,
+        ).hexdigest()
+        if not signature or not hmac.compare_digest(expected, signature):
+            raise web.HTTPForbidden(text="Invalid signature")
+        try:
+            event = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise web.HTTPBadRequest(text="Invalid JSON")
+        if not isinstance(event, dict):
+            raise web.HTTPBadRequest(text="Invalid event")
+
+        payment_id = str(event.get("payment_id") or "")
+        order_id = str(event.get("order_id") or "")
+        status = str(event.get("status") or "").lower()
+        if not payment_id or not order_id.startswith("postrm-"):
+            return web.json_response({"ok": True, "ignored": True})
+        if status != "paid" or str(event.get("event_type") or "") != "payment.paid":
+            return web.json_response({"ok": True, "status": status})
+        if bool(event.get("test")) and not self.config.rollypay_test_mode:
+            raise web.HTTPConflict(text="Sandbox payment cannot delete a production post")
+        if await self.db.post_removal_webhook_processed(payment_id):
+            return web.json_response({"ok": True, "replayed": True})
+
+        try:
+            remote = await get_payment(self.config, payment_id)
+            event_amount = Decimal(str(event.get("amount")))
+            remote_amount = Decimal(str(remote.get("amount")))
+        except (RollyPayError, InvalidOperation, TypeError, ValueError):
+            raise web.HTTPServiceUnavailable(text="Could not verify payment")
+        event_currency = str(event.get("currency") or "").upper()
+        remote_currency = str(remote.get("currency") or remote.get("payment_currency") or "").upper()
+        if (
+            str(remote.get("payment_id")) != payment_id
+            or str(remote.get("order_id")) != order_id
+            or str(remote.get("status") or "").lower() != "paid"
+            or event_amount != remote_amount
+            or event_currency != "RUB"
+            or remote_currency != "RUB"
+        ):
+            raise web.HTTPConflict(text="Payment details do not match")
+
+        metadata = event.get("metadata")
+        if not isinstance(metadata, dict) or metadata.get("action") != "post_removal":
+            raise web.HTTPConflict(text="Invalid payment metadata")
+        chat_id = str(metadata.get("chat_id") or "")
+        if not re.fullmatch(r"-?\d+|@[A-Za-z0-9_]{5,32}", chat_id):
+            raise web.HTTPBadRequest(text="Invalid Telegram chat")
+        raw_ids = metadata.get("message_ids")
+        if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= 100:
+            raise web.HTTPBadRequest(text="Invalid Telegram messages")
+        try:
+            message_ids = [int(value) for value in raw_ids]
+        except (TypeError, ValueError):
+            raise web.HTTPBadRequest(text="Invalid Telegram messages")
+        if any(value <= 0 for value in message_ids):
+            raise web.HTTPBadRequest(text="Invalid Telegram messages")
+
+        for message_id in dict.fromkeys(message_ids):
+            await self._delete_shop_post_message(chat_id, message_id)
+        await self.db.mark_post_removal_webhook(payment_id, order_id, status)
+        return web.json_response({"ok": True, "deleted": len(set(message_ids))})
+
     async def start(self) -> None:
         @web.middleware
         async def security_headers(request: web.Request, handler):
@@ -2179,6 +2296,9 @@ class MiniAppServer:
         app.router.add_get("/api/miniapp/health", self.health)
         app.router.add_get("/api/miniapp/ready", self.readiness)
         app.router.add_get("/api/public/catalog", self.public_catalog)
+        app.router.add_post("/webhooks/rollypay", self.rollypay_webhook)
+        app.router.add_get("/payments/post-removal/success", self.post_removal_result)
+        app.router.add_get("/payments/post-removal/fail", self.post_removal_result)
         app.router.add_post("/api/public/payment", self.public_payment_create)
         app.router.add_get(
             "/api/public/payment/{payment_id}",

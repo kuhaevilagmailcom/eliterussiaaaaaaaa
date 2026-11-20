@@ -39,7 +39,7 @@ python main.py
 
 Скопируйте `.env.example` в локальный `.env` и заполните значения. `.env` не хранится в Git.
 
-Ключевые переменные: `BOT_TOKEN`, `ADMIN_IDS`, `DB_PATH`, `VPN_MODE=h1cloud`, `H1_API_URL`, `H1_API_TOKEN`, `H1_SUBSCRIPTION_TEMPLATE`, параметры `ROLLYPAY_*` и `EMOJI_PACKS=NewsEmoji`. Публичные адреса Mini App и subscription закреплены за `mgnvpn.ru` и не берутся из окружения.
+Ключевые переменные: `BOT_TOKEN`, `ADMIN_IDS`, `DB_PATH`, `VPN_MODE=h1cloud`, `H1_API_URL`, `H1_API_TOKEN`, `H1_SUBSCRIPTION_TEMPLATE`, параметры `ROLLYPAY_*` и `EMOJI_PACKS=NewsEmoji`. Для callback платного удаления постов нужны `ROLLYPAY_SIGNING_SECRET` и `POST_REMOVAL_BOT_TOKEN` (токен бота предложки). В настройках кассы укажите `https://mgnvpn.ru/webhooks/rollypay`; страницы возврата — `/payments/post-removal/success` и `/payments/post-removal/fail`. Публичные адреса Mini App и subscription закреплены за `mgnvpn.ru` и не берутся из окружения.
 
 Не включайте реальные токены в `.env.example`, логи или репозиторий.
 

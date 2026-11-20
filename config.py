@@ -85,6 +85,8 @@ class Config:
     rollypay_terminal_id: str
     rollypay_api_key: str
     rollypay_test_mode: bool
+    rollypay_signing_secret: str
+    post_removal_bot_token: str
 
     @property
     def rollypay_enabled(self) -> bool:
@@ -207,7 +209,7 @@ class Config:
             ),
             rollypay_api_base=os.getenv(
                 "ROLLYPAY_API_BASE",
-                "https://api.rollypay.io",
+                "https://rollypay.io",
             ).rstrip("/"),
             rollypay_terminal_id=os.getenv("ROLLYPAY_TERMINAL_ID", "").strip(),
             rollypay_api_key=os.getenv("ROLLYPAY_API_KEY", "").strip(),
@@ -215,4 +217,6 @@ class Config:
                 os.getenv("ROLLYPAY_TEST_MODE", "false"),
                 default=False,
             ),
+            rollypay_signing_secret=os.getenv("ROLLYPAY_SIGNING_SECRET", "").strip(),
+            post_removal_bot_token=os.getenv("POST_REMOVAL_BOT_TOKEN", "").strip(),
         )

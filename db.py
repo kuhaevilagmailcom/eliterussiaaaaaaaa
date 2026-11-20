@@ -101,6 +101,13 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_sbp_payments_user
                 ON sbp_payments(telegram_id, created_at);
 
+                CREATE TABLE IF NOT EXISTS post_removal_webhooks (
+                    payment_id TEXT PRIMARY KEY,
+                    order_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    processed_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS star_payments (
                     telegram_payment_charge_id TEXT PRIMARY KEY,
                     buyer_telegram_id INTEGER NOT NULL,
@@ -1826,6 +1833,25 @@ class Database:
             )
             await db.commit()
         return await self.get_user(telegram_id)
+
+    async def post_removal_webhook_processed(self, payment_id: str) -> bool:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            row = await (
+                await db.execute(
+                    "SELECT 1 FROM post_removal_webhooks WHERE payment_id=?",
+                    (payment_id,),
+                )
+            ).fetchone()
+        return row is not None
+
+    async def mark_post_removal_webhook(self, payment_id: str, order_id: str, status: str) -> None:
+        async with aiosqlite.connect(self.path, timeout=15.0) as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO post_removal_webhooks(payment_id,order_id,status,processed_at) "
+                "VALUES(?,?,?,?)",
+                (payment_id, order_id, status[:32], to_iso(utcnow())),
+            )
+            await db.commit()
 
     async def create_sbp_payment(
         self,
